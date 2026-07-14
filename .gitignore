@@ -1,5 +1,4 @@
 .superpowers/
-.worktrees/
 
 # IDE and OS files
 .idea/
@@ -24,8 +23,11 @@ Thumbs.db
 
 # Local deployment state
 /backups/
-/runtime/
 
-# Local visual QA and distributable artifacts
-/frontend/artifacts/
+#Isolated implementation worktrees and generated review bundles
+/.worktrees/
 /frontend/portfolio-dist.zip
+/frontend/artifacts/
+
+#Recovery CLI output (database dumps remain outside Git)
+/runtime/recovery/
