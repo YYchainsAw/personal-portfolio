@@ -1,4 +1,5 @@
 .superpowers/
+.worktrees/
 
 # IDE and OS files
 .idea/
@@ -24,3 +25,7 @@ Thumbs.db
 # Local deployment state
 /backups/
 /runtime/
+
+# Local visual QA and distributable artifacts
+/frontend/artifacts/
+/frontend/portfolio-dist.zip
