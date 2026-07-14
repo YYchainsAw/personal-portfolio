@@ -1,0 +1,26 @@
+.superpowers/
+
+# IDE and OS files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# Java and Node build output
+**/target/
+**/node_modules/
+**/dist/
+**/coverage/
+*.tsbuildinfo
+
+# Runtime logs and local secrets
+*.log
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local deployment state
+/backups/
+/runtime/
