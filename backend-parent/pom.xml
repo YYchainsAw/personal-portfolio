@@ -30,6 +30,7 @@
     <tencent-cos.version>5.6.227</tencent-cos.version>
     <totp.version>1.7.1</totp.version>
     <bouncycastle.version>1.84</bouncycastle.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
     <maven-enforcer.version>3.5.0</maven-enforcer.version>
   </properties>
 
