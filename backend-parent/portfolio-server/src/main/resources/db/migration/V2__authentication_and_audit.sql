@@ -83,7 +83,7 @@ CREATE INDEX admin_session_metadata_admin_status_ix
 
 CREATE TABLE audit_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    actor_admin_id UUID REFERENCES admin_user(id) ON DELETE SET NULL,
+    actor_admin_id UUID REFERENCES admin_user(id) ON DELETE RESTRICT,
     action VARCHAR(96) NOT NULL,
     target_type VARCHAR(64) NOT NULL,
     target_id VARCHAR(128),
@@ -109,7 +109,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION portfolio.reject_audit_mutation() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION portfolio.reject_audit_mutation() TO portfolio_runtime;
+GRANT EXECUTE ON FUNCTION portfolio.reject_audit_mutation() TO portfolio_runtime_access;
 
 CREATE TRIGGER audit_log_reject_mutation
 BEFORE UPDATE OR DELETE ON audit_log
@@ -119,10 +119,10 @@ CREATE TRIGGER audit_log_reject_truncate
 BEFORE TRUNCATE ON audit_log
 FOR EACH STATEMENT EXECUTE FUNCTION portfolio.reject_audit_mutation();
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON SPRING_SESSION TO portfolio_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON SPRING_SESSION_ATTRIBUTES TO portfolio_runtime;
-GRANT SELECT, INSERT, UPDATE ON admin_user TO portfolio_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON totp_recovery_code TO portfolio_runtime;
-GRANT SELECT, INSERT, UPDATE ON admin_session_metadata TO portfolio_runtime;
-GRANT SELECT, INSERT ON audit_log TO portfolio_runtime;
-REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM portfolio_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON SPRING_SESSION TO portfolio_runtime_access;
+GRANT SELECT, INSERT, UPDATE, DELETE ON SPRING_SESSION_ATTRIBUTES TO portfolio_runtime_access;
+GRANT SELECT, INSERT, UPDATE ON admin_user TO portfolio_runtime_access;
+GRANT SELECT, INSERT, UPDATE, DELETE ON totp_recovery_code TO portfolio_runtime_access;
+GRANT SELECT, INSERT, UPDATE ON admin_session_metadata TO portfolio_runtime_access;
+GRANT SELECT, INSERT ON audit_log TO portfolio_runtime_access;
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM portfolio_runtime_access;

@@ -26,15 +26,15 @@ public abstract class PostgresIntegrationTestBase {
     static void databaseProperties(DynamicPropertyRegistry registry) {
         String url = portfolioJdbcUrl(POSTGRES.getJdbcUrl());
         registry.add("spring.datasource.url", () -> url);
-        registry.add("spring.datasource.username", () -> "portfolio_runtime");
+        registry.add("spring.datasource.username", () -> "test_runtime");
         registry.add("spring.datasource.password", () -> "runtime_test_password");
         registry.add("spring.flyway.url", () -> url);
-        registry.add("spring.flyway.user", () -> "portfolio_migrator");
+        registry.add("spring.flyway.user", () -> "test_migrator");
         registry.add("spring.flyway.password", () -> "migrator_test_password");
         registry.add("portfolio.recovery.host", POSTGRES::getHost);
         registry.add("portfolio.recovery.port", POSTGRES::getFirstMappedPort);
         registry.add("portfolio.recovery.database", POSTGRES::getDatabaseName);
-        registry.add("portfolio.recovery.username", () -> "portfolio_migrator");
+        registry.add("portfolio.recovery.username", () -> "test_migrator");
         registry.add("portfolio.recovery.password", () -> "migrator_test_password");
         registry.add("portfolio.security.totp.active-key-version", () -> "1");
         registry.add("portfolio.security.totp.key-ring",
@@ -46,7 +46,7 @@ public abstract class PostgresIntegrationTestBase {
         DriverManagerDataSource dataSource = new DriverManagerDataSource();
         dataSource.setDriverClassName("org.postgresql.Driver");
         dataSource.setUrl(portfolioJdbcUrl(POSTGRES.getJdbcUrl()));
-        dataSource.setUsername("portfolio_migrator");
+        dataSource.setUsername("test_migrator");
         dataSource.setPassword("migrator_test_password");
         return dataSource;
     }

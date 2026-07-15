@@ -1,6 +1,25 @@
-CREATE SCHEMA IF NOT EXISTS portfolio AUTHORIZATION portfolio_migrator;
+CREATE SCHEMA IF NOT EXISTS portfolio AUTHORIZATION CURRENT_USER;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_namespace AS namespace
+        WHERE namespace.nspname = 'portfolio'
+          AND namespace.nspowner = (
+              SELECT migration_role.oid
+              FROM pg_catalog.pg_roles AS migration_role
+              WHERE migration_role.rolname = CURRENT_USER
+          )
+    ) THEN
+        RAISE EXCEPTION 'portfolio schema must be owned by current migration role'
+            USING ERRCODE = '42501';
+    END IF;
+END;
+$$;
+
 REVOKE ALL ON SCHEMA portfolio FROM PUBLIC;
-GRANT USAGE ON SCHEMA portfolio TO portfolio_runtime;
+GRANT USAGE ON SCHEMA portfolio TO portfolio_runtime_access;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA portfolio;
 
@@ -16,9 +35,9 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION portfolio.set_updated_at() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION portfolio.set_updated_at() TO portfolio_runtime;
+GRANT EXECUTE ON FUNCTION portfolio.set_updated_at() TO portfolio_runtime_access;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_migrator IN SCHEMA portfolio
+ALTER DEFAULT PRIVILEGES IN SCHEMA portfolio
     REVOKE ALL ON TABLES FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_migrator IN SCHEMA portfolio
-    REVOKE ALL ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES
+    REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;

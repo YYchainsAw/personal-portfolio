@@ -1,6 +1,15 @@
-CREATE ROLE portfolio_migrator LOGIN PASSWORD 'migrator_test_password';
-CREATE ROLE portfolio_runtime LOGIN PASSWORD 'runtime_test_password';
-GRANT CONNECT ON DATABASE portfolio_test TO portfolio_migrator, portfolio_runtime;
-GRANT CREATE ON DATABASE portfolio_test TO portfolio_migrator;
-ALTER ROLE portfolio_migrator SET search_path TO portfolio, public;
-ALTER ROLE portfolio_runtime SET search_path TO portfolio, public;
+CREATE ROLE portfolio_runtime_access
+    NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE test_migrator
+    LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    PASSWORD 'migrator_test_password';
+CREATE ROLE test_runtime
+    LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    PASSWORD 'runtime_test_password';
+GRANT portfolio_runtime_access TO test_runtime WITH INHERIT TRUE, SET FALSE;
+REVOKE CONNECT, TEMPORARY ON DATABASE portfolio_test FROM PUBLIC;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT CONNECT ON DATABASE portfolio_test TO test_migrator, test_runtime;
+GRANT CREATE ON DATABASE portfolio_test TO test_migrator;
+ALTER ROLE test_migrator SET search_path TO portfolio, public;
+ALTER ROLE test_runtime SET search_path TO portfolio, public;
