@@ -17,6 +17,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.audit.AuditCommand;
 import xyz.yychainsaw.portfolio.audit.AuditOutcome;
 import xyz.yychainsaw.portfolio.audit.AuditService;
+import xyz.yychainsaw.portfolio.auth.persistence.AdminUserRepository;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 
 @Service
@@ -24,6 +25,7 @@ public final class AdminSessionService {
     private static final Logger log = LoggerFactory.getLogger(AdminSessionService.class);
 
     private final AdminSessionRepository repository;
+    private final AdminUserRepository adminRepository;
     private final SessionProperties properties;
     private final AuditService audit;
     private final TransactionTemplate transactions;
@@ -31,11 +33,14 @@ public final class AdminSessionService {
 
     public AdminSessionService(
             AdminSessionRepository repository,
+            AdminUserRepository adminRepository,
             SessionProperties properties,
             AuditService audit,
             TransactionTemplate transactions,
             Clock clock) {
         this.repository = Objects.requireNonNull(repository, "repository is required");
+        this.adminRepository = Objects.requireNonNull(
+                adminRepository, "admin repository is required");
         this.properties = Objects.requireNonNull(properties, "properties are required");
         this.audit = Objects.requireNonNull(audit, "audit is required");
         this.transactions = Objects.requireNonNull(transactions, "transactions are required");
@@ -100,6 +105,8 @@ public final class AdminSessionService {
         requireNoAmbientTransaction("session revoke requires no ambient transaction");
 
         AdminSessionRepository.TerminalSession revoked = transactions.execute(status -> {
+            adminRepository.findByIdForUpdate(actorAdminId)
+                    .orElseThrow(AdminSessionService::unauthorized);
             AdminSessionRepository.SessionRow existing = repository
                     .findByMetadataId(metadataId, actorAdminId)
                     .orElseThrow(() -> new DomainException(

@@ -7,7 +7,10 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -31,12 +34,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
+import org.mockito.InOrder;
 import org.slf4j.MDC;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,12 +63,17 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import xyz.yychainsaw.portfolio.audit.AuditCommand;
 import xyz.yychainsaw.portfolio.audit.AuditOutcome;
 import xyz.yychainsaw.portfolio.audit.AuditService;
 import xyz.yychainsaw.portfolio.audit.JdbcAuditService;
+import xyz.yychainsaw.portfolio.auth.crypto.EncryptedTotpSecret;
+import xyz.yychainsaw.portfolio.auth.model.AdminStatus;
+import xyz.yychainsaw.portfolio.auth.model.AdminUser;
+import xyz.yychainsaw.portfolio.auth.persistence.AdminUserRepository;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
@@ -77,6 +87,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
     private static final Instant NOW = Instant.parse("2026-07-15T08:00:00.123456Z");
 
     @Autowired AdminSessionRepository repository;
+    @Autowired AdminUserRepository admins;
     @Autowired TrustedClientAddressResolver addresses;
     @Autowired ClientSummaryFactory summaries;
     @Autowired AdminSessionService sessions;
@@ -203,6 +214,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
     void constructorsRejectNullDependenciesAndRecordsRedactSessionIdentifiers() {
         TransactionTemplate transactions = transactions();
         AuditService auditService = mock(AuditService.class);
+        AdminUserRepository adminUsers = mock(AdminUserRepository.class);
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
 
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionRepository(null))
@@ -212,15 +224,23 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
         assertThatNullPointerException().isThrownBy(() -> new ClientSummaryFactory(null))
                 .withMessage("addresses are required");
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionService(
-                null, properties, auditService, transactions, clock)).withMessage("repository is required");
+                null, adminUsers, properties, auditService, transactions, clock))
+                .withMessage("repository is required");
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionService(
-                repository, null, auditService, transactions, clock)).withMessage("properties are required");
+                repository, null, properties, auditService, transactions, clock))
+                .withMessage("admin repository is required");
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionService(
-                repository, properties, null, transactions, clock)).withMessage("audit is required");
+                repository, adminUsers, null, auditService, transactions, clock))
+                .withMessage("properties are required");
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionService(
-                repository, properties, auditService, null, clock)).withMessage("transactions are required");
+                repository, adminUsers, properties, null, transactions, clock))
+                .withMessage("audit is required");
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionService(
-                repository, properties, auditService, transactions, null)).withMessage("clock is required");
+                repository, adminUsers, properties, auditService, null, clock))
+                .withMessage("transactions are required");
+        assertThatNullPointerException().isThrownBy(() -> new AdminSessionService(
+                repository, adminUsers, properties, auditService, transactions, null))
+                .withMessage("clock is required");
         assertThatNullPointerException().isThrownBy(() -> new AdminSessionCleanupJob(
                 null, sessions, properties, auditService, transactions, clock))
                 .withMessage("repository is required");
@@ -258,8 +278,10 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
     @Test
     void malformedPublicIdsAreGenericBeforeJdbcAndProgrammerInputsAreStrict() {
         AdminSessionRepository mockedRepository = mock(AdminSessionRepository.class);
+        AdminUserRepository mockedAdmins = mock(AdminUserRepository.class);
         AdminSessionService service = new AdminSessionService(
-                mockedRepository, properties, audit, transactions(), Clock.fixed(NOW, ZoneOffset.UTC));
+                mockedRepository, mockedAdmins, properties, audit, transactions(),
+                Clock.fixed(NOW, ZoneOffset.UTC));
         for (String invalid : java.util.Arrays.asList(
                 null, "", " ", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
                 "not-a-session", "x".repeat(37))) {
@@ -267,7 +289,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
             assertUnauthorized(() -> service.requireActive(invalid));
             assertUnauthorized(() -> service.list(UUID.randomUUID(), invalid));
         }
-        verifyNoInteractions(mockedRepository);
+        verifyNoInteractions(mockedRepository, mockedAdmins);
 
         String missing = uuid(102);
         when(mockedRepository.findPrimaryIdByPublicSessionId(missing)).thenReturn(Optional.empty());
@@ -387,10 +409,11 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
     @Test
     void ambientTransactionGuardsRunBeforeClockRepositoryAuditOrDeleteWork() {
         AdminSessionRepository mockedRepository = mock(AdminSessionRepository.class);
+        AdminUserRepository mockedAdmins = mock(AdminUserRepository.class);
         AuditService mockedAudit = mock(AuditService.class);
         Clock mockedClock = mock(Clock.class);
         AdminSessionService guardedService = new AdminSessionService(
-                mockedRepository, properties, mockedAudit, transactions(), mockedClock);
+                mockedRepository, mockedAdmins, properties, mockedAudit, transactions(), mockedClock);
         AdminSessionService mockedService = mock(AdminSessionService.class);
         AdminSessionCleanupJob guardedCleanup = new AdminSessionCleanupJob(
                 mockedRepository, mockedService, properties, mockedAudit, transactions(), mockedClock);
@@ -403,8 +426,86 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
                     .withMessage("session cleanup requires no ambient transaction");
         });
 
-        verifyNoInteractions(mockedRepository, mockedAudit, mockedClock, mockedService);
+        verifyNoInteractions(mockedRepository, mockedAdmins, mockedAudit, mockedClock, mockedService);
         assertThat(MDC.get("traceId")).isNull();
+    }
+
+    @Test
+    void revokeLocksTheActorAdminBeforeSessionMetadataAndAuditThenDeletesAfterCommit() {
+        UUID actorAdminId = UUID.randomUUID();
+        UUID metadataId = UUID.randomUUID();
+        String primaryId = uuid(191);
+        AdminUserRepository mockedAdmins = mock(AdminUserRepository.class);
+        AdminSessionRepository mockedRepository = mock(AdminSessionRepository.class);
+        AuditService mockedAudit = mock(AuditService.class);
+        Clock fixedClock = Clock.fixed(NOW, ZoneOffset.UTC);
+        AdminSessionRepository.SessionRow active = new AdminSessionRepository.SessionRow(
+                metadataId,
+                actorAdminId,
+                primaryId,
+                AdminSessionStatus.ACTIVE,
+                NOW.minusSeconds(60),
+                NOW.minusSeconds(10).toEpochMilli(),
+                NOW.plusSeconds(600).toEpochMilli());
+        AdminSessionRepository.TerminalSession terminal =
+                new AdminSessionRepository.TerminalSession(
+                        metadataId, actorAdminId, primaryId, "ADMIN_REQUEST");
+        when(mockedAdmins.findByIdForUpdate(actorAdminId))
+                .thenReturn(Optional.of(admin(actorAdminId)));
+        when(mockedRepository.findByMetadataId(metadataId, actorAdminId))
+                .thenReturn(Optional.of(active));
+        when(mockedRepository.markRevoked(metadataId, actorAdminId, "ADMIN_REQUEST", NOW))
+                .thenReturn(Optional.of(terminal));
+        when(mockedRepository.deleteSpringSession(primaryId)).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            return 1;
+        });
+        AdminSessionService service = new AdminSessionService(
+                mockedRepository,
+                mockedAdmins,
+                properties,
+                mockedAudit,
+                transactions(),
+                fixedClock);
+
+        service.revoke(metadataId, actorAdminId, "ADMIN_REQUEST");
+
+        InOrder order = inOrder(mockedAdmins, mockedRepository, mockedAudit);
+        order.verify(mockedAdmins).findByIdForUpdate(actorAdminId);
+        order.verify(mockedRepository).findByMetadataId(metadataId, actorAdminId);
+        order.verify(mockedRepository).markRevoked(
+                metadataId, actorAdminId, "ADMIN_REQUEST", NOW);
+        order.verify(mockedAudit).record(any(AuditCommand.class));
+        order.verify(mockedRepository).deleteSpringSession(primaryId);
+    }
+
+    @Test
+    void revokeTreatsAMissingLockedActorAsGenericAuthenticationFailureBeforeSessionWork() {
+        UUID actorAdminId = UUID.randomUUID();
+        AdminUserRepository mockedAdmins = mock(AdminUserRepository.class);
+        AdminSessionRepository mockedRepository = mock(AdminSessionRepository.class);
+        AuditService mockedAudit = mock(AuditService.class);
+        Clock mockedClock = mock(Clock.class);
+        when(mockedAdmins.findByIdForUpdate(actorAdminId)).thenReturn(Optional.empty());
+        AdminSessionService service = new AdminSessionService(
+                mockedRepository,
+                mockedAdmins,
+                properties,
+                mockedAudit,
+                transactions(),
+                mockedClock);
+
+        DomainException failure = org.assertj.core.api.Assertions.catchThrowableOfType(
+                DomainException.class,
+                () -> service.revoke(UUID.randomUUID(), actorAdminId, "ADMIN_REQUEST"));
+
+        assertThat(failure).isNotNull();
+        assertThat(failure.code()).isEqualTo("AUTHENTICATION_REQUIRED");
+        assertThat(failure.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(failure.fieldErrors()).isEmpty();
+        assertThat(failure).hasNoCause();
+        verify(mockedAdmins).findByIdForUpdate(actorAdminId);
+        verifyNoInteractions(mockedRepository, mockedAudit, mockedClock);
     }
 
     @Test
@@ -860,6 +961,76 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    void parentFirstCredentialFlowAndRevokeCompleteWithinBoundWithoutDeadlock()
+            throws Exception {
+        Fixture fixture = fixture();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch parentLocked = new CountDownLatch(1);
+        CountDownLatch allowParentMetadataLock = new CountDownLatch(1);
+        CountDownLatch revokeEntered = new CountDownLatch(1);
+        List<Future<Void>> futures = new ArrayList<>();
+        try {
+            AdminSessionService fixed = service(
+                    repository, audit, Clock.fixed(NOW, ZoneOffset.UTC));
+            UUID metadataId = startSession(fixture, fixed, 555, 556,
+                    NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+
+            futures.add(executor.submit(() -> {
+                transactions().executeWithoutResult(status -> {
+                    assertThat(admins.findByIdForUpdate(fixture.adminId))
+                            .as("the parent-first flow must hold the actor row first")
+                            .isPresent();
+                    parentLocked.countDown();
+                    try {
+                        await(allowParentMetadataLock,
+                                "parent-first flow was not allowed to lock metadata");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(
+                                "parent-first flow was interrupted", interrupted);
+                    }
+                    assertThat(jdbc.sql("""
+                                    select id from portfolio.admin_session_metadata
+                                    where id=:metadataId for update
+                                    """)
+                            .param("metadataId", metadataId)
+                            .query(UUID.class)
+                            .single())
+                            .isEqualTo(metadataId);
+                });
+                return null;
+            }));
+            await(parentLocked, "parent-first flow did not acquire the admin row lock");
+
+            futures.add(executor.submit(() -> {
+                revokeEntered.countDown();
+                fixed.revoke(metadataId, fixture.adminId, "ADMIN_REQUEST");
+                return null;
+            }));
+            await(revokeEntered, "revoke worker did not enter the service");
+            assertThatExceptionOfType(TimeoutException.class)
+                    .as("revoke must wait for the actor row before touching session metadata")
+                    .isThrownBy(() -> futures.get(1).get(1, SECONDS));
+
+            allowParentMetadataLock.countDown();
+            futures.get(0).get(20, SECONDS);
+            futures.get(1).get(20, SECONDS);
+
+            assertThat(metadata(metadataId).status()).isEqualTo("REVOKED");
+            assertThat(audit.commands()).hasSize(1);
+            assertThat(countSpring(uuid(555))).isZero();
+        } finally {
+            allowParentMetadataLock.countDown();
+            try {
+                stopExecutor(executor, futures);
+            } finally {
+                fixture.close();
+            }
+        }
+    }
+
+    @Test
     void concurrentCleanupInstancesClaimTransitionAndAuditExactlyOnce() throws Exception {
         Fixture fixture = fixture();
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -946,7 +1117,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
     private AdminSessionService service(
             AdminSessionRepository targetRepository, AuditService targetAudit, Clock targetClock) {
         return new AdminSessionService(
-                targetRepository, properties, targetAudit, transactions(), targetClock);
+                targetRepository, admins, properties, targetAudit, transactions(), targetClock);
     }
 
     private AdminSessionCleanupJob cleanup(
@@ -1121,6 +1292,19 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
 
     private static String uuid(int suffix) {
         return "00000000-0000-0000-0000-" + String.format(java.util.Locale.ROOT, "%012d", suffix);
+    }
+
+    private static AdminUser admin(UUID id) {
+        return new AdminUser(
+                id,
+                "locked-admin",
+                "stored-password-hash",
+                AdminStatus.ACTIVE,
+                new EncryptedTotpSecret(1, new byte[12], new byte[17]),
+                null,
+                0,
+                NOW.minusSeconds(60),
+                NOW.minusSeconds(30));
     }
 
     private static Instant millis(Instant value) {

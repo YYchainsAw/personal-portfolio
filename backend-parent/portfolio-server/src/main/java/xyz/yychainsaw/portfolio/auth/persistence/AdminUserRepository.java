@@ -12,6 +12,8 @@ import java.util.UUID;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import xyz.yychainsaw.portfolio.auth.crypto.EncryptedTotpSecret;
 import xyz.yychainsaw.portfolio.auth.model.AdminStatus;
 import xyz.yychainsaw.portfolio.auth.model.AdminUser;
@@ -54,6 +56,21 @@ public class AdminUserRepository {
                                totp_ciphertext, last_login_at, version, created_at, updated_at
                         from portfolio.admin_user
                         where id=:id
+                        """)
+                .param("id", id)
+                .query(ADMIN_MAPPER)
+                .optional();
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<AdminUser> findByIdForUpdate(UUID id) {
+        Objects.requireNonNull(id, "admin id is required");
+        return jdbc.sql("""
+                        select id, username, password_hash, status, totp_key_version, totp_nonce,
+                               totp_ciphertext, last_login_at, version, created_at, updated_at
+                        from portfolio.admin_user
+                        where id=:id
+                        for update
                         """)
                 .param("id", id)
                 .query(ADMIN_MAPPER)

@@ -38,6 +38,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.annotation.Propagation;
@@ -463,6 +464,94 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
         assertThatNullPointerException()
                 .isThrownBy(() -> direct.markUsed(adminId, null))
                 .withMessage("recovery-code id is required");
+    }
+
+    @Test
+    void findByIdForUpdateRejectsNullBeforeJdbcWork() {
+        JdbcClient mockedJdbc = mock(JdbcClient.class);
+        AdminUserRepository direct = new AdminUserRepository(mockedJdbc);
+
+        assertThatNullPointerException()
+                .isThrownBy(() -> direct.findByIdForUpdate(null))
+                .withMessage("admin id is required");
+
+        verifyNoInteractions(mockedJdbc);
+    }
+
+    @Test
+    void findByIdForUpdateReturnsEmptyOrUsesTheExactAdminMapperWithQualifiedSql() {
+        setHostileSearchPath();
+        UUID adminId = UUID.randomUUID();
+        AdminUser expected = admin(
+                adminId,
+                "LockMappedAdmin",
+                Instant.parse("2026-07-15T03:04:05.123456Z"),
+                AdminStatus.DISABLED,
+                7,
+                secret(11));
+        admins.insert(expected);
+
+        assertThat(admins.findByIdForUpdate(UUID.randomUUID())).isEmpty();
+        assertThat(admins.findByIdForUpdate(adminId)).contains(expected);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void findByIdForUpdateRequiresAnExistingTransactionBeforeJdbcWork() {
+        assertThatThrownBy(() -> admins.findByIdForUpdate(UUID.randomUUID()))
+                .isInstanceOf(IllegalTransactionStateException.class)
+                .hasMessageContaining("existing transaction")
+                .hasMessageContaining("mandatory");
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void findByIdForUpdateHoldsTheRealPostgresRowLockUntilItsTransactionCompletes()
+            throws Exception {
+        UUID adminId = UUID.randomUUID();
+        AdminUser expected = admin(
+                adminId,
+                "LockedAdmin",
+                Instant.parse("2026-07-15T04:05:06.654321Z"),
+                AdminStatus.ACTIVE,
+                3,
+                secret(12));
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        List<Future<AdminUser>> futures = new ArrayList<>();
+        try {
+            admins.insert(expected);
+            futures.add(executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                AdminUser locked = admins.findByIdForUpdate(adminId).orElseThrow();
+                firstLocked.countDown();
+                awaitWithoutChecked(releaseFirst, "first admin lock was not released");
+                return locked;
+            })));
+            await(firstLocked, "first transaction did not acquire the admin lock");
+
+            futures.add(executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                secondStarted.countDown();
+                return admins.findByIdForUpdate(adminId).orElseThrow();
+            })));
+            await(secondStarted, "second transaction did not attempt the admin lock");
+
+            assertThatExceptionOfType(TimeoutException.class)
+                    .as("the second transaction must block on the first transaction's row lock")
+                    .isThrownBy(() -> futures.get(1).get(1, SECONDS));
+
+            releaseFirst.countDown();
+            assertThat(futures.get(0).get(20, SECONDS)).isEqualTo(expected);
+            assertThat(futures.get(1).get(20, SECONDS)).isEqualTo(expected);
+        } finally {
+            releaseFirst.countDown();
+            try {
+                stopExecutor(executor, futures);
+            } finally {
+                cleanupCommittedAdmin(adminId);
+            }
+        }
     }
 
     @Test
