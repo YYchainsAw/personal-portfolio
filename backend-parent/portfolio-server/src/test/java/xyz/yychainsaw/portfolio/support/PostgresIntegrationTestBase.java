@@ -24,7 +24,7 @@ public abstract class PostgresIntegrationTestBase {
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        String url = POSTGRES.getJdbcUrl() + "?currentSchema=portfolio";
+        String url = portfolioJdbcUrl(POSTGRES.getJdbcUrl());
         registry.add("spring.datasource.url", () -> url);
         registry.add("spring.datasource.username", () -> "portfolio_runtime");
         registry.add("spring.datasource.password", () -> "runtime_test_password");
@@ -45,10 +45,15 @@ public abstract class PostgresIntegrationTestBase {
     protected static DriverManagerDataSource migratorDataSource() {
         DriverManagerDataSource dataSource = new DriverManagerDataSource();
         dataSource.setDriverClassName("org.postgresql.Driver");
-        dataSource.setUrl(POSTGRES.getJdbcUrl() + "?currentSchema=portfolio");
+        dataSource.setUrl(portfolioJdbcUrl(POSTGRES.getJdbcUrl()));
         dataSource.setUsername("portfolio_migrator");
         dataSource.setPassword("migrator_test_password");
         return dataSource;
+    }
+
+    private static String portfolioJdbcUrl(String jdbcUrl) {
+        String separator = jdbcUrl.contains("?") ? "&" : "?";
+        return jdbcUrl + separator + "currentSchema=portfolio";
     }
 
     protected static JdbcClient migratorJdbc() {
