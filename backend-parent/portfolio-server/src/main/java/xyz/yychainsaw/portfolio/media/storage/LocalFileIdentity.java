@@ -57,7 +57,7 @@ final class LocalFileIdentity {
         } catch (NoSuchFileException exception) {
             return false;
         }
-        if (!attributes.isRegularFile() || attributes.isSymbolicLink()) {
+        if (!isRealRegularFile(attributes)) {
             return false;
         }
         if (fileKey != null) {
@@ -69,7 +69,7 @@ final class LocalFileIdentity {
         try {
             BasicFileAttributes guardAttributes = Files.readAttributes(
                     guard, BasicFileAttributes.class, NOFOLLOW_LINKS);
-            if (!guardAttributes.isRegularFile() || guardAttributes.isSymbolicLink()) {
+            if (!isRealRegularFile(guardAttributes)) {
                 return false;
             }
             return Files.isSameFile(path, guard);
@@ -118,6 +118,12 @@ final class LocalFileIdentity {
 
     private static StorageException unsafePath() {
         return new StorageException(UNSAFE_PATH);
+    }
+
+    private static boolean isRealRegularFile(BasicFileAttributes attributes) {
+        return attributes.isRegularFile()
+                && !attributes.isSymbolicLink()
+                && !attributes.isOther();
     }
 
     @FunctionalInterface

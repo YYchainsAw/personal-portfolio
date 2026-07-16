@@ -96,7 +96,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         try {
             Path existingAncestor = nearestExistingAncestor(root);
             BasicFileAttributes ancestorAttributes = readAttributes(existingAncestor);
-            if (!ancestorAttributes.isDirectory() || ancestorAttributes.isSymbolicLink()) {
+            if (!isRealDirectory(ancestorAttributes)) {
                 throw unsafePath();
             }
             boolean supportsPosix = Files.getFileStore(existingAncestor)
@@ -116,7 +116,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
 
             createRootDirectories(
                     root, supportsPosix, supportsAcl, owner, secureDirectoryAcl);
-            secureDirectory(
+            verifySecureDirectory(
                     root, supportsPosix, supportsAcl, owner, secureDirectoryAcl);
             verifyParentChain(root, supportsPosix, supportsAcl, owner);
 
@@ -163,9 +163,13 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         } catch (NoSuchFileException exception) {
             throw unsafePath();
         }
-        if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
+        if (!isRealDirectory(attributes)) {
             throw unsafePath();
         }
+        verifySecureDirectory(
+                root, posixAttributes, aclAttributes, serviceOwner, directoryAcl);
+        verifySecureFile(
+                rootMarker, posixAttributes, aclAttributes, serviceOwner, fileAcl);
         Object currentIdentity = fileKeyReader.read(root, attributes);
         if (rootIdentity != null) {
             if (!rootIdentity.equals(currentIdentity)) {
@@ -183,28 +187,20 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         } catch (NoSuchFileException exception) {
             throw unsafePath();
         }
-        verifySecureDirectory(
-                root, posixAttributes, aclAttributes, serviceOwner, directoryAcl);
-        verifySecureFile(
-                rootMarker, posixAttributes, aclAttributes, serviceOwner, fileAcl);
     }
 
-    void secureDirectory(Path directory) throws IOException {
-        secureDirectory(
+    void verifyDirectory(Path directory) throws IOException {
+        verifySecureDirectory(
                 directory, posixAttributes, aclAttributes, serviceOwner, directoryAcl);
     }
 
     void createDirectory(Path directory) throws IOException {
         try {
             createSecureDirectory(directory, posixAttributes, aclAttributes, directoryAcl);
-            secureDirectory(directory);
+            verifyDirectory(directory);
             syncDirectory(directory.getParent());
         } catch (FileAlreadyExistsException exception) {
-            BasicFileAttributes attributes = readAttributes(directory);
-            if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
-                throw unsafePath();
-            }
-            secureDirectory(directory);
+            verifyDirectory(directory);
         }
     }
 
@@ -220,8 +216,8 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         throw unsafePath();
     }
 
-    void secureFile(Path path) throws IOException {
-        secureFile(path, posixAttributes, aclAttributes, serviceOwner, fileAcl);
+    void verifyFile(Path path) throws IOException {
+        verifySecureFile(path, posixAttributes, aclAttributes, serviceOwner, fileAcl);
     }
 
     void syncDirectory(Path directory) throws IOException {
@@ -254,7 +250,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         while (true) {
             try {
                 BasicFileAttributes attributes = readAttributes(current);
-                if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
+                if (!isRealDirectory(attributes)) {
                     throw unsafePath();
                 }
                 break;
@@ -268,9 +264,13 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         }
         Collections.reverse(missing);
         for (Path directory : missing) {
-            createSecureDirectory(
-                    directory, supportsPosix, supportsAcl, secureDirectoryAcl);
-            secureDirectory(
+            try {
+                createSecureDirectory(
+                        directory, supportsPosix, supportsAcl, secureDirectoryAcl);
+            } catch (FileAlreadyExistsException exception) {
+                // A concurrent creator never gains permission-repair treatment.
+            }
+            verifySecureDirectory(
                     directory, supportsPosix, supportsAcl, owner, secureDirectoryAcl);
         }
     }
@@ -315,45 +315,6 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         }
     }
 
-    private static void secureDirectory(
-            Path directory,
-            boolean supportsPosix,
-            boolean supportsAcl,
-            UserPrincipal owner,
-            List<AclEntry> secureDirectoryAcl) throws IOException {
-        BasicFileAttributes attributes = readAttributes(directory);
-        if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
-            throw unsafePath();
-        }
-        requireOwner(directory, owner);
-        if (supportsPosix) {
-            setPermissions(directory, DIRECTORY_PERMISSIONS);
-            verifySecureDirectory(directory, true, false, owner, List.of());
-        } else if (supportsAcl) {
-            setAndVerifyAcl(directory, secureDirectoryAcl, owner);
-        } else {
-            throw unsafePath();
-        }
-    }
-
-    private static void secureFile(
-            Path path,
-            boolean supportsPosix,
-            boolean supportsAcl,
-            UserPrincipal owner,
-            List<AclEntry> secureFileAcl) throws IOException {
-        requireRegularFile(path);
-        requireOwner(path, owner);
-        if (supportsPosix) {
-            setPermissions(path, FILE_PERMISSIONS);
-            verifySecureFile(path, true, false, owner, List.of());
-        } else if (supportsAcl) {
-            setAndVerifyAcl(path, secureFileAcl, owner);
-        } else {
-            throw unsafePath();
-        }
-    }
-
     private static void verifySecureDirectory(
             Path directory,
             boolean supportsPosix,
@@ -361,7 +322,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
             UserPrincipal owner,
             List<AclEntry> secureDirectoryAcl) throws IOException {
         BasicFileAttributes attributes = readAttributes(directory);
-        if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
+        if (!isRealDirectory(attributes)) {
             throw unsafePath();
         }
         requireOwner(directory, owner);
@@ -400,27 +361,6 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         if (!expected.equals(Files.getOwner(path, NOFOLLOW_LINKS))) {
             throw unsafePath();
         }
-    }
-
-    private static void setPermissions(Path path, Set<PosixFilePermission> permissions)
-            throws IOException {
-        PosixFileAttributeView view = Files.getFileAttributeView(
-                path, PosixFileAttributeView.class, NOFOLLOW_LINKS);
-        if (view == null) {
-            throw unsafePath();
-        }
-        view.setPermissions(permissions);
-    }
-
-    private static void setAndVerifyAcl(
-            Path path, List<AclEntry> expected, UserPrincipal owner) throws IOException {
-        AclFileAttributeView view = Files.getFileAttributeView(
-                path, AclFileAttributeView.class, NOFOLLOW_LINKS);
-        if (view == null || !owner.equals(view.getOwner())) {
-            throw unsafePath();
-        }
-        view.setAcl(expected);
-        verifyAcl(path, expected, owner);
     }
 
     private static void verifyAcl(
@@ -468,10 +408,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         while (parent != null) {
             BasicFileAttributes parentAttributes = readAttributes(parent);
             BasicFileAttributes childAttributes = readAttributes(child);
-            if (!parentAttributes.isDirectory()
-                    || parentAttributes.isSymbolicLink()
-                    || !childAttributes.isDirectory()
-                    || childAttributes.isSymbolicLink()) {
+            if (!isRealDirectory(parentAttributes) || !isRealDirectory(childAttributes)) {
                 throw unsafePath();
             }
             if (supportsPosix) {
@@ -582,26 +519,32 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
             boolean supportsAcl,
             UserPrincipal owner,
             List<AclEntry> secureFileAcl) throws IOException {
-        if (!Files.exists(marker, NOFOLLOW_LINKS)) {
+        try {
+            verifySecureFile(marker, supportsPosix, supportsAcl, owner, secureFileAcl);
+            return readRootMarker(marker);
+        } catch (NoSuchFileException exception) {
             byte[] token = new byte[ROOT_MARKER_BYTES];
             new SecureRandom().nextBytes(token);
             Set<OpenOption> options = Set.of(CREATE_NEW, WRITE, NOFOLLOW_LINKS);
             FileAttribute<?> attribute = supportsPosix
                     ? PosixFilePermissions.asFileAttribute(FILE_PERMISSIONS)
                     : aclAttribute(secureFileAcl);
-            try (FileChannel channel = FileChannel.open(marker, options, attribute)) {
-                ByteBuffer buffer = ByteBuffer.wrap(token);
-                while (buffer.hasRemaining()) {
-                    channel.write(buffer);
+            try {
+                try (FileChannel channel = FileChannel.open(marker, options, attribute)) {
+                    ByteBuffer buffer = ByteBuffer.wrap(token);
+                    while (buffer.hasRemaining()) {
+                        channel.write(buffer);
+                    }
+                    channel.force(true);
                 }
-                channel.force(true);
+                verifySecureFile(marker, supportsPosix, supportsAcl, owner, secureFileAcl);
+                syncDirectoryStatic(marker.getParent());
+                return token;
+            } catch (FileAlreadyExistsException race) {
+                verifySecureFile(marker, supportsPosix, supportsAcl, owner, secureFileAcl);
+                return readRootMarker(marker);
             }
-            secureFile(marker, supportsPosix, supportsAcl, owner, secureFileAcl);
-            syncDirectoryStatic(marker.getParent());
-            return token;
         }
-        secureFile(marker, supportsPosix, supportsAcl, owner, secureFileAcl);
-        return readRootMarker(marker);
     }
 
     private static byte[] readRootMarker(Path marker) throws IOException {
@@ -648,10 +591,22 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
 
     private static BasicFileAttributes requireRegularFile(Path path) throws IOException {
         BasicFileAttributes attributes = readAttributes(path);
-        if (!attributes.isRegularFile() || attributes.isSymbolicLink()) {
+        if (!isRealRegularFile(attributes)) {
             throw unsafePath();
         }
         return attributes;
+    }
+
+    private static boolean isRealDirectory(BasicFileAttributes attributes) {
+        return attributes.isDirectory()
+                && !attributes.isSymbolicLink()
+                && !attributes.isOther();
+    }
+
+    private static boolean isRealRegularFile(BasicFileAttributes attributes) {
+        return attributes.isRegularFile()
+                && !attributes.isSymbolicLink()
+                && !attributes.isOther();
     }
 
     private static BasicFileAttributes readAttributes(Path path) throws IOException {

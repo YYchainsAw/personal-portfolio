@@ -6,6 +6,7 @@ import static java.nio.file.StandardOpenOption.CREATE_NEW;
 import static java.nio.file.StandardOpenOption.READ;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.nio.file.ExtendedOpenOption;
@@ -425,6 +426,49 @@ class LocalStorageSecurityTest {
     }
 
     @Test
+    void rejectsAWindowsJunctionAsConfiguredRootWithoutChangingItsTarget() throws Exception {
+        assumeWindowsAclSupport();
+        Path boundary = createWindowsTestBoundary();
+        Path outside = Files.createDirectory(boundary.resolve("outside"));
+        Path sentinel = Files.write(
+                outside.resolve("sentinel.bin"), "outside".getBytes(UTF_8), CREATE_NEW);
+        List<AclEntry> outsideAcl = List.copyOf(requireAclView(outside).getAcl());
+        Path junction = boundary.resolve("store");
+        createWindowsJunction(junction, outside);
+
+        assertAll(
+                () -> assertStorageFailure(() -> service(junction), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(listNames(outside)).containsExactly("sentinel.bin"),
+                () -> assertThat(Files.readString(sentinel)).isEqualTo("outside"),
+                () -> assertThat(requireAclView(outside).getAcl())
+                        .containsExactlyElementsOf(outsideAcl));
+    }
+
+    @Test
+    void rejectsAnIntermediateWindowsJunctionWithoutWritingIntoItsTarget() throws Exception {
+        assumeWindowsAclSupport();
+        Path boundary = createWindowsTestBoundary();
+        Path root = Files.createDirectory(boundary.resolve("store"));
+        installExactWindowsAcl(root, true);
+        Path outside = Files.createDirectory(boundary.resolve("outside"));
+        Path sentinel = Files.write(
+                outside.resolve("sentinel.bin"), "outside".getBytes(UTF_8), CREATE_NEW);
+        List<AclEntry> outsideAcl = List.copyOf(requireAclView(outside).getAcl());
+        createWindowsJunction(root.resolve("linked"), outside);
+        LocalStorageService service = service(root);
+        CloseTrackingInputStream input = tracking(new byte[] {1});
+
+        assertAll(
+                () -> assertStorageFailure(() -> service.put(
+                        "linked/created.bin", input, 1, CONTENT_TYPE), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(input.closeCount()).isOne(),
+                () -> assertThat(listNames(outside)).containsExactly("sentinel.bin"),
+                () -> assertThat(Files.readString(sentinel)).isEqualTo("outside"),
+                () -> assertThat(requireAclView(outside).getAcl())
+                        .containsExactlyElementsOf(outsideAcl));
+    }
+
+    @Test
     void usesOwnerOnlyDirectoryAndFileModesWhenPosixAttributesAreSupported() throws Exception {
         Path root = storageRoot();
         FileStore fileStore = Files.getFileStore(temporaryDirectory);
@@ -441,6 +485,58 @@ class LocalStorageSecurityTest {
         assertThat(PosixFilePermissions.toString(
                 Files.getPosixFilePermissions(root.resolve("nested/asset.bin"))))
                 .isEqualTo("rw-------");
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(
+                root.resolve(".portfolio-storage-root@guard"))))
+                .isEqualTo("rw-------");
+    }
+
+    @Test
+    void rejectsPreexistingBroadPosixRootWithoutChangingItsMode() throws Exception {
+        assumePosixSupport();
+        Path root = Files.createDirectory(temporaryDirectory.resolve("broad-root"));
+        Set<java.nio.file.attribute.PosixFilePermission> broadPermissions =
+                PosixFilePermissions.fromString("rwxrwxrwx");
+        Files.setPosixFilePermissions(root, broadPermissions);
+
+        assertAll(
+                () -> assertStorageFailure(() -> service(root), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(Files.getPosixFilePermissions(root, NOFOLLOW_LINKS))
+                        .isEqualTo(broadPermissions));
+    }
+
+    @Test
+    void rejectsPreexistingBroadPosixMarkerWithoutChangingItsMode() throws Exception {
+        assumePosixSupport();
+        Path root = Files.createDirectory(temporaryDirectory.resolve("marker-root"));
+        Files.setPosixFilePermissions(root, PosixFilePermissions.fromString("rwx------"));
+        Path marker = Files.write(
+                root.resolve(".portfolio-storage-root@guard"), new byte[32], CREATE_NEW);
+        Set<java.nio.file.attribute.PosixFilePermission> broadPermissions =
+                PosixFilePermissions.fromString("rw-rw-rw-");
+        Files.setPosixFilePermissions(marker, broadPermissions);
+
+        assertAll(
+                () -> assertStorageFailure(() -> service(root), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(Files.getPosixFilePermissions(marker, NOFOLLOW_LINKS))
+                        .isEqualTo(broadPermissions));
+    }
+
+    @Test
+    void rejectsPreexistingBroadPosixDescendantWithoutChangingItsMode() throws Exception {
+        assumePosixSupport();
+        Path root = Files.createDirectory(temporaryDirectory.resolve("descendant-root"));
+        Files.setPosixFilePermissions(root, PosixFilePermissions.fromString("rwx------"));
+        Path descendant = Files.createDirectory(root.resolve("nested"));
+        Set<java.nio.file.attribute.PosixFilePermission> broadPermissions =
+                PosixFilePermissions.fromString("rwxrwxrwx");
+        Files.setPosixFilePermissions(descendant, broadPermissions);
+        LocalStorageService service = service(root);
+
+        assertAll(
+                () -> assertStorageFailure(
+                        () -> service.exists("nested/missing.bin"), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(Files.getPosixFilePermissions(descendant, NOFOLLOW_LINKS))
+                        .isEqualTo(broadPermissions));
     }
 
     @Test
@@ -465,11 +561,23 @@ class LocalStorageSecurityTest {
     }
 
     @Test
-    void replacesBroadWindowsAclsWithExactOwnerOnlyAcls() throws Exception {
+    void rejectsPreexistingBroadWindowsRootWithoutRewritingItsAcl() throws Exception {
         assumeWindowsAclSupport();
         Path boundary = createWindowsTestBoundary();
         Path root = Files.createDirectory(boundary.resolve("store"));
         installBroadWindowsAcl(root, true);
+        List<AclEntry> broadAcl = List.copyOf(requireAclView(root).getAcl());
+
+        assertAll(
+                () -> assertStorageFailure(() -> service(root), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(requireAclView(root).getAcl()).containsExactlyElementsOf(broadAcl));
+    }
+
+    @Test
+    void createsExactOwnerOnlyWindowsAclsForEveryCreatedNode() throws Exception {
+        assumeWindowsAclSupport();
+        Path boundary = createWindowsTestBoundary();
+        Path root = boundary.resolve("store");
 
         LocalStorageService service = service(root);
         service.put("nested/asset.bin", tracking(new byte[] {1}), 1, CONTENT_TYPE);
@@ -477,6 +585,42 @@ class LocalStorageSecurityTest {
         assertExactOwnerOnlyWindowsAcl(root, true);
         assertExactOwnerOnlyWindowsAcl(root.resolve("nested"), true);
         assertExactOwnerOnlyWindowsAcl(root.resolve("nested/asset.bin"), false);
+        assertExactOwnerOnlyWindowsAcl(root.resolve(".portfolio-storage-root@guard"), false);
+    }
+
+    @Test
+    void rejectsPreexistingBroadWindowsMarkerWithoutRewritingItsAcl() throws Exception {
+        assumeWindowsAclSupport();
+        Path boundary = createWindowsTestBoundary();
+        Path root = Files.createDirectory(boundary.resolve("store"));
+        installExactWindowsAcl(root, true);
+        Path marker = Files.write(
+                root.resolve(".portfolio-storage-root@guard"), new byte[32], CREATE_NEW);
+        installBroadWindowsAcl(marker, false);
+        List<AclEntry> broadAcl = List.copyOf(requireAclView(marker).getAcl());
+
+        assertAll(
+                () -> assertStorageFailure(() -> service(root), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(requireAclView(marker).getAcl())
+                        .containsExactlyElementsOf(broadAcl));
+    }
+
+    @Test
+    void rejectsPreexistingBroadWindowsDescendantWithoutRewritingItsAcl() throws Exception {
+        assumeWindowsAclSupport();
+        Path boundary = createWindowsTestBoundary();
+        Path root = Files.createDirectory(boundary.resolve("store"));
+        installExactWindowsAcl(root, true);
+        Path descendant = Files.createDirectory(root.resolve("nested"));
+        installBroadWindowsAcl(descendant, true);
+        List<AclEntry> broadAcl = List.copyOf(requireAclView(descendant).getAcl());
+        LocalStorageService service = service(root);
+
+        assertAll(
+                () -> assertStorageFailure(
+                        () -> service.exists("nested/missing.bin"), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(requireAclView(descendant).getAcl())
+                        .containsExactlyElementsOf(broadAcl));
     }
 
     @Test
@@ -486,6 +630,41 @@ class LocalStorageSecurityTest {
         installBroadWindowsAcl(boundary, true);
 
         assertStorageFailure(() -> service(boundary.resolve("store")), "LOCAL_UNSAFE_PATH");
+    }
+
+    @Test
+    void rejectsPreexistingBroadPosixHardLinkForEveryFinalFileOperation() throws Exception {
+        assumePosixSupport();
+        Path root = Files.createDirectory(temporaryDirectory.resolve("store"));
+        Files.setPosixFilePermissions(root, PosixFilePermissions.fromString("rwx------"));
+        Path foreign = Files.write(
+                temporaryDirectory.resolve("foreign.bin"), "foreign".getBytes(UTF_8), CREATE_NEW);
+        Set<java.nio.file.attribute.PosixFilePermission> broadPermissions =
+                PosixFilePermissions.fromString("rw-rw-rw-");
+        Files.setPosixFilePermissions(foreign, broadPermissions);
+        createHardLinkOrSkip(root.resolve("foreign.bin"), foreign);
+        LocalStorageService service = service(root);
+
+        assertUnsafeFinalFileOperationsPreserveForeignHardLink(service, root, foreign);
+        assertThat(Files.getPosixFilePermissions(foreign, NOFOLLOW_LINKS))
+                .isEqualTo(broadPermissions);
+    }
+
+    @Test
+    void rejectsPreexistingBroadWindowsHardLinkForEveryFinalFileOperation() throws Exception {
+        assumeWindowsAclSupport();
+        Path boundary = createWindowsTestBoundary();
+        Path root = Files.createDirectory(boundary.resolve("store"));
+        installExactWindowsAcl(root, true);
+        Path foreign = Files.write(
+                boundary.resolve("foreign.bin"), "foreign".getBytes(UTF_8), CREATE_NEW);
+        installBroadWindowsAcl(foreign, false);
+        List<AclEntry> broadAcl = List.copyOf(requireAclView(foreign).getAcl());
+        createHardLinkOrSkip(root.resolve("foreign.bin"), foreign);
+        LocalStorageService service = service(root);
+
+        assertUnsafeFinalFileOperationsPreserveForeignHardLink(service, root, foreign);
+        assertThat(requireAclView(foreign).getAcl()).containsExactlyElementsOf(broadAcl);
     }
 
     private LocalStorageService service(Path root) {
@@ -589,6 +768,74 @@ class LocalStorageSecurityTest {
         }
     }
 
+    private static void createHardLinkOrSkip(Path link, Path existing) throws IOException {
+        try {
+            Files.createLink(link, existing);
+        } catch (UnsupportedOperationException exception) {
+            assumeTrue(false, "hard links are unsupported by this provider");
+        }
+    }
+
+    private static void createWindowsJunction(Path junction, Path target) throws Exception {
+        assumeTrue("\\".equals(junction.getFileSystem().getSeparator()),
+                "Windows junctions are unavailable on this platform");
+        Process process = new ProcessBuilder(
+                "cmd.exe", "/d", "/c", "mklink", "/J",
+                junction.toString(), target.toString())
+                .redirectErrorStream(true)
+                .start();
+        boolean finished = process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+            throw new AssertionError("mklink /J did not finish");
+        }
+        String output = new String(process.getInputStream().readAllBytes(), UTF_8).trim();
+        if (process.exitValue() != 0) {
+            boolean privilegeUnavailable = output.contains(
+                    "You do not have sufficient privilege to perform this operation.");
+            assumeTrue(!privilegeUnavailable,
+                    "Windows junction creation privilege is unavailable");
+            throw new AssertionError(
+                    "mklink /J failed with exit " + process.exitValue() + ": " + output);
+        }
+        BasicFileAttributes attributes = Files.readAttributes(
+                junction, BasicFileAttributes.class, NOFOLLOW_LINKS);
+        assertAll(
+                () -> assertThat(attributes.isDirectory()).isTrue(),
+                () -> assertThat(attributes.isSymbolicLink()).isFalse(),
+                () -> assertThat(attributes.isOther()).isTrue());
+    }
+
+    private static List<String> listNames(Path directory) throws IOException {
+        try (var paths = Files.list(directory)) {
+            return paths.map(path -> path.getFileName().toString()).sorted().toList();
+        }
+    }
+
+    private static void assertUnsafeFinalFileOperationsPreserveForeignHardLink(
+            LocalStorageService service, Path root, Path foreign) {
+        Path linked = root.resolve("foreign.bin");
+        Path copied = root.resolve("copy.bin");
+        byte[] expected = "foreign".getBytes(UTF_8);
+
+        assertAll(
+                () -> assertStorageFailure(() -> {
+                    try (StorageRead ignored = service.open("foreign.bin", Optional.empty())) {
+                        // A vulnerable implementation reaches this block; closing avoids a leak.
+                    }
+                }, "LOCAL_UNSAFE_PATH"),
+                () -> assertStorageFailure(
+                        () -> service.exists("foreign.bin"), "LOCAL_UNSAFE_PATH"),
+                () -> assertStorageFailure(
+                        () -> service.copy("foreign.bin", "copy.bin"), "LOCAL_UNSAFE_PATH"),
+                () -> assertStorageFailure(
+                        () -> service.delete("foreign.bin"), "LOCAL_UNSAFE_PATH"),
+                () -> assertThat(Files.exists(linked, NOFOLLOW_LINKS)).isTrue(),
+                () -> assertThat(Files.isSameFile(linked, foreign)).isTrue(),
+                () -> assertThat(Files.readAllBytes(foreign)).isEqualTo(expected),
+                () -> assertThat(Files.exists(copied, NOFOLLOW_LINKS)).isFalse());
+    }
+
     private Path createWindowsTestBoundary() throws IOException {
         Path home = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
         Path boundary = Files.createTempDirectory(home, ".portfolio-media-test-");
@@ -608,6 +855,11 @@ class LocalStorageSecurityTest {
             return;
         }
         view.setAcl(List.of(fullControlEntry(owner, directory), fullControlEntry(everyone, directory)));
+    }
+
+    private static void installExactWindowsAcl(Path path, boolean directory) throws IOException {
+        AclFileAttributeView view = requireAclView(path);
+        view.setAcl(List.of(fullControlEntry(view.getOwner(), directory)));
     }
 
     private static void assertExactOwnerOnlyWindowsAcl(Path path, boolean directory)

@@ -98,11 +98,13 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
         try {
             Path target = resolveTarget(key, false);
             BasicFileAttributes before = requireRegularFile(target);
+            verifyStoredFile(target);
             validateRequestedRange(requestedRange, before.size());
 
             channel = openReadChannel(target);
             BasicFileAttributes after = requireRegularFile(target);
             requireSameIdentity(before, after);
+            verifyStoredFile(target);
             long totalLength = channel.size();
             if (totalLength <= 0 || totalLength != after.size()) {
                 throw unsafePath();
@@ -155,9 +157,10 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             } catch (NoSuchFileException exception) {
                 return false;
             }
-            if (!attributes.isRegularFile() || attributes.isSymbolicLink()) {
+            if (!isRealRegularFile(attributes)) {
                 throw unsafePath();
             }
+            verifyStoredFile(target);
             verifyRootIdentity();
             return true;
         } catch (NoSuchFileException exception) {
@@ -182,9 +185,11 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
         try {
             Path sourcePath = resolveTarget(source, false);
             BasicFileAttributes before = requireRegularFile(sourcePath);
+            verifyStoredFile(sourcePath);
             channel = openReadChannel(sourcePath);
             BasicFileAttributes after = requireRegularFile(sourcePath);
             requireSameIdentity(before, after);
+            verifyStoredFile(sourcePath);
             long contentLength = channel.size();
             if (contentLength <= 0 || contentLength != after.size()) {
                 throw unsafePath();
@@ -223,12 +228,13 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             } catch (NoSuchFileException exception) {
                 return;
             }
-            if (!attributes.isRegularFile() || attributes.isSymbolicLink()) {
+            if (!isRealRegularFile(attributes)) {
                 throw unsafePath();
             }
             verifyRootIdentity();
             BasicFileAttributes immediatelyBeforeDelete = requireRegularFile(target);
             requireSameIdentity(attributes, immediatelyBeforeDelete);
+            verifyStoredFile(target);
             Files.delete(target);
             accessPolicy.syncDirectory(target.getParent());
         } catch (NoSuchFileException exception) {
@@ -358,10 +364,10 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
                 createDirectory(descendant);
                 attributes = readAttributes(descendant);
             }
-            if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
+            if (!isRealDirectory(attributes)) {
                 throw unsafePath();
             }
-            accessPolicy.secureDirectory(descendant);
+            accessPolicy.verifyDirectory(descendant);
             parent = descendant;
         }
         verifyRootIdentity();
@@ -436,7 +442,7 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
     private void rejectExistingTarget(Path target) throws IOException {
         try {
             BasicFileAttributes attributes = readAttributes(target);
-            if (!attributes.isRegularFile() || attributes.isSymbolicLink()) {
+            if (!isRealRegularFile(attributes)) {
                 throw unsafePath();
             }
             throw new StorageException(OBJECT_EXISTS);
@@ -451,10 +457,22 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
 
     private static BasicFileAttributes requireRegularFile(Path path) throws IOException {
         BasicFileAttributes attributes = readAttributes(path);
-        if (!attributes.isRegularFile() || attributes.isSymbolicLink()) {
+        if (!isRealRegularFile(attributes)) {
             throw unsafePath();
         }
         return attributes;
+    }
+
+    private static boolean isRealDirectory(BasicFileAttributes attributes) {
+        return attributes.isDirectory()
+                && !attributes.isSymbolicLink()
+                && !attributes.isOther();
+    }
+
+    private static boolean isRealRegularFile(BasicFileAttributes attributes) {
+        return attributes.isRegularFile()
+                && !attributes.isSymbolicLink()
+                && !attributes.isOther();
     }
 
     private static BasicFileAttributes readAttributes(Path path) throws IOException {
@@ -473,7 +491,11 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
     }
 
     private void verifyFilePermissions(Path path) throws IOException {
-        accessPolicy.secureFile(path);
+        accessPolicy.verifyFile(path);
+    }
+
+    private void verifyStoredFile(Path path) throws IOException {
+        accessPolicy.verifyFile(path);
     }
 
     private static SeekableByteChannel openReadChannel(Path path) throws IOException {
