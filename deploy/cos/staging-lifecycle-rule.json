@@ -1,0 +1,10 @@
+{
+  "ID": "portfolio-staging-expire-1d",
+  "Filter": {
+    "Prefix": "staging/"
+  },
+  "Status": "Enabled",
+  "Expiration": {
+    "Days": 1
+  }
+}

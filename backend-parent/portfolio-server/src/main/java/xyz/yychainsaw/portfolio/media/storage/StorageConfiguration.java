@@ -49,11 +49,11 @@ public class StorageConfiguration {
     @Bean
     @Profile("prod")
     TencentCosProperties tencentCosProperties(
-            @Value("${COS_REGION}") String region,
-            @Value("${COS_BUCKET}") String bucket,
-            @Value("${COS_SECRET_ID}") String secretId,
-            @Value("${COS_SECRET_KEY}") String secretKey,
-            @Value("${COS_SESSION_TOKEN:}") String sessionToken) {
+            @Value("${portfolio.storage.cos.region}") String region,
+            @Value("${portfolio.storage.cos.bucket}") String bucket,
+            @Value("${portfolio.storage.cos.secret-id}") String secretId,
+            @Value("${portfolio.storage.cos.secret-key}") String secretKey,
+            @Value("${portfolio.storage.cos.session-token:}") String sessionToken) {
         return new TencentCosProperties(region, bucket, secretId, secretKey, sessionToken);
     }
 

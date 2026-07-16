@@ -1327,10 +1327,10 @@ class TencentCosStorageServiceTest {
                         "spring.profiles.active=prod",
                         "portfolio.storage.local.root=" + localRoot,
                         "portfolio.storage.default-provider=TENCENT_COS",
-                        "COS_REGION=ap-guangzhou",
-                        "COS_BUCKET=portfolio-1234567890",
-                        "COS_SECRET_ID=secret-id",
-                        "COS_SECRET_KEY=secret-key")
+                        "portfolio.storage.cos.region=ap-guangzhou",
+                        "portfolio.storage.cos.bucket=portfolio-1234567890",
+                        "portfolio.storage.cos.secret-id=secret-id",
+                        "portfolio.storage.cos.secret-key=secret-key")
                 .run(context -> assertThat(context).hasFailed());
 
         assertThat(adapterCreations).hasValue(0);
@@ -1392,11 +1392,11 @@ class TencentCosStorageServiceTest {
                             "portfolio.storage.cos.staging-root="
                                     + localRoot.resolveSibling("cos-scratch"),
                             "portfolio.storage.default-provider=TENCENT_COS",
-                            "COS_REGION=ap-guangzhou",
-                            "COS_BUCKET=portfolio-1234567890",
-                            "COS_SECRET_ID=secret-id",
-                            "COS_SECRET_KEY=secret-key",
-                            "COS_SESSION_TOKEN=" + sessionToken)
+                            "portfolio.storage.cos.region=ap-guangzhou",
+                            "portfolio.storage.cos.bucket=portfolio-1234567890",
+                            "portfolio.storage.cos.secret-id=secret-id",
+                            "portfolio.storage.cos.secret-key=secret-key",
+                            "portfolio.storage.cos.session-token=" + sessionToken)
                     .run(context -> {
                         assertThat(context).hasNotFailed();
                         assertThat(context).hasSingleBean(LocalStorageService.class);
@@ -1464,11 +1464,11 @@ class TencentCosStorageServiceTest {
         assertThat(adapterCreations).hasValue(0);
 
         base.withPropertyValues(
-                        "COS_REGION=INVALID-region-marker",
-                        "COS_BUCKET=portfolio-1234567890",
-                        "COS_SECRET_ID=secret-id-marker",
-                        "COS_SECRET_KEY=secret-key-marker",
-                        "COS_SESSION_TOKEN=session-token-marker")
+                        "portfolio.storage.cos.region=INVALID-region-marker",
+                        "portfolio.storage.cos.bucket=portfolio-1234567890",
+                        "portfolio.storage.cos.secret-id=secret-id-marker",
+                        "portfolio.storage.cos.secret-key=secret-key-marker",
+                        "portfolio.storage.cos.session-token=session-token-marker")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(failureMessages(context.getStartupFailure()))
@@ -1481,10 +1481,10 @@ class TencentCosStorageServiceTest {
         assertThat(adapterCreations).hasValue(0);
 
         base.withPropertyValues(
-                        "COS_REGION=ap-guangzhou",
-                        "COS_BUCKET=portfolio-1234567890",
-                        "COS_SECRET_ID= ",
-                        "COS_SECRET_KEY=secret-key-marker")
+                        "portfolio.storage.cos.region=ap-guangzhou",
+                        "portfolio.storage.cos.bucket=portfolio-1234567890",
+                        "portfolio.storage.cos.secret-id= ",
+                        "portfolio.storage.cos.secret-key=secret-key-marker")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(failureMessages(context.getStartupFailure()))
@@ -1525,10 +1525,10 @@ class TencentCosStorageServiceTest {
                             "portfolio.storage.cos.staging-root="
                                     + localRoot.resolveSibling("cos-scratch"),
                             "portfolio.storage.default-provider=TENCENT_COS",
-                            "COS_REGION=ap-guangzhou",
-                            "COS_BUCKET=portfolio-1234567890",
-                            "COS_SECRET_ID=secret-id",
-                            "COS_SECRET_KEY=secret-key")
+                            "portfolio.storage.cos.region=ap-guangzhou",
+                            "portfolio.storage.cos.bucket=portfolio-1234567890",
+                            "portfolio.storage.cos.secret-id=secret-id",
+                            "portfolio.storage.cos.secret-key=secret-key")
                     .run(context -> assertThat(context).hasNotFailed());
             assertConfiguredLevels(loggingSystem, LogLevel.OFF);
         } finally {
@@ -1572,10 +1572,10 @@ class TencentCosStorageServiceTest {
                             "portfolio.storage.local.root=" + localRoot,
                             "portfolio.storage.cos.staging-root=" + invalidStagingRoot,
                             "portfolio.storage.default-provider=TENCENT_COS",
-                            "COS_REGION=ap-guangzhou",
-                            "COS_BUCKET=portfolio-1234567890",
-                            "COS_SECRET_ID=secret-id",
-                            "COS_SECRET_KEY=secret-key")
+                            "portfolio.storage.cos.region=ap-guangzhou",
+                            "portfolio.storage.cos.bucket=portfolio-1234567890",
+                            "portfolio.storage.cos.secret-id=secret-id",
+                            "portfolio.storage.cos.secret-key=secret-key")
                     .run(context -> {
                         assertThat(context).hasFailed();
                         assertThat(failureMessages(context.getStartupFailure()))
@@ -1905,10 +1905,10 @@ class TencentCosStorageServiceTest {
                         "portfolio.storage.cos.staging-root="
                                 + localRoot.resolveSibling("cos-scratch"),
                         "portfolio.storage.default-provider=TENCENT_COS",
-                        "COS_REGION=ap-guangzhou",
-                        "COS_BUCKET=portfolio-1234567890",
-                        "COS_SECRET_ID=secret-id",
-                        "COS_SECRET_KEY=secret-key");
+                        "portfolio.storage.cos.region=ap-guangzhou",
+                        "portfolio.storage.cos.bucket=portfolio-1234567890",
+                        "portfolio.storage.cos.secret-id=secret-id",
+                        "portfolio.storage.cos.secret-key=secret-key");
     }
 
     private TencentCosStorageService service(FakeCosClient client, Clock clock) {

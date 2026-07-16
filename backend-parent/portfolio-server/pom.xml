@@ -55,7 +55,7 @@
           <execution>
             <id>default-test</id>
             <configuration>
-              <excludedGroups>integration</excludedGroups>
+              <excludedGroups>integration,cos-live</excludedGroups>
             </configuration>
           </execution>
           <execution>
@@ -64,6 +64,7 @@
             <goals><goal>test</goal></goals>
             <configuration>
               <groups>integration</groups>
+              <excludedGroups>cos-live</excludedGroups>
               <systemPropertyVariables>
                 <portfolio.storage.local.root>${user.home}/.portfolio-test/portfolio-server/${maven.build.timestamp}/fork-${surefire.forkNumber}/media</portfolio.storage.local.root>
               </systemPropertyVariables>
@@ -73,4 +74,36 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>cos-live-tests</id>
+      <activation>
+        <property>
+          <name>groups</name>
+          <value>cos-live</value>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>default-test</id>
+                <configuration>
+                  <excludedGroups>integration</excludedGroups>
+                </configuration>
+              </execution>
+              <execution>
+                <id>integration-tests</id>
+                <phase>none</phase>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

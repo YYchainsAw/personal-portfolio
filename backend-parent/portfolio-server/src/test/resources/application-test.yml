@@ -1,0 +1,14 @@
+portfolio:
+  release-id: test
+  jobs:
+    worker-enabled: false
+  storage:
+    default-provider: LOCAL
+    local:
+      root: ${PORTFOLIO_LOCAL_STORAGE:../runtime/test-media}
+  media:
+    staging-cleanup:
+      enabled: false
+    cleanup:
+      enabled: false
+      cooling-period: 30d
