@@ -1,9 +1,7 @@
 package xyz.yychainsaw.portfolio.media.storage;
 
 import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
-import static java.nio.file.StandardOpenOption.CREATE_NEW;
 import static java.nio.file.StandardOpenOption.READ;
-import static java.nio.file.StandardOpenOption.WRITE;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -12,56 +10,43 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
-import java.nio.file.AccessDeniedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
-import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileAttribute;
-import java.nio.file.attribute.FileTime;
-import java.nio.file.attribute.PosixFileAttributeView;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.http.MediaType;
-import org.springframework.http.MediaTypeFactory;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 
-public final class LocalStorageService implements StorageService {
-    private static final long MAX_CONTENT_LENGTH = 5L * 1024 * 1024 * 1024;
+public final class LocalStorageService implements StorageService, AutoCloseable {
     private static final int COPY_BUFFER_SIZE = 64 * 1024;
-    private static final String OCTET_STREAM = MediaType.APPLICATION_OCTET_STREAM_VALUE;
     private static final String OBJECT_EXISTS = "STORAGE_OBJECT_ALREADY_EXISTS";
     private static final String UNSAFE_PATH = "LOCAL_UNSAFE_PATH";
     private static final String LENGTH_MISMATCH = "LOCAL_CONTENT_LENGTH_MISMATCH";
-    private static final Set<PosixFilePermission> DIRECTORY_PERMISSIONS =
-            PosixFilePermissions.fromString("rwx------");
-    private static final Set<PosixFilePermission> FILE_PERMISSIONS =
-            PosixFilePermissions.fromString("rw-------");
-
     private final Path root;
-    private final Object rootIdentity;
-    private final FileTime rootCreationTime;
-    private final boolean posixAttributes;
+    private final LocalStorageAccessPolicy accessPolicy;
+    private final OperationObserver observer;
 
     public LocalStorageService(LocalStorageProperties properties) {
+        this(properties, OperationObserver.NOOP);
+    }
+
+    LocalStorageService(LocalStorageProperties properties, OperationObserver observer) {
         if (properties == null) {
             throw new IllegalArgumentException("Local storage properties are required");
         }
+        if (observer == null) {
+            throw new IllegalArgumentException("Local storage operation observer is required");
+        }
+        this.observer = observer;
         this.root = properties.root().toAbsolutePath().normalize();
-        RootState state = initializeRoot();
-        this.rootIdentity = state.identity();
-        this.rootCreationTime = state.creationTime();
-        this.posixAttributes = state.posixAttributes();
+        this.accessPolicy = LocalStorageAccessPolicy.initialize(root);
     }
 
     @Override
@@ -70,20 +55,35 @@ public final class LocalStorageService implements StorageService {
     }
 
     @Override
+    public void close() throws IOException {
+        accessPolicy.close();
+    }
+
+    @Override
     public StoredObject put(
             String objectKey, InputStream input, long contentLength, String contentType) {
         if (input == null) {
             throw new IllegalArgumentException("Storage input is required");
         }
-        try (input) {
-            ObjectKey key = ObjectKey.parse(objectKey);
-            validateLength(contentLength);
-            String normalizedContentType = validateContentType(contentType);
-            return publish(key, input, contentLength, normalizedContentType, "LOCAL_WRITE_FAILED");
+        LocalPublication publication = null;
+        try {
+            try (input) {
+                ObjectKey key = ObjectKey.parse(objectKey);
+                StorageObjectContract.validateContentLength(contentLength);
+                String normalizedContentType =
+                        StorageObjectContract.normalizeContentType(key, contentType);
+                publication = prepare(
+                        key, input, contentLength, normalizedContentType, "LOCAL_WRITE_FAILED");
+            }
+            return publish(publication);
         } catch (IllegalArgumentException | StorageException exception) {
             throw exception;
         } catch (IOException exception) {
             throw new StorageException("LOCAL_WRITE_FAILED", exception);
+        } finally {
+            if (publication != null) {
+                publication.cleanupFailure();
+            }
         }
     }
 
@@ -122,7 +122,7 @@ public final class LocalStorageService implements StorageService {
                     totalLength,
                     requestedRange,
                     responseLength,
-                    contentType(target),
+                    StorageObjectContract.contentType(key),
                     etag);
         } catch (IllegalArgumentException
                 | StorageException
@@ -173,7 +173,12 @@ public final class LocalStorageService implements StorageService {
     public void copy(String sourceKey, String targetKey) {
         ObjectKey source = ObjectKey.parse(sourceKey);
         ObjectKey target = ObjectKey.parse(targetKey);
+        String sourceContentType = StorageObjectContract.contentType(source);
+        if (!sourceContentType.equals(StorageObjectContract.contentType(target))) {
+            throw new IllegalArgumentException("Invalid storage content type");
+        }
         SeekableByteChannel channel = null;
+        LocalPublication publication = null;
         try {
             Path sourcePath = resolveTarget(source, false);
             BasicFileAttributes before = requireRegularFile(sourcePath);
@@ -185,10 +190,13 @@ public final class LocalStorageService implements StorageService {
                 throw unsafePath();
             }
             InputStream input = Channels.newInputStream(channel);
-            channel = null;
             try (input) {
-                publish(target, input, contentLength, contentType(sourcePath), "LOCAL_COPY_FAILED");
+                publication = prepare(
+                        target, input, contentLength, sourceContentType, "LOCAL_COPY_FAILED");
             }
+            observer.copySourceClosed(channel, publication.target());
+            channel = null;
+            publish(publication);
         } catch (StorageException exception) {
             if (OBJECT_EXISTS.equals(exception.code()) || UNSAFE_PATH.equals(exception.code())) {
                 throw exception;
@@ -198,6 +206,9 @@ public final class LocalStorageService implements StorageService {
             throw new StorageException("LOCAL_COPY_FAILED", exception);
         } finally {
             closeQuietly(channel);
+            if (publication != null) {
+                publication.cleanupFailure();
+            }
         }
     }
 
@@ -219,7 +230,7 @@ public final class LocalStorageService implements StorageService {
             BasicFileAttributes immediatelyBeforeDelete = requireRegularFile(target);
             requireSameIdentity(attributes, immediatelyBeforeDelete);
             Files.delete(target);
-            syncDirectory(target.getParent());
+            accessPolicy.syncDirectory(target.getParent());
         } catch (NoSuchFileException exception) {
             // Idempotent deletion: an object or safe ancestor disappeared before deletion.
         } catch (StorageException exception) {
@@ -229,7 +240,7 @@ public final class LocalStorageService implements StorageService {
         }
     }
 
-    private StoredObject publish(
+    private LocalPublication prepare(
             ObjectKey key,
             InputStream input,
             long contentLength,
@@ -239,13 +250,16 @@ public final class LocalStorageService implements StorageService {
         rejectExistingTarget(target);
         Path temporary = target.resolveSibling(
                 target.getFileName() + "." + UUID.randomUUID() + ".part");
-        boolean temporaryCreated = false;
+        LocalFileIdentity identity = null;
+        BasicFileAttributes initialIdentity = null;
+        boolean prepared = false;
         try {
             MessageDigest messageDigest = sha256();
-            BasicFileAttributes initialIdentity;
             try (FileChannel output = createTemporaryFile(temporary)) {
-                temporaryCreated = true;
                 initialIdentity = requireRegularFile(temporary);
+                Object fileKey = observer.publicationFileKey(temporary, initialIdentity);
+                identity = LocalFileIdentity.capture(
+                        temporary, fileKey, observer::createPublicationIdentityGuard);
                 copyExactly(input, output, messageDigest, contentLength);
                 output.force(true);
                 if (output.size() != contentLength) {
@@ -258,86 +272,73 @@ public final class LocalStorageService implements StorageService {
                 throw new StorageException(LENGTH_MISMATCH);
             }
             verifyFilePermissions(temporary);
+            observer.temporaryReady(temporary, target);
+            identity.require(temporary);
 
-            Path checkedTarget = resolveTarget(key, false);
-            if (!checkedTarget.equals(target)) {
-                throw unsafePath();
-            }
-            rejectExistingTarget(target);
-            try {
-                Files.createLink(target, temporary);
-            } catch (FileAlreadyExistsException exception) {
-                throw new StorageException(OBJECT_EXISTS, exception);
-            }
-            BasicFileAttributes publishedIdentity = requireRegularFile(target);
-            requireSameIdentity(completedIdentity, publishedIdentity);
-            if (!Files.isSameFile(temporary, target)) {
-                throw unsafePath();
-            }
-            verifyFilePermissions(target);
-            Files.delete(temporary);
-            temporaryCreated = false;
-            syncDirectory(target.getParent());
-
-            return new StoredObject(
-                    StorageProvider.LOCAL,
-                    null,
-                    null,
-                    key.value(),
+            LocalPublication publication = new LocalPublication(
+                    key,
+                    target,
+                    temporary,
+                    identity,
                     contentLength,
                     contentType,
-                    HexFormat.of().formatHex(messageDigest.digest()));
+                    HexFormat.of().formatHex(messageDigest.digest()),
+                    failureCode);
+            prepared = true;
+            return publication;
         } catch (StorageException exception) {
             throw exception;
         } catch (IOException exception) {
             throw new StorageException(failureCode, exception);
         } finally {
-            if (temporaryCreated) {
-                try {
-                    Files.deleteIfExists(temporary);
-                } catch (IOException ignored) {
-                    // The primary fixed error is retained; normal filesystems remove this alias.
+            if (!prepared) {
+                if (identity != null) {
+                    identity.cleanupCreatedName(temporary);
+                } else {
+                    cleanupUnpublishedCreation(temporary, initialIdentity);
                 }
             }
         }
     }
 
-    private RootState initializeRoot() {
+    private StoredObject publish(LocalPublication publication) throws IOException {
         try {
-            if (Files.exists(root, NOFOLLOW_LINKS)) {
-                BasicFileAttributes attributes = readAttributes(root);
-                if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
-                    throw unsafePath();
-                }
-            } else {
-                createRootDirectories();
-            }
-            BasicFileAttributes attributes = readAttributes(root);
-            if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
+            Path checkedTarget = resolveTarget(publication.key(), false);
+            if (!checkedTarget.equals(publication.target())) {
                 throw unsafePath();
             }
-            boolean supportsPosix = Files.getFileStore(root)
-                    .supportsFileAttributeView(PosixFileAttributeView.class);
-            if (supportsPosix) {
-                setPermissions(root, DIRECTORY_PERMISSIONS);
-                if (!Files.getPosixFilePermissions(root, NOFOLLOW_LINKS)
-                        .equals(DIRECTORY_PERMISSIONS)) {
-                    throw unsafePath();
-                }
+            publication.identity().require(publication.temporary());
+            rejectExistingTarget(publication.target());
+            try {
+                Files.createLink(publication.target(), publication.temporary());
+            } catch (FileAlreadyExistsException exception) {
+                throw new StorageException(OBJECT_EXISTS, exception);
             }
-            return new RootState(attributes.fileKey(), attributes.creationTime(), supportsPosix);
+            publication.markTargetLinked();
+            observer.targetLinked(publication.temporary(), publication.target());
+            publication.identity().require(publication.target());
+            if (!Files.isSameFile(publication.temporary(), publication.target())) {
+                throw unsafePath();
+            }
+            verifyFilePermissions(publication.target());
+            publication.deleteTemporaryAfterValidation();
+            observer.beforePublicationCommit(publication.target());
+            accessPolicy.syncDirectory(publication.target().getParent());
+            publication.markCompleted();
+            publication.finishIdentityGuard();
+
+            return new StoredObject(
+                    StorageProvider.LOCAL,
+                    null,
+                    null,
+                    publication.key().value(),
+                    publication.contentLength(),
+                    publication.contentType(),
+                    publication.etag());
         } catch (StorageException exception) {
             throw exception;
         } catch (IOException exception) {
-            throw new StorageException("LOCAL_INITIALIZATION_FAILED", exception);
-        }
-    }
-
-    private void createRootDirectories() throws IOException {
-        try {
-            Files.createDirectories(root, PosixFilePermissions.asFileAttribute(DIRECTORY_PERMISSIONS));
-        } catch (UnsupportedOperationException exception) {
-            Files.createDirectories(root);
+            throw new StorageException(publication.failureCode(), exception);
         }
     }
 
@@ -360,13 +361,7 @@ public final class LocalStorageService implements StorageService {
             if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
                 throw unsafePath();
             }
-            if (posixAttributes) {
-                setPermissions(descendant, DIRECTORY_PERMISSIONS);
-                if (!Files.getPosixFilePermissions(descendant, NOFOLLOW_LINKS)
-                        .equals(DIRECTORY_PERMISSIONS)) {
-                    throw unsafePath();
-                }
-            }
+            accessPolicy.secureDirectory(descendant);
             parent = descendant;
         }
         verifyRootIdentity();
@@ -374,33 +369,11 @@ public final class LocalStorageService implements StorageService {
     }
 
     private void createDirectory(Path directory) throws IOException {
-        try {
-            if (posixAttributes) {
-                Files.createDirectory(
-                        directory, PosixFilePermissions.asFileAttribute(DIRECTORY_PERMISSIONS));
-            } else {
-                Files.createDirectory(directory);
-            }
-            syncDirectory(directory.getParent());
-        } catch (FileAlreadyExistsException exception) {
-            BasicFileAttributes attributes = readAttributes(directory);
-            if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
-                throw unsafePath();
-            }
-        }
+        accessPolicy.createDirectory(directory);
     }
 
     private FileChannel createTemporaryFile(Path temporary) throws IOException {
-        Set<OpenOption> options = Set.of(CREATE_NEW, WRITE, NOFOLLOW_LINKS);
-        FileChannel channel;
-        if (posixAttributes) {
-            FileAttribute<Set<PosixFilePermission>> permissions =
-                    PosixFilePermissions.asFileAttribute(FILE_PERMISSIONS);
-            channel = FileChannel.open(temporary, options, permissions);
-        } else {
-            channel = FileChannel.open(temporary, options);
-        }
-        return channel;
+        return accessPolicy.createFile(temporary);
     }
 
     private void copyExactly(
@@ -473,21 +446,7 @@ public final class LocalStorageService implements StorageService {
     }
 
     private void verifyRootIdentity() throws IOException {
-        BasicFileAttributes attributes;
-        try {
-            attributes = readAttributes(root);
-        } catch (NoSuchFileException exception) {
-            throw unsafePath();
-        }
-        if (!attributes.isDirectory() || attributes.isSymbolicLink()) {
-            throw unsafePath();
-        }
-        if (rootIdentity != null && !rootIdentity.equals(attributes.fileKey())) {
-            throw unsafePath();
-        }
-        if (rootIdentity == null && !rootCreationTime.equals(attributes.creationTime())) {
-            throw unsafePath();
-        }
+        accessPolicy.verifyRoot();
     }
 
     private static BasicFileAttributes requireRegularFile(Path path) throws IOException {
@@ -510,29 +469,11 @@ public final class LocalStorageService implements StorageService {
             if (!java.util.Objects.equals(expectedKey, actualKey)) {
                 throw unsafePath();
             }
-        } else if (!expected.creationTime().equals(actual.creationTime())) {
-            throw unsafePath();
         }
     }
 
     private void verifyFilePermissions(Path path) throws IOException {
-        if (!posixAttributes) {
-            return;
-        }
-        setPermissions(path, FILE_PERMISSIONS);
-        if (!Files.getPosixFilePermissions(path, NOFOLLOW_LINKS).equals(FILE_PERMISSIONS)) {
-            throw unsafePath();
-        }
-    }
-
-    private static void setPermissions(Path path, Set<PosixFilePermission> permissions)
-            throws IOException {
-        PosixFileAttributeView view = Files.getFileAttributeView(
-                path, PosixFileAttributeView.class, NOFOLLOW_LINKS);
-        if (view == null) {
-            throw unsafePath();
-        }
-        view.setPermissions(permissions);
+        accessPolicy.secureFile(path);
     }
 
     private static SeekableByteChannel openReadChannel(Path path) throws IOException {
@@ -543,35 +484,7 @@ public final class LocalStorageService implements StorageService {
         if (totalLength <= 0) {
             throw unsafePath();
         }
-        if (range.isEmpty()) {
-            return;
-        }
-        ByteRange requested = range.orElseThrow();
-        if (requested.startInclusive() >= totalLength || requested.endInclusive() >= totalLength) {
-            throw new StorageRangeNotSatisfiableException(totalLength);
-        }
-    }
-
-    private static void validateLength(long contentLength) {
-        if (contentLength <= 0 || contentLength > MAX_CONTENT_LENGTH) {
-            throw new IllegalArgumentException("Invalid storage content length");
-        }
-    }
-
-    private static String validateContentType(String contentType) {
-        if (contentType == null
-                || contentType.isBlank()
-                || contentType.indexOf('\r') >= 0
-                || contentType.indexOf('\n') >= 0) {
-            throw new IllegalArgumentException("Invalid storage content type");
-        }
-        return contentType.trim();
-    }
-
-    private static String contentType(Path path) {
-        return MediaTypeFactory.getMediaType(path.getFileName().toString())
-                .map(MediaType::toString)
-                .orElse(OCTET_STREAM);
+        StorageObjectContract.validateRange(range, totalLength);
     }
 
     private static MessageDigest sha256() {
@@ -586,14 +499,6 @@ public final class LocalStorageService implements StorageService {
         return new StorageException(UNSAFE_PATH);
     }
 
-    private static void syncDirectory(Path directory) throws IOException {
-        try (FileChannel channel = FileChannel.open(directory, READ)) {
-            channel.force(true);
-        } catch (AccessDeniedException | UnsupportedOperationException exception) {
-            // Directory fsync is unavailable on some providers, including standard Windows NTFS.
-        }
-    }
-
     private static void closeQuietly(SeekableByteChannel channel) {
         if (channel == null) {
             return;
@@ -605,5 +510,39 @@ public final class LocalStorageService implements StorageService {
         }
     }
 
-    private record RootState(Object identity, FileTime creationTime, boolean posixAttributes) {}
+    private static void cleanupUnpublishedCreation(
+            Path temporary, BasicFileAttributes initialIdentity) {
+        if (initialIdentity == null) {
+            return;
+        }
+        try {
+            BasicFileAttributes currentIdentity = requireRegularFile(temporary);
+            requireSameIdentity(initialIdentity, currentIdentity);
+            Files.deleteIfExists(temporary);
+        } catch (IOException | StorageException ignored) {
+            // The secure parent excludes untrusted replacement; preserve any unverified name.
+        }
+    }
+
+    interface OperationObserver {
+        OperationObserver NOOP = new OperationObserver() {};
+
+        default void temporaryReady(Path temporary, Path target) throws IOException {}
+
+        default void targetLinked(Path temporary, Path target) throws IOException {}
+
+        default void copySourceClosed(SeekableByteChannel source, Path target) throws IOException {}
+
+        default Object publicationFileKey(Path path, BasicFileAttributes attributes)
+                throws IOException {
+            return attributes.fileKey();
+        }
+
+        default void createPublicationIdentityGuard(Path guard, Path source) throws IOException {
+            Files.createLink(guard, source);
+        }
+
+        default void beforePublicationCommit(Path target) throws IOException {}
+    }
+
 }

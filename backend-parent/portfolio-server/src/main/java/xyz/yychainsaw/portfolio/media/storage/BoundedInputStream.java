@@ -67,6 +67,11 @@ public final class BoundedInputStream extends FilterInputStream {
         while (skipped < target) {
             int count = read(buffer, 0, (int) Math.min(buffer.length, target - skipped));
             if (count == 0) {
+                int value = read();
+                if (value < 0) {
+                    break;
+                }
+                skipped++;
                 continue;
             }
             skipped += count;

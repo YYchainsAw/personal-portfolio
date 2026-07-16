@@ -10,6 +10,14 @@ public record LocalStorageProperties(Path root) {
     public LocalStorageProperties {
         if (root == null) {
             root = DEFAULT_ROOT;
+        } else {
+            Path normalized = root.normalize();
+            Path absolute = normalized.toAbsolutePath().normalize();
+            if (root.toString().isBlank()
+                    || normalized.toString().isBlank()
+                    || absolute.equals(absolute.getRoot())) {
+                throw new IllegalArgumentException("Invalid local storage root");
+            }
         }
     }
 }

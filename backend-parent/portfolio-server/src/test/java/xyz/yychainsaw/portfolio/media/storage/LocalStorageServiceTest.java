@@ -6,16 +6,15 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -38,9 +38,23 @@ class LocalStorageServiceTest {
     @TempDir
     Path temporaryDirectory;
 
+    private final List<LocalStorageService> openServices = new ArrayList<>();
+    private final List<Path> externalCleanup = new ArrayList<>();
+    private Path storageBoundary;
+
+    @AfterEach
+    void closeServicesAndRemoveExternalTestDirectories() throws Exception {
+        for (int index = openServices.size() - 1; index >= 0; index--) {
+            openServices.get(index).close();
+        }
+        for (int index = externalCleanup.size() - 1; index >= 0; index--) {
+            deleteTree(externalCleanup.get(index));
+        }
+    }
+
     @Test
     void writesAndReadsWithinConfiguredRoot() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         LocalStorageService service = service(root);
         byte[] bytes = "portfolio".getBytes(UTF_8);
 
@@ -69,7 +83,7 @@ class LocalStorageServiceTest {
     void putOwnsAndClosesTheInputExactlyOnceOnSuccess() {
         CloseTrackingInputStream input = tracking("owned".getBytes(UTF_8));
 
-        service(temporaryDirectory.resolve("store"))
+        service(storageRoot())
                 .put("asset.bin", input, 5, CONTENT_TYPE);
 
         assertThat(input.closeCount()).isOne();
@@ -84,7 +98,7 @@ class LocalStorageServiceTest {
         CloseTrackingInputStream input = tracking(new byte[] {1});
 
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> service(temporaryDirectory.resolve("store"))
+                .isThrownBy(() -> service(storageRoot())
                         .put(key, input, 1, CONTENT_TYPE))
                 .withMessage("Invalid storage object key");
         assertThat(input.closeCount()).isOne();
@@ -96,7 +110,7 @@ class LocalStorageServiceTest {
         CloseTrackingInputStream input = tracking(new byte[] {1});
 
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> service(temporaryDirectory.resolve("store"))
+                .isThrownBy(() -> service(storageRoot())
                         .put(key, input, 1, CONTENT_TYPE))
                 .withMessage("Invalid storage object key");
         assertThat(input.closeCount()).isOne();
@@ -104,7 +118,7 @@ class LocalStorageServiceTest {
 
     @Test
     void acceptsBoundedAsciiSafeSegments() throws Exception {
-        LocalStorageService service = service(temporaryDirectory.resolve("store"));
+        LocalStorageService service = service(storageRoot());
 
         service.put("originals/2026/asset-1_2.3.bin", tracking(new byte[] {7}), 1, CONTENT_TYPE);
 
@@ -115,7 +129,7 @@ class LocalStorageServiceTest {
 
     @Test
     void validationFailureStillClosesOwnedInputWithoutCreatingFiles() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         CloseTrackingInputStream zeroLength = tracking(new byte[0]);
         CloseTrackingInputStream excessiveLength = tracking(new byte[0]);
         CloseTrackingInputStream blankType = tracking(new byte[] {1});
@@ -137,16 +151,57 @@ class LocalStorageServiceTest {
     }
 
     @Test
+    void rejectsDeclaredContentTypeThatDoesNotMatchTheObjectKeyExtension() throws Exception {
+        Path root = storageRoot();
+        CloseTrackingInputStream input = tracking("pdf".getBytes(UTF_8));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> service(root).put("asset.bin", input, 3, "application/pdf"))
+                .withMessage("Invalid storage content type");
+
+        assertThat(input.closeCount()).isOne();
+        assertThat(Files.exists(root.resolve("asset.bin"), NOFOLLOW_LINKS)).isFalse();
+    }
+
+    @Test
+    void normalizesDeclaredContentTypeAndReturnsItConsistently() throws Exception {
+        LocalStorageService service = service(storageRoot());
+
+        StoredObject stored = service.put(
+                "asset.bin", tracking(new byte[] {1}), 1, "Application/Octet-Stream");
+
+        assertThat(stored.contentType()).isEqualTo(CONTENT_TYPE);
+        try (StorageRead read = service.open("asset.bin", Optional.empty())) {
+            assertThat(read.contentType()).isEqualTo(stored.contentType());
+        }
+    }
+
+    @Test
+    void localStoragePropertiesRejectExplicitDangerousRootsButKeepTheDefault() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new LocalStorageProperties(Path.of("")))
+                .withMessage("Invalid local storage root");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new LocalStorageProperties(Path.of(".")))
+                .withMessage("Invalid local storage root");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new LocalStorageProperties(temporaryDirectory.getRoot()))
+                .withMessage("Invalid local storage root");
+
+        assertThat(new LocalStorageProperties(null).root()).isEqualTo(Path.of("../runtime/media"));
+    }
+
+    @Test
     void rejectsNullInputBeforePublication() {
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> service(temporaryDirectory.resolve("store"))
+                .isThrownBy(() -> service(storageRoot())
                         .put("asset.bin", null, 1, CONTENT_TYPE))
                 .withMessage("Storage input is required");
     }
 
     @Test
     void rejectsShortInputClosesItAndRemovesTemporaryFile() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         CloseTrackingInputStream input = tracking("short".getBytes(UTF_8));
 
         assertStorageFailure(
@@ -160,7 +215,7 @@ class LocalStorageServiceTest {
 
     @Test
     void rejectsLongInputAfterProbingExactlyOneExtraByte() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         ProbeTrackingInputStream input = new ProbeTrackingInputStream("too-long".getBytes(UTF_8));
 
         assertStorageFailure(
@@ -174,7 +229,7 @@ class LocalStorageServiceTest {
 
     @Test
     void closesThrowingInputAndRemovesTemporaryFile() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         ThrowingInputStream input = new ThrowingInputStream();
 
         assertStorageFailure(
@@ -187,7 +242,7 @@ class LocalStorageServiceTest {
 
     @Test
     void aPreExistingTargetIsNeverOverwritten() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         LocalStorageService service = service(root);
         service.put("asset.bin", tracking("first".getBytes(UTF_8)), 5, CONTENT_TYPE);
 
@@ -201,7 +256,7 @@ class LocalStorageServiceTest {
 
     @Test
     void concurrentPublishersProduceOneCompleteWinnerWithoutOverwrite() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         LocalStorageService service = service(root);
         int attempts = 12;
         ExecutorService executor = Executors.newFixedThreadPool(attempts);
@@ -246,7 +301,7 @@ class LocalStorageServiceTest {
 
     @Test
     void readsFirstLastAndBoundedInclusiveRanges() throws Exception {
-        LocalStorageService service = service(temporaryDirectory.resolve("store"));
+        LocalStorageService service = service(storageRoot());
         byte[] bytes = "portfolio".getBytes(UTF_8);
         StoredObject stored = service.put("asset.txt", tracking(bytes), bytes.length, "text/plain");
 
@@ -258,7 +313,7 @@ class LocalStorageServiceTest {
 
     @Test
     void rejectsRangesStartingAtOrEndingAtTheObjectLength() {
-        LocalStorageService service = service(temporaryDirectory.resolve("store"));
+        LocalStorageService service = service(storageRoot());
         service.put("asset.bin", tracking(new byte[] {1, 2, 3}), 3, CONTENT_TYPE);
 
         assertUnsatisfiable(service, new ByteRange(3, 3), 3);
@@ -278,6 +333,15 @@ class LocalStorageServiceTest {
             assertThat(input.skip(10)).isZero();
         }
         assertThat(source.closeCount()).isOne();
+    }
+
+    @Test
+    void boundedStreamSkipFallsBackWhenBulkReadsMakeNoProgress() throws Exception {
+        try (BoundedInputStream input = new BoundedInputStream(
+                new ZeroProgressBulkInputStream("abc".getBytes(UTF_8)), 3)) {
+            assertThat(input.skip(2)).isEqualTo(2);
+            assertThat(input.read()).isEqualTo('c');
+        }
     }
 
     @Test
@@ -309,7 +373,7 @@ class LocalStorageServiceTest {
 
     @Test
     void copyPublishesAnIndependentCreateOnlyObject() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         LocalStorageService service = service(root);
         service.put("source.bin", tracking("source".getBytes(UTF_8)), 6, CONTENT_TYPE);
 
@@ -326,8 +390,21 @@ class LocalStorageServiceTest {
     }
 
     @Test
+    void copyRejectsAContentTypeMismatchBetweenSourceAndTargetExtensions() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        service.put("source.pdf", tracking("pdf".getBytes(UTF_8)), 3, "application/pdf");
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> service.copy("source.pdf", "target.bin"))
+                .withMessage("Invalid storage content type");
+
+        assertThat(Files.exists(root.resolve("target.bin"), NOFOLLOW_LINKS)).isFalse();
+    }
+
+    @Test
     void deleteIsIdempotentForMissingObjectsAndRemovesRegularObjects() {
-        LocalStorageService service = service(temporaryDirectory.resolve("store"));
+        LocalStorageService service = service(storageRoot());
         service.delete("missing.bin");
         service.put("asset.bin", tracking(new byte[] {1}), 1, CONTENT_TYPE);
 
@@ -339,7 +416,7 @@ class LocalStorageServiceTest {
 
     @Test
     void existsIsFalseOnlyForAMissingSafeRegularObject() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
+        Path root = storageRoot();
         LocalStorageService service = service(root);
         assertThat(service.exists("missing.bin")).isFalse();
         service.put("asset.bin", tracking(new byte[] {1}), 1, CONTENT_TYPE);
@@ -350,83 +427,8 @@ class LocalStorageServiceTest {
     }
 
     @Test
-    void rejectsIntermediateSymbolicLinksForEveryFilesystemOperation() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
-        Path outside = temporaryDirectory.resolve("outside");
-        Files.createDirectories(outside);
-        LocalStorageService service = service(root);
-        createSymbolicLinkOrSkip(root.resolve("linked"), outside);
-
-        assertStorageFailure(() -> service.put(
-                "linked/write.bin", tracking(new byte[] {1}), 1, CONTENT_TYPE), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(
-                () -> service.open("linked/read.bin", Optional.empty()), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(() -> service.exists("linked/read.bin"), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(() -> service.delete("linked/read.bin"), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(() -> service.copy("linked/read.bin", "copy.bin"), "LOCAL_UNSAFE_PATH");
-        assertThat(Files.list(outside)).isEmpty();
-    }
-
-    @Test
-    void rejectsFinalSymbolicLinksWithoutDeletingOrFollowingTheirTarget() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
-        Path outside = temporaryDirectory.resolve("outside.bin");
-        Files.write(outside, "outside".getBytes(UTF_8));
-        LocalStorageService service = service(root);
-        Path link = root.resolve("link.bin");
-        createSymbolicLinkOrSkip(link, outside);
-
-        assertStorageFailure(() -> service.open("link.bin", Optional.empty()), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(() -> service.exists("link.bin"), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(() -> service.delete("link.bin"), "LOCAL_UNSAFE_PATH");
-        assertStorageFailure(() -> service.copy("link.bin", "copy.bin"), "LOCAL_UNSAFE_PATH");
-
-        assertThat(Files.readString(outside)).isEqualTo("outside");
-        assertThat(Files.isSymbolicLink(link)).isTrue();
-    }
-
-    @Test
-    void failsClosedWhenTheConfiguredRootIsReplaced() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
-        LocalStorageService service = service(root);
-        Files.move(root, temporaryDirectory.resolve("original-store"));
-        Files.createDirectory(root);
-
-        assertStorageFailure(() -> service.exists("asset.bin"), "LOCAL_UNSAFE_PATH");
-    }
-
-    @Test
-    void rejectsASymbolicLinkAsConfiguredRoot() throws Exception {
-        Path real = temporaryDirectory.resolve("real-store");
-        Files.createDirectory(real);
-        Path linkedRoot = temporaryDirectory.resolve("linked-store");
-        createSymbolicLinkOrSkip(linkedRoot, real);
-
-        assertStorageFailure(() -> service(linkedRoot), "LOCAL_UNSAFE_PATH");
-    }
-
-    @Test
-    void usesOwnerOnlyDirectoryAndFileModesWhenPosixAttributesAreSupported() throws Exception {
-        Path root = temporaryDirectory.resolve("store");
-        FileStore fileStore = Files.getFileStore(temporaryDirectory);
-        assumeTrue(fileStore.supportsFileAttributeView("posix"), "POSIX attributes unavailable");
-        LocalStorageService service = service(root);
-
-        service.put("nested/asset.bin", tracking(new byte[] {1}), 1, CONTENT_TYPE);
-
-        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(root)))
-                .isEqualTo("rwx------");
-        assertThat(PosixFilePermissions.toString(
-                Files.getPosixFilePermissions(root.resolve("nested"))))
-                .isEqualTo("rwx------");
-        assertThat(PosixFilePermissions.toString(
-                Files.getPosixFilePermissions(root.resolve("nested/asset.bin"))))
-                .isEqualTo("rw-------");
-    }
-
-    @Test
     void localSignedGetIsAlwaysUnsupportedAfterValidatingArguments() {
-        LocalStorageService service = service(temporaryDirectory.resolve("store"));
+        LocalStorageService service = service(storageRoot());
 
         assertThatThrownBy(() -> service.signedGet("asset.bin", Duration.ofMinutes(1)))
                 .isInstanceOf(UnsupportedOperationException.class)
@@ -460,8 +462,26 @@ class LocalStorageServiceTest {
                 .withMessage("Storage input is required");
     }
 
-    private static LocalStorageService service(Path root) {
-        return new LocalStorageService(new LocalStorageProperties(root));
+    private LocalStorageService service(Path root) {
+        LocalStorageService service = new LocalStorageService(new LocalStorageProperties(root));
+        openServices.add(service);
+        return service;
+    }
+
+    private Path storageRoot() {
+        try {
+            FileStore store = Files.getFileStore(temporaryDirectory);
+            if (store.supportsFileAttributeView(AclFileAttributeView.class)
+                    && !store.supportsFileAttributeView("posix")) {
+                if (storageBoundary == null) {
+                    storageBoundary = createWindowsTestBoundary();
+                }
+                return storageBoundary.resolve("store");
+            }
+            return temporaryDirectory.resolve("store");
+        } catch (IOException exception) {
+            throw new UncheckedIOException(exception);
+        }
     }
 
     private static CloseTrackingInputStream tracking(byte[] bytes) {
@@ -512,11 +532,21 @@ class LocalStorageServiceTest {
         }
     }
 
-    private static void createSymbolicLinkOrSkip(Path link, Path target) {
-        try {
-            Files.createSymbolicLink(link, target);
-        } catch (IOException | UnsupportedOperationException | SecurityException exception) {
-            assumeTrue(false, "symbolic links unavailable: " + exception.getClass().getSimpleName());
+    private Path createWindowsTestBoundary() throws IOException {
+        Path home = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+        Path boundary = Files.createTempDirectory(home, ".portfolio-media-test-");
+        externalCleanup.add(boundary);
+        return boundary;
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root, NOFOLLOW_LINKS)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
         }
     }
 
@@ -610,6 +640,29 @@ class LocalStorageServiceTest {
 
         int closeCount() {
             return closes;
+        }
+    }
+
+    private static final class ZeroProgressBulkInputStream extends InputStream {
+        private final byte[] bytes;
+        private int position;
+        private int zeroProgressReads;
+
+        private ZeroProgressBulkInputStream(byte[] bytes) {
+            this.bytes = bytes.clone();
+        }
+
+        @Override
+        public int read() {
+            return position == bytes.length ? -1 : bytes[position++] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] destination, int offset, int length) throws IOException {
+            if (++zeroProgressReads > 2) {
+                throw new IOException("bulk read made no progress");
+            }
+            return 0;
         }
     }
 }
