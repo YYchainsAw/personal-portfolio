@@ -3,23 +3,44 @@ package xyz.yychainsaw.portfolio.media.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.Mockito.when;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaAssetView;
 import xyz.yychainsaw.portfolio.audit.AuditCommand;
 import xyz.yychainsaw.portfolio.audit.AuditOutcome;
 import xyz.yychainsaw.portfolio.audit.AuditService;
+import xyz.yychainsaw.portfolio.common.error.DomainException;
+import xyz.yychainsaw.portfolio.media.application.MediaIngestService;
 import xyz.yychainsaw.portfolio.media.application.MediaObjectKeys;
+import xyz.yychainsaw.portfolio.media.application.UploadMediaCommand;
 import xyz.yychainsaw.portfolio.media.domain.MediaStatus;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
+import xyz.yychainsaw.portfolio.media.storage.ByteRange;
+import xyz.yychainsaw.portfolio.media.storage.StorageRead;
+import xyz.yychainsaw.portfolio.media.storage.StorageRouter;
+import xyz.yychainsaw.portfolio.media.storage.StorageService;
+import xyz.yychainsaw.portfolio.media.storage.StoredObject;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 import xyz.yychainsaw.portfolio.system.job.BackgroundJobService;
 
@@ -29,12 +50,16 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
             UUID.fromString("11111111-2222-3333-4444-555555555555");
     private static final String SHA256 = "a".repeat(64);
     private static final Instant NOW = Instant.parse("2026-07-16T00:00:00Z");
+    private static final byte[] PDF =
+            "%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n".getBytes(StandardCharsets.US_ASCII);
 
     @Autowired MediaAssetRepository assets;
     @Autowired BackgroundJobService jobs;
     @Autowired AuditService audit;
     @Autowired TransactionTemplate transactions;
     @Autowired JdbcClient jdbc;
+    @Autowired MediaIngestService ingest;
+    @MockitoBean StorageRouter storageRouter;
 
     @Test
     void mediaStatusAndDefensiveAdminViewExposeOnlyTheFrozenPublicShape() {
@@ -339,6 +364,59 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
         assertThat(count("portfolio.audit_log", "trace_id", trace)).isZero();
     }
 
+    @Test
+    void realIngestAuditConstraintRollbackRemovesEveryRowAndDeletesOwnedStagingOnce() {
+        UUID nonexistentActor = UUID.randomUUID();
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+        assertThat(count("portfolio.admin_user", "id", nonexistentActor)).isZero();
+        RecordingStorage storage = new RecordingStorage();
+        when(storageRouter.defaultWriter()).thenReturn(storage);
+
+        Throwable failure = catchThrowable(() -> ingest.ingest(
+                new UploadMediaCommand(
+                        "document.pdf",
+                        "application/pdf",
+                        PDF.length,
+                        new ByteArrayInputStream(PDF)),
+                nonexistentActor));
+
+        assertThat(storage.putObservedTransaction()).isFalse();
+        assertThat(storage.putKeys()).hasSize(1);
+        String stagingKey = storage.putKeys().get(0);
+        String[] segments = stagingKey.split("/");
+        assertThat(segments).hasSize(3);
+        assertThat(segments[0]).isEqualTo("staging");
+        UUID assetId = UUID.fromString(segments[1]);
+        String idempotencyKey = "media-finalize:" + assetId;
+        try {
+            assertThat(failure)
+                    .isExactlyInstanceOf(DomainException.class)
+                    .satisfies(thrown -> {
+                        DomainException domain = (DomainException) thrown;
+                        assertThat(domain.code()).isEqualTo("MEDIA_UPLOAD_FAILED");
+                        assertThat(domain.fieldErrors()).isEmpty();
+                        assertThat(domain).hasNoCause();
+                        assertThat(domain.getSuppressed()).isEmpty();
+                    });
+            assertThat(count("portfolio.media_asset", "id", assetId)).isZero();
+            assertThat(count(
+                            "portfolio.background_job", "idempotency_key", idempotencyKey))
+                    .isZero();
+            assertThat(count("portfolio.audit_log", "target_id", assetId.toString())).isZero();
+            assertThat(storage.deleteKeys()).containsExactly(stagingKey);
+            assertThat(storage.deleteObservedTransaction()).containsExactly(false);
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+        } finally {
+            JdbcClient owner = migratorJdbc();
+            owner.sql("delete from portfolio.background_job where idempotency_key=:key")
+                    .param("key", idempotencyKey)
+                    .update();
+            owner.sql("delete from portfolio.media_asset where id=:id")
+                    .param("id", assetId)
+                    .update();
+        }
+    }
+
     private static MediaAssetRecord.Insert insert(
             UUID id,
             StorageProvider provider,
@@ -390,4 +468,85 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
             String outcome,
             String traceId,
             boolean metadataEmpty) {}
+
+    private static final class RecordingStorage implements StorageService {
+        private final List<String> putKeys = new ArrayList<>();
+        private final List<String> deleteKeys = new ArrayList<>();
+        private final List<Boolean> deleteObservedTransaction = new ArrayList<>();
+        private boolean putObservedTransaction;
+
+        @Override
+        public StorageProvider provider() {
+            return StorageProvider.LOCAL;
+        }
+
+        @Override
+        public StoredObject put(
+                String objectKey,
+                InputStream input,
+                long contentLength,
+                String contentType) {
+            putObservedTransaction =
+                    TransactionSynchronizationManager.isActualTransactionActive();
+            putKeys.add(objectKey);
+            try (input) {
+                if (!java.util.Arrays.equals(input.readAllBytes(), PDF)) {
+                    throw new IllegalStateException("published bytes differ");
+                }
+            } catch (IOException failure) {
+                throw new IllegalStateException("storage read failed");
+            }
+            return new StoredObject(
+                    StorageProvider.LOCAL,
+                    null,
+                    null,
+                    objectKey,
+                    contentLength,
+                    contentType,
+                    "test-etag");
+        }
+
+        @Override
+        public void delete(String objectKey) {
+            deleteObservedTransaction.add(
+                    TransactionSynchronizationManager.isActualTransactionActive());
+            deleteKeys.add(objectKey);
+        }
+
+        @Override
+        public StorageRead open(String objectKey, Optional<ByteRange> range) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public URI signedGet(String objectKey, Duration ttl) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean exists(String objectKey) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void copy(String sourceKey, String targetKey) {
+            throw new UnsupportedOperationException();
+        }
+
+        private List<String> putKeys() {
+            return List.copyOf(putKeys);
+        }
+
+        private List<String> deleteKeys() {
+            return List.copyOf(deleteKeys);
+        }
+
+        private List<Boolean> deleteObservedTransaction() {
+            return List.copyOf(deleteObservedTransaction);
+        }
+
+        private boolean putObservedTransaction() {
+            return putObservedTransaction;
+        }
+    }
 }

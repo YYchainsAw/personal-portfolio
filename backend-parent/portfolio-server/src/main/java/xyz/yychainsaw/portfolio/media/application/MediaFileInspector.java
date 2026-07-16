@@ -5,9 +5,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
@@ -41,18 +41,25 @@ public final class MediaFileInspector {
     static final long IMAGE_BYTE_LIMIT = 25L * 1024 * 1024;
     static final long PDF_BYTE_LIMIT = 30L * 1024 * 1024;
     static final long PIXEL_LIMIT = 80_000_000L;
+    static final int PNG_PARSE_BUFFER_SIZE = 8_192;
+    static final int MAX_PNG_METADATA_CHUNKS = 4_096;
+    static final int PDF_REVERSE_SCAN_BLOCK_SIZE = 8_192;
 
     private static final long VALIDATION_DECODE_PIXEL_LIMIT = 4_000_000L;
     private static final byte[] PNG_SIGNATURE = new byte[] {
         (byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
     };
+    private static final int PNG_IHDR = 0x49484452;
+    private static final int PNG_PLTE = 0x504c5445;
+    private static final int PNG_IDAT = 0x49444154;
+    private static final int PNG_IEND = 0x49454e44;
+    private static final int PNG_ACTL = 0x6163544c;
+    private static final int PNG_FCTL = 0x6663544c;
+    private static final int PNG_FDAT = 0x66644154;
     private static final byte[] PDF_SIGNATURE =
             "%PDF-".getBytes(StandardCharsets.US_ASCII);
     private static final Pattern PDF_HEADER =
             Pattern.compile("%PDF-(?:1\\.[0-7]|2\\.0)");
-    private static final Set<String> PNG_CRITICAL_CHUNKS =
-            Set.of("IHDR", "PLTE", "IDAT", "IEND");
-    private static final Set<String> APNG_CHUNKS = Set.of("acTL", "fcTL", "fdAT");
     private static final Semaphore IMAGE_READ_GATE = new Semaphore(1, true);
     private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
@@ -297,101 +304,117 @@ public final class MediaFileInspector {
     private static Dimensions validatePng(Path path) throws IOException {
         try (FileChannel channel = FileChannel.open(
                 path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-            long size = channel.size();
-            channel.position(PNG_SIGNATURE.length);
-            boolean seenHeader = false;
-            boolean seenPalette = false;
-            boolean seenImageData = false;
-            boolean imageDataEnded = false;
-            int colorType = -1;
-            int bitDepth = -1;
-            long width = -1;
-            long height = -1;
-            int chunkIndex = 0;
+            return validatePng(channel, channel.size());
+        }
+    }
 
-            while (channel.position() < size) {
-                if (size - channel.position() < 12) {
-                    throw corrupt();
-                }
-                long length = readUnsignedInt(channel);
-                byte[] typeBytes = readBytes(channel, 4);
-                if (!isChunkType(typeBytes)
-                        || length > size - channel.position() - 4) {
-                    throw corrupt();
-                }
-                String type = new String(typeBytes, StandardCharsets.US_ASCII);
-                CRC32 crc = new CRC32();
-                crc.update(typeBytes);
-                byte[] header = null;
-                if ("IHDR".equals(type) && length == 13) {
-                    header = readBytes(channel, 13);
-                    crc.update(header);
-                } else {
-                    updateCrcAndSkip(channel, crc, length);
-                }
-                if (readUnsignedInt(channel) != crc.getValue()) {
-                    throw corrupt();
-                }
+    static Dimensions validatePng(SeekableByteChannel channel, long size)
+            throws IOException {
+        if (size < PNG_SIGNATURE.length + 12L) {
+            throw corrupt();
+        }
+        PngInput input = new PngInput(channel, size);
+        boolean firstChunk = true;
+        boolean seenHeader = false;
+        boolean seenPalette = false;
+        boolean seenImageData = false;
+        boolean imageDataEnded = false;
+        int metadataChunks = 0;
+        int colorType = -1;
+        int bitDepth = -1;
+        long width = -1;
+        long height = -1;
+        byte[] header = new byte[13];
+        CRC32 crc = new CRC32();
 
-                if (APNG_CHUNKS.contains(type)
-                        || (Character.isUpperCase(type.charAt(0))
-                                && !PNG_CRITICAL_CHUNKS.contains(type))) {
-                    throw corrupt();
-                }
-                if ("IHDR".equals(type)) {
-                    if (chunkIndex != 0 || seenHeader || length != 13 || header == null) {
-                        throw corrupt();
-                    }
-                    ByteBuffer values = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN);
-                    width = Integer.toUnsignedLong(values.getInt());
-                    height = Integer.toUnsignedLong(values.getInt());
-                    bitDepth = Byte.toUnsignedInt(values.get());
-                    colorType = Byte.toUnsignedInt(values.get());
-                    int compression = Byte.toUnsignedInt(values.get());
-                    int filter = Byte.toUnsignedInt(values.get());
-                    int interlace = Byte.toUnsignedInt(values.get());
-                    if (!validPngColor(bitDepth, colorType)
-                            || compression != 0
-                            || filter != 0
-                            || (interlace != 0 && interlace != 1)) {
-                        throw corrupt();
-                    }
-                    seenHeader = true;
-                } else if (!seenHeader) {
-                    throw corrupt();
-                } else if ("PLTE".equals(type)) {
-                    if (seenPalette
-                            || seenImageData
-                            || length < 3
-                            || length > 768
-                            || length % 3 != 0
-                            || colorType == 0
-                            || colorType == 4
-                            || (colorType == 3 && length / 3 > (1L << bitDepth))) {
-                        throw corrupt();
-                    }
-                    seenPalette = true;
-                } else if ("IDAT".equals(type)) {
-                    if (imageDataEnded) {
-                        throw corrupt();
-                    }
-                    seenImageData = true;
-                } else {
-                    if (seenImageData) {
-                        imageDataEnded = true;
-                    }
-                    if ("IEND".equals(type)) {
-                        if (length != 0
-                                || !seenImageData
-                                || (colorType == 3 && !seenPalette)
-                                || channel.position() != size) {
-                            throw corrupt();
-                        }
-                        return new Dimensions(toDimension(width), toDimension(height));
-                    }
-                }
-                chunkIndex++;
+        while (input.position() < size) {
+            if (input.remaining() < 12) {
+                throw corrupt();
             }
+            long length = input.readUnsignedInt();
+            int type = input.readInt();
+            if (!isChunkType(type) || length > input.remaining() - 4) {
+                throw corrupt();
+            }
+            crc.reset();
+            updatePngTypeCrc(crc, type);
+            boolean headerRead = type == PNG_IHDR && length == header.length;
+            if (headerRead) {
+                input.readAndUpdateCrc(header, crc);
+            } else {
+                input.updateCrcAndSkip(length, crc);
+            }
+            if (input.readUnsignedInt() != crc.getValue()) {
+                throw corrupt();
+            }
+
+            if (type == PNG_ACTL
+                    || type == PNG_FCTL
+                    || type == PNG_FDAT
+                    || (isUppercaseAscii(pngTypeByte(type, 0))
+                            && type != PNG_IHDR
+                            && type != PNG_PLTE
+                            && type != PNG_IDAT
+                            && type != PNG_IEND)) {
+                throw corrupt();
+            }
+            // IDAT fragmentation is intentionally unbounded; only metadata is capped.
+            if (type != PNG_IHDR && type != PNG_IDAT && type != PNG_IEND
+                    && ++metadataChunks > MAX_PNG_METADATA_CHUNKS) {
+                throw corrupt();
+            }
+            if (type == PNG_IHDR) {
+                if (!firstChunk || seenHeader || length != header.length || !headerRead) {
+                    throw corrupt();
+                }
+                width = unsignedInt(header, 0);
+                height = unsignedInt(header, 4);
+                bitDepth = Byte.toUnsignedInt(header[8]);
+                colorType = Byte.toUnsignedInt(header[9]);
+                int compression = Byte.toUnsignedInt(header[10]);
+                int filter = Byte.toUnsignedInt(header[11]);
+                int interlace = Byte.toUnsignedInt(header[12]);
+                if (!validPngColor(bitDepth, colorType)
+                        || compression != 0
+                        || filter != 0
+                        || (interlace != 0 && interlace != 1)) {
+                    throw corrupt();
+                }
+                seenHeader = true;
+            } else if (!seenHeader) {
+                throw corrupt();
+            } else if (type == PNG_PLTE) {
+                if (seenPalette
+                        || seenImageData
+                        || length < 3
+                        || length > 768
+                        || length % 3 != 0
+                        || colorType == 0
+                        || colorType == 4
+                        || (colorType == 3 && length / 3 > (1L << bitDepth))) {
+                    throw corrupt();
+                }
+                seenPalette = true;
+            } else if (type == PNG_IDAT) {
+                if (imageDataEnded) {
+                    throw corrupt();
+                }
+                seenImageData = true;
+            } else {
+                if (seenImageData) {
+                    imageDataEnded = true;
+                }
+                if (type == PNG_IEND) {
+                    if (length != 0
+                            || !seenImageData
+                            || (colorType == 3 && !seenPalette)
+                            || input.position() != size) {
+                        throw corrupt();
+                    }
+                    return new Dimensions(toDimension(width), toDimension(height));
+                }
+            }
+            firstChunk = false;
         }
         throw corrupt();
     }
@@ -607,9 +630,9 @@ public final class MediaFileInspector {
         }
     }
 
-    private static long lastNonWhitespace(FileChannel channel, long size)
+    static long lastNonWhitespace(SeekableByteChannel channel, long size)
             throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(8192);
+        ByteBuffer buffer = ByteBuffer.allocate(PDF_REVERSE_SCAN_BLOCK_SIZE);
         long end = size;
         while (end > 0) {
             int length = (int) Math.min(buffer.capacity(), end);
@@ -673,28 +696,36 @@ public final class MediaFileInspector {
                 && marker != 0xcc;
     }
 
-    private static boolean isChunkType(byte[] type) {
-        for (byte value : type) {
-            int character = value & 0xff;
-            if ((character < 'A' || character > 'Z')
+    private static boolean isChunkType(int type) {
+        for (int index = 0; index < 4; index++) {
+            int character = pngTypeByte(type, index);
+            if (!isUppercaseAscii(character)
                     && (character < 'a' || character > 'z')) {
                 return false;
             }
         }
-        return (type[2] & 0x20) == 0;
+        return (pngTypeByte(type, 2) & 0x20) == 0;
     }
 
-    private static void updateCrcAndSkip(FileChannel channel, CRC32 crc, long length)
-            throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(8192);
-        long remaining = length;
-        while (remaining > 0) {
-            buffer.clear();
-            buffer.limit((int) Math.min(buffer.capacity(), remaining));
-            readFully(channel, buffer);
-            crc.update(buffer.array(), 0, buffer.limit());
-            remaining -= buffer.limit();
+    private static boolean isUppercaseAscii(int value) {
+        return value >= 'A' && value <= 'Z';
+    }
+
+    private static int pngTypeByte(int type, int index) {
+        return (type >>> ((3 - index) * 8)) & 0xff;
+    }
+
+    private static void updatePngTypeCrc(CRC32 crc, int type) {
+        for (int index = 0; index < 4; index++) {
+            crc.update(pngTypeByte(type, index));
         }
+    }
+
+    private static long unsignedInt(byte[] bytes, int offset) {
+        return ((long) (bytes[offset] & 0xff) << 24)
+                | ((long) (bytes[offset + 1] & 0xff) << 16)
+                | ((long) (bytes[offset + 2] & 0xff) << 8)
+                | (bytes[offset + 3] & 0xffL);
     }
 
     private static byte[] readBytes(FileChannel channel, int length) throws IOException {
@@ -703,11 +734,8 @@ public final class MediaFileInspector {
         return bytes;
     }
 
-    private static long readUnsignedInt(FileChannel channel) throws IOException {
-        return Integer.toUnsignedLong(ByteBuffer.wrap(readBytes(channel, 4)).getInt());
-    }
-
-    private static void readFully(FileChannel channel, ByteBuffer target) throws IOException {
+    private static void readFully(SeekableByteChannel channel, ByteBuffer target)
+            throws IOException {
         while (target.hasRemaining()) {
             if (channel.read(target) < 0) {
                 throw new IOException("unexpected inspection EOF");
@@ -871,7 +899,89 @@ public final class MediaFileInspector {
 
     private record CopyResult(long byteSize, String sha256) {}
 
-    private record Dimensions(Integer width, Integer height) {
+    private static final class PngInput {
+        private final SeekableByteChannel channel;
+        private final long size;
+        private final ByteBuffer buffer = ByteBuffer.allocate(PNG_PARSE_BUFFER_SIZE);
+        private long position;
+
+        private PngInput(SeekableByteChannel channel, long size) throws IOException {
+            this.channel = channel;
+            this.size = size;
+            this.position = PNG_SIGNATURE.length;
+            buffer.limit(0);
+            channel.position(position);
+        }
+
+        private long position() {
+            return position;
+        }
+
+        private long remaining() {
+            return size - position;
+        }
+
+        private long readUnsignedInt() throws IOException {
+            return Integer.toUnsignedLong(readInt());
+        }
+
+        private int readInt() throws IOException {
+            return (readUnsignedByte() << 24)
+                    | (readUnsignedByte() << 16)
+                    | (readUnsignedByte() << 8)
+                    | readUnsignedByte();
+        }
+
+        private int readUnsignedByte() throws IOException {
+            requireBufferedByte();
+            position++;
+            return buffer.get() & 0xff;
+        }
+
+        private void readAndUpdateCrc(byte[] target, CRC32 crc)
+                throws IOException {
+            int offset = 0;
+            while (offset < target.length) {
+                requireBufferedByte();
+                int count = Math.min(buffer.remaining(), target.length - offset);
+                buffer.get(target, offset, count);
+                crc.update(target, offset, count);
+                offset += count;
+                position += count;
+            }
+        }
+
+        private void updateCrcAndSkip(long length, CRC32 crc) throws IOException {
+            long remaining = length;
+            while (remaining > 0) {
+                requireBufferedByte();
+                int count = (int) Math.min(buffer.remaining(), remaining);
+                int offset = buffer.arrayOffset() + buffer.position();
+                crc.update(buffer.array(), offset, count);
+                buffer.position(buffer.position() + count);
+                position += count;
+                remaining -= count;
+            }
+        }
+
+        private void requireBufferedByte() throws IOException {
+            if (buffer.hasRemaining()) {
+                return;
+            }
+            if (position >= size) {
+                throw new IOException("unexpected inspection EOF");
+            }
+            buffer.clear();
+            buffer.limit((int) Math.min(buffer.capacity(), size - position));
+            int count = channel.read(buffer);
+            if (count <= 0) {
+                throw new IOException("unexpected inspection EOF");
+            }
+            buffer.flip();
+        }
+    }
+
+    record Dimensions(Integer width, Integer height) {
         private static final Dimensions NONE = new Dimensions(null, null);
     }
 }

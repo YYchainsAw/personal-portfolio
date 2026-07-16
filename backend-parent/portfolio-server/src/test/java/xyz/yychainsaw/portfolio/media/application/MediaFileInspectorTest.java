@@ -3,7 +3,6 @@ package xyz.yychainsaw.portfolio.media.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.catchThrowable;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -13,10 +12,11 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
+import java.util.zip.DeflaterOutputStream;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
@@ -286,6 +287,59 @@ class MediaFileInspectorTest {
         assertDirectoryEmpty();
     }
 
+    @Test
+    void rejectsPngWhoseZeroLengthAncillaryChunksExceedTheParserWorkBudget()
+            throws Exception {
+        int ancillaryChunks = MediaFileInspector.MAX_PNG_METADATA_CHUNKS + 1;
+        byte[] bytes = pngWithZeroLengthAncillaryChunks(ancillaryChunks);
+        CountingSeekableByteChannel channel = new CountingSeekableByteChannel(bytes);
+        Throwable parserFailure = catchThrowable(() ->
+                MediaFileInspector.validatePng(channel, bytes.length));
+        CloseCountingInputStream input = new CloseCountingInputStream(bytes);
+
+        assertThat(parserFailure).isInstanceOf(RuntimeException.class);
+        long parsedBytes = 25L + Math.multiplyExact(ancillaryChunks, 12);
+        assertThat(channel.readCalls()).isEqualTo((int) ((parsedBytes
+                + MediaFileInspector.PNG_PARSE_BUFFER_SIZE - 1)
+                / MediaFileInspector.PNG_PARSE_BUFFER_SIZE));
+        assertThat(channel.maximumRequestedBytes())
+                .isEqualTo(MediaFileInspector.PNG_PARSE_BUFFER_SIZE);
+        DomainException failure = failureOf(() -> inspect(
+                "photo.png", "image/png", bytes.length, input));
+
+        assertFrozen(failure, "MEDIA_CORRUPT", HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(input.closeCalls()).isOne();
+        assertDirectoryEmpty();
+    }
+
+    @Test
+    void acceptsDecodeValidPngWithMoreThan4096ConsecutiveIdatChunks()
+            throws Exception {
+        byte[] bytes = pngWithFragmentedIdat(4_097);
+        CountingSeekableByteChannel channel = new CountingSeekableByteChannel(bytes);
+        MediaFileInspector.Dimensions dimensions =
+                MediaFileInspector.validatePng(channel, bytes.length);
+        CloseCountingInputStream input = new CloseCountingInputStream(bytes);
+
+        assertThat(dimensions.width()).isEqualTo(64);
+        assertThat(dimensions.height()).isEqualTo(64);
+        assertThat(channel.readCalls()).isEqualTo((int) ((bytes.length - 8L
+                + MediaFileInspector.PNG_PARSE_BUFFER_SIZE - 1)
+                / MediaFileInspector.PNG_PARSE_BUFFER_SIZE));
+        assertThat(channel.maximumRequestedBytes())
+                .isEqualTo(MediaFileInspector.PNG_PARSE_BUFFER_SIZE);
+        try (InspectedMedia media = inspect(
+                "fragmented.png", "image/png", bytes.length, input)) {
+            assertThat(media.width()).isEqualTo(64);
+            assertThat(media.height()).isEqualTo(64);
+            assertThat(input.closeCalls()).isOne();
+            assertThat(fileCount()).isOne();
+        }
+
+        assertThat(input.closeCalls()).isOne();
+        assertDirectoryEmpty();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
         "%PDF-1.8\n%%EOF", "%PDF-2.1\n%%EOF", "%PDF-X.Y\n%%EOF",
@@ -300,18 +354,22 @@ class MediaFileInspectorTest {
     }
 
     @Test
-    void rejectsNearLimitPdfWhitespaceWithoutPerByteReverseIo() {
+    void scansNearLimitPdfWhitespaceInAReadCountLinearToFixedSizeBlocks()
+            throws Exception {
         byte[] bytes = new byte[(int) MediaFileInspector.PDF_BYTE_LIMIT];
         Arrays.fill(bytes, (byte) ' ');
         byte[] header = "%PDF-1.7".getBytes(StandardCharsets.US_ASCII);
         System.arraycopy(header, 0, bytes, 0, header.length);
+        CountingSeekableByteChannel channel = new CountingSeekableByteChannel(bytes);
 
-        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
-            assertCode("MEDIA_CORRUPT", () -> inspect(
-                    "document.pdf", "application/pdf", bytes.length,
-                    new CloseCountingInputStream(bytes)));
-            assertDirectoryEmpty();
-        });
+        assertThat(MediaFileInspector.lastNonWhitespace(channel, bytes.length))
+                .isEqualTo(header.length - 1L);
+        assertThat(channel.readCalls())
+                .isEqualTo((bytes.length
+                        + MediaFileInspector.PDF_REVERSE_SCAN_BLOCK_SIZE - 1)
+                        / MediaFileInspector.PDF_REVERSE_SCAN_BLOCK_SIZE);
+        assertThat(channel.maximumRequestedBytes())
+                .isEqualTo(MediaFileInspector.PDF_REVERSE_SCAN_BLOCK_SIZE);
     }
 
     @Test
@@ -326,6 +384,41 @@ class MediaFileInspectorTest {
                 MediaFileInspector.validateDimensions((long) Integer.MAX_VALUE + 1, 1));
         assertCode("MEDIA_PIXEL_LIMIT_EXCEEDED", () ->
                 MediaFileInspector.validateDimensions(Integer.MAX_VALUE, Integer.MAX_VALUE));
+    }
+
+    @Test
+    void inspectRejectsStructurallyValidPngAbovePixelLimitBeforeDecode()
+            throws Exception {
+        byte[] bytes = monochromePng(10_001, 8_000);
+        CloseCountingInputStream input = new CloseCountingInputStream(bytes);
+
+        DomainException failure = failureOf(() -> inspect(
+                "oversized.png", "image/png", bytes.length, input));
+
+        assertFrozen(
+                failure,
+                "MEDIA_PIXEL_LIMIT_EXCEEDED",
+                HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(input.closeCalls()).isOne();
+        assertDirectoryEmpty();
+    }
+
+    @Test
+    void inspectRejectsStructurallyValidJpegAbovePixelLimitBeforeDecode()
+            throws Exception {
+        byte[] bytes = jpegWithDimensions(
+                image("jpeg", false, false), 10_001, 8_000);
+        CloseCountingInputStream input = new CloseCountingInputStream(bytes);
+
+        DomainException failure = failureOf(() -> inspect(
+                "oversized.jpg", "image/jpeg", bytes.length, input));
+
+        assertFrozen(
+                failure,
+                "MEDIA_PIXEL_LIMIT_EXCEEDED",
+                HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(input.closeCalls()).isOne();
+        assertDirectoryEmpty();
     }
 
     @ParameterizedTest
@@ -506,6 +599,117 @@ class MediaFileInspectorTest {
         return output.toByteArray();
     }
 
+    private static byte[] monochromePng(int width, int height) throws IOException {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        byte[] row = new byte[1 + (width + 7) / 8];
+        try (DeflaterOutputStream deflater = new DeflaterOutputStream(compressed)) {
+            for (int index = 0; index < height; index++) {
+                deflater.write(row);
+            }
+        }
+        ByteBuffer header = ByteBuffer.allocate(13);
+        header.putInt(width);
+        header.putInt(height);
+        header.put((byte) 1);
+        header.put((byte) 0);
+        header.put((byte) 0);
+        header.put((byte) 0);
+        header.put((byte) 0);
+        return concat(
+                new byte[] {
+                    (byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
+                },
+                chunk("IHDR", header.array()),
+                chunk("IDAT", compressed.toByteArray()),
+                chunk("IEND", new byte[0]));
+    }
+
+    private static byte[] pngWithFragmentedIdat(int fragmentCount)
+            throws IOException {
+        BufferedImage image = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
+        int state = 0x6d2b79f5;
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                state ^= state << 13;
+                state ^= state >>> 17;
+                state ^= state << 5;
+                image.setRGB(x, y, state);
+            }
+        }
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        try {
+            if (!ImageIO.write(image, "png", encoded)) {
+                throw new IOException("PNG writer unavailable");
+            }
+        } finally {
+            image.flush();
+        }
+
+        byte[] png = encoded.toByteArray();
+        int firstIdat = chunkOffset(png, "IDAT");
+        int cursor = firstIdat;
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        while (cursor + 12 <= png.length) {
+            int length = readInt(png, cursor);
+            String type = new String(png, cursor + 4, 4, StandardCharsets.US_ASCII);
+            if (!"IDAT".equals(type)) {
+                break;
+            }
+            compressed.write(png, cursor + 8, length);
+            cursor += 12 + length;
+        }
+        byte[] payload = compressed.toByteArray();
+        if (fragmentCount <= 0 || fragmentCount > payload.length) {
+            throw new IllegalArgumentException("invalid PNG fragment count");
+        }
+
+        ByteArrayOutputStream fragmented = new ByteArrayOutputStream(
+                png.length + Math.multiplyExact(fragmentCount - 1, 12));
+        fragmented.write(png, 0, firstIdat);
+        int offset = 0;
+        for (int index = 0; index < fragmentCount; index++) {
+            int remainingFragments = fragmentCount - index;
+            int length = (payload.length - offset) / remainingFragments;
+            fragmented.write(chunk(
+                    "IDAT", Arrays.copyOfRange(payload, offset, offset + length)));
+            offset += length;
+        }
+        fragmented.write(png, cursor, png.length - cursor);
+        return fragmented.toByteArray();
+    }
+
+    private static byte[] jpegWithDimensions(byte[] jpeg, int width, int height) {
+        byte[] resized = jpeg.clone();
+        int offset = 2;
+        while (offset + 8 < resized.length) {
+            if ((resized[offset] & 0xff) != 0xff) {
+                throw new IllegalArgumentException("invalid JPEG marker sequence");
+            }
+            while (offset < resized.length && (resized[offset] & 0xff) == 0xff) {
+                offset++;
+            }
+            int marker = resized[offset++] & 0xff;
+            if (marker == 0xda || marker == 0xd9) {
+                break;
+            }
+            int segmentLength = ((resized[offset] & 0xff) << 8)
+                    | (resized[offset + 1] & 0xff);
+            if (marker >= 0xc0
+                    && marker <= 0xcf
+                    && marker != 0xc4
+                    && marker != 0xc8
+                    && marker != 0xcc) {
+                resized[offset + 3] = (byte) (height >>> 8);
+                resized[offset + 4] = (byte) height;
+                resized[offset + 5] = (byte) (width >>> 8);
+                resized[offset + 6] = (byte) width;
+                return resized;
+            }
+            offset += segmentLength;
+        }
+        throw new IllegalArgumentException("JPEG start-of-frame marker missing");
+    }
+
     private static byte[] paddedJpeg(int targetSize) throws IOException {
         byte[] jpeg = image("jpeg", false, false);
         int padding = targetSize - jpeg.length;
@@ -558,6 +762,21 @@ class MediaFileInspectorTest {
                 Arrays.copyOf(png, afterHeader),
                 chunk,
                 Arrays.copyOfRange(png, afterHeader, png.length));
+    }
+
+    private static byte[] pngWithZeroLengthAncillaryChunks(int count)
+            throws IOException {
+        byte[] png = image("png", false, true);
+        int afterHeader = 8 + 12 + readInt(png, 8);
+        byte[] ancillary = chunk("ruSt", new byte[0]);
+        ByteArrayOutputStream output = new ByteArrayOutputStream(
+                png.length + Math.multiplyExact(count, ancillary.length));
+        output.write(png, 0, afterHeader);
+        for (int index = 0; index < count; index++) {
+            output.write(ancillary);
+        }
+        output.write(png, afterHeader, png.length - afterHeader);
+        return output.toByteArray();
     }
 
     private static byte[] insertBeforeEoi(byte[] jpeg, byte[] data) {
@@ -727,6 +946,89 @@ class MediaFileInspectorTest {
         public void close() throws IOException {
             super.close();
             throw new IOException("secret close failure");
+        }
+    }
+
+    private static final class CountingSeekableByteChannel
+            implements SeekableByteChannel {
+        private final byte[] bytes;
+        private int position;
+        private int readCalls;
+        private int maximumRequestedBytes;
+        private boolean open = true;
+
+        private CountingSeekableByteChannel(byte[] bytes) {
+            this.bytes = bytes.clone();
+        }
+
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            requireOpen();
+            readCalls++;
+            maximumRequestedBytes = Math.max(maximumRequestedBytes, target.remaining());
+            if (position == bytes.length) {
+                return -1;
+            }
+            int count = Math.min(target.remaining(), bytes.length - position);
+            target.put(bytes, position, count);
+            position += count;
+            return count;
+        }
+
+        @Override
+        public int write(ByteBuffer source) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public long position() throws IOException {
+            requireOpen();
+            return position;
+        }
+
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            requireOpen();
+            if (newPosition < 0 || newPosition > bytes.length) {
+                throw new IllegalArgumentException("position is invalid");
+            }
+            position = Math.toIntExact(newPosition);
+            return this;
+        }
+
+        @Override
+        public long size() throws IOException {
+            requireOpen();
+            return bytes.length;
+        }
+
+        @Override
+        public SeekableByteChannel truncate(long size) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        private int readCalls() {
+            return readCalls;
+        }
+
+        private int maximumRequestedBytes() {
+            return maximumRequestedBytes;
+        }
+
+        private void requireOpen() throws ClosedChannelException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
         }
     }
 }
