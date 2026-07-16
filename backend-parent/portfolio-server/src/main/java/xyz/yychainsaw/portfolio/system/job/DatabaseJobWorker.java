@@ -124,7 +124,10 @@ public final class DatabaseJobWorker {
         }
 
         try {
-            handler.get().handle(job.payload());
+            handler.get().handle(
+                    new JobExecutionContext(
+                            job.id(), job.leaseOwner(), job.attempts()),
+                    job.payload());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             LOGGER.warn("Background job handler was interrupted");

@@ -9,21 +9,46 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 
 public final class TencentCosStorageService implements StorageService, AutoCloseable {
+    static final int SCRATCH_CLEANUP_DELETE_LIMIT = 128;
+    private static final int DEFAULT_SCRATCH_SCAN_ENTRY_LIMIT = 100_000;
+    private static final int MAXIMUM_SCRATCH_SCAN_ENTRY_LIMIT = 1_000_000;
     private static final Duration MAXIMUM_SIGNED_GET_TTL = Duration.ofMinutes(5);
     private static final int COPY_BUFFER_SIZE = 64 * 1024;
     private static final String LENGTH_MISMATCH = "COS_CONTENT_LENGTH_MISMATCH";
+    private static final String STAGING_CLEANUP_FAILED = "COS_STAGING_CLEANUP_FAILED";
+    private static final String CLEANUP_IDENTITY_GUARD_PREFIX = "@cleanup-identity-";
+    private static final String CLEANUP_VERIFICATION_GUARD_PREFIX =
+            "@cleanup-verification-";
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(TencentCosStorageService.class);
+    private static final Pattern CANONICAL_SCRATCH_FILE = Pattern.compile(
+            "@part-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    private static final Comparator<ScratchCandidate> OLDEST_SCRATCH_FIRST =
+            Comparator.comparing(ScratchCandidate::modified)
+                    .thenComparing(ScratchCandidate::stableKey);
+    private static final Comparator<ScratchCandidate> NEWEST_SCRATCH_FIRST =
+            OLDEST_SCRATCH_FIRST.reversed();
     private final CosClientPort client;
     private final TencentCosProperties properties;
     private final StorageLocation location;
@@ -31,13 +56,20 @@ public final class TencentCosStorageService implements StorageService, AutoClose
     private final Path stagingRoot;
     private final LocalStorageAccessPolicy stagingAccess;
     private final StagingObserver stagingObserver;
+    private final int maxScratchScanEntries;
 
     TencentCosStorageService(
             CosClientPort client,
             TencentCosProperties properties,
             Clock clock,
             Path stagingRoot) {
-        this(client, properties, clock, stagingRoot, StagingObserver.NOOP);
+        this(
+                client,
+                properties,
+                clock,
+                stagingRoot,
+                StagingObserver.NOOP,
+                DEFAULT_SCRATCH_SCAN_ENTRY_LIMIT);
     }
 
     TencentCosStorageService(
@@ -46,6 +78,22 @@ public final class TencentCosStorageService implements StorageService, AutoClose
             Clock clock,
             Path stagingRoot,
             StagingObserver stagingObserver) {
+        this(
+                client,
+                properties,
+                clock,
+                stagingRoot,
+                stagingObserver,
+                DEFAULT_SCRATCH_SCAN_ENTRY_LIMIT);
+    }
+
+    TencentCosStorageService(
+            CosClientPort client,
+            TencentCosProperties properties,
+            Clock clock,
+            Path stagingRoot,
+            StagingObserver stagingObserver,
+            int maxScratchScanEntries) {
         if (client == null
                 || properties == null
                 || clock == null
@@ -53,6 +101,7 @@ public final class TencentCosStorageService implements StorageService, AutoClose
                 || stagingObserver == null) {
             throw new IllegalArgumentException("COS storage configuration is required");
         }
+        requireValidScanLimit(maxScratchScanEntries);
         this.client = client;
         this.properties = properties;
         this.location = new StorageLocation(
@@ -67,6 +116,7 @@ public final class TencentCosStorageService implements StorageService, AutoClose
             throw new StorageException("COS_WRITE_FAILED");
         }
         this.stagingObserver = stagingObserver;
+        this.maxScratchScanEntries = maxScratchScanEntries;
     }
 
     @Override
@@ -264,6 +314,287 @@ public final class TencentCosStorageService implements StorageService, AutoClose
         stagingAccess.close();
     }
 
+    public synchronized StagingCleanupResult cleanupScratch(Instant cutoff) {
+        if (cutoff == null) {
+            throw new IllegalArgumentException("COS scratch cleanup cutoff is required");
+        }
+        long started = System.nanoTime();
+        long scanned = 0;
+        long candidateCount = 0;
+        PriorityQueue<ScratchCandidate> selected =
+                new PriorityQueue<>(NEWEST_SCRATCH_FIRST);
+        int deleted;
+        try {
+            requireCleanupNotInterrupted();
+            stagingAccess.verifyRoot();
+            try (DirectoryStream<Path> entries = Files.newDirectoryStream(stagingRoot)) {
+                for (Path entry : entries) {
+                    requireCleanupNotInterrupted();
+                    scanned++;
+                    if (scanned > maxScratchScanEntries) {
+                        throw new StorageException(STAGING_CLEANUP_FAILED);
+                    }
+                    String fileName = fileName(entry);
+                    boolean recoveryGuard = isCleanupRecoveryEntry(fileName);
+                    if (!recoveryGuard
+                            && !CANONICAL_SCRATCH_FILE.matcher(fileName).matches()) {
+                        continue;
+                    }
+                    BasicFileAttributes attributes;
+                    try {
+                        attributes = Files.readAttributes(
+                                entry, BasicFileAttributes.class, NOFOLLOW_LINKS);
+                    } catch (NoSuchFileException concurrentRemoval) {
+                        continue;
+                    }
+                    requireSafeScratchFile(entry, attributes);
+                    if (recoveryGuard) {
+                        requireRecoveryGuardRelationship(entry);
+                    }
+                    if (attributes.lastModifiedTime().toInstant().isAfter(cutoff)) {
+                        continue;
+                    }
+                    candidateCount++;
+                    ScratchCandidate candidate = new ScratchCandidate(
+                            entry.toAbsolutePath().normalize(),
+                            fileName,
+                            recoveryGuard,
+                            attributes.fileKey(),
+                            attributes.size(),
+                            attributes.creationTime().toInstant(),
+                            attributes.lastModifiedTime().toInstant());
+                    keepOldestScratch(selected, candidate);
+                }
+            }
+
+            deleted = 0;
+            List<ScratchCandidate> ordered = new ArrayList<>(selected);
+            ordered.sort(OLDEST_SCRATCH_FIRST);
+            for (ScratchCandidate candidate : ordered) {
+                requireCleanupNotInterrupted();
+                if (deleteScratchCandidate(candidate, cutoff)) {
+                    deleted++;
+                }
+            }
+        } catch (IOException | RuntimeException failure) {
+            logCleanupFailure(started, scanned, candidateCount);
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+        return cleanupResult(started, scanned, candidateCount, deleted);
+    }
+
+    private boolean deleteScratchCandidate(ScratchCandidate candidate, Instant cutoff)
+            throws IOException {
+        try {
+            stagingAccess.verifyRoot();
+            Path expected = stagingRoot.resolve(candidate.stableKey())
+                    .toAbsolutePath()
+                    .normalize();
+            boolean canonicalName = candidate.recoveryGuard()
+                    ? isCleanupRecoveryEntry(candidate.stableKey())
+                    : CANONICAL_SCRATCH_FILE.matcher(candidate.stableKey()).matches();
+            if (!canonicalName || !candidate.path().equals(expected)) {
+                throw new StorageException(STAGING_CLEANUP_FAILED);
+            }
+            BasicFileAttributes attributes = Files.readAttributes(
+                    candidate.path(), BasicFileAttributes.class, NOFOLLOW_LINKS);
+            requireSafeScratchFile(candidate.path(), attributes);
+            requireInitialScratchSnapshot(candidate, attributes);
+            if (attributes.lastModifiedTime().toInstant().isAfter(cutoff)) {
+                return false;
+            }
+            if (candidate.recoveryGuard()) {
+                try (LocalCleanupIdentity identity = LocalCleanupIdentity.capture(
+                        candidate.path(),
+                        attributes,
+                        recoveryCounterpart(candidate.path()),
+                        stagingAccess,
+                        LocalCleanupIdentity.GuardReleaseObserver.NOOP)) {
+                    stagingObserver.beforeCleanup(candidate.path());
+                    BasicFileAttributes immediatelyBeforeDelete = Files.readAttributes(
+                            candidate.path(), BasicFileAttributes.class, NOFOLLOW_LINKS);
+                    requireSafeScratchFile(candidate.path(), immediatelyBeforeDelete);
+                    requireInitialScratchSnapshot(candidate, immediatelyBeforeDelete);
+                    identity.require(candidate.path());
+                    requireRecoveryGuardRelationship(candidate.path());
+                    if (immediatelyBeforeDelete.lastModifiedTime()
+                            .toInstant()
+                            .isAfter(cutoff)) {
+                        return false;
+                    }
+                    Files.delete(candidate.path());
+                    stagingAccess.syncDirectory(stagingRoot);
+                    return true;
+                }
+            }
+            try (LocalCleanupIdentity identity = LocalCleanupIdentity.capture(
+                    candidate.path(),
+                    attributes,
+                    stagingRoot.resolve(CLEANUP_IDENTITY_GUARD_PREFIX + candidate.stableKey()),
+                    stagingAccess,
+                    stagingObserver::beforeScavengeGuardRelease)) {
+                stagingObserver.beforeCleanup(candidate.path());
+                BasicFileAttributes immediatelyBeforeDelete = Files.readAttributes(
+                        candidate.path(), BasicFileAttributes.class, NOFOLLOW_LINKS);
+                requireSafeScratchFile(candidate.path(), immediatelyBeforeDelete);
+                identity.require(candidate.path());
+                if (immediatelyBeforeDelete.lastModifiedTime()
+                        .toInstant()
+                        .isAfter(cutoff)) {
+                    return false;
+                }
+                Files.delete(candidate.path());
+                stagingAccess.syncDirectory(stagingRoot);
+                return true;
+            }
+        } catch (NoSuchFileException concurrentRemoval) {
+            return false;
+        }
+    }
+
+    private void requireSafeScratchFile(Path path, BasicFileAttributes attributes)
+            throws IOException {
+        if (!attributes.isRegularFile()
+                || attributes.isSymbolicLink()
+                || attributes.isOther()) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+        stagingAccess.verifyFile(path);
+    }
+
+    private void requireRecoveryGuardRelationship(Path guard) throws IOException {
+        String guardName = fileName(guard);
+        String originalName = cleanupRecoveryBaseName(guardName);
+        if (originalName == null) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+        List<Path> related = List.of(
+                stagingRoot.resolve(originalName).toAbsolutePath().normalize(),
+                stagingRoot.resolve(CLEANUP_IDENTITY_GUARD_PREFIX + originalName)
+                        .toAbsolutePath()
+                        .normalize(),
+                stagingRoot.resolve(CLEANUP_VERIFICATION_GUARD_PREFIX + originalName)
+                        .toAbsolutePath()
+                        .normalize());
+        for (Path path : related) {
+            try {
+                BasicFileAttributes attributes = Files.readAttributes(
+                        path, BasicFileAttributes.class, NOFOLLOW_LINKS);
+                requireSafeScratchFile(path, attributes);
+                if (!Files.isSameFile(guard, path)) {
+                    throw new StorageException(STAGING_CLEANUP_FAILED);
+                }
+            } catch (NoSuchFileException missingRelatedEntry) {
+                // A crash may leave either fixed guard slot as the sole link.
+            }
+        }
+    }
+
+    private static Path recoveryCounterpart(Path recovery) {
+        String fileName = fileName(recovery);
+        String baseName = cleanupRecoveryBaseName(fileName);
+        if (baseName == null) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+        String counterpartPrefix = fileName.startsWith(CLEANUP_IDENTITY_GUARD_PREFIX)
+                ? CLEANUP_VERIFICATION_GUARD_PREFIX
+                : CLEANUP_IDENTITY_GUARD_PREFIX;
+        return recovery.getParent().resolve(counterpartPrefix + baseName)
+                .toAbsolutePath()
+                .normalize();
+    }
+
+    private static boolean isCleanupRecoveryEntry(String fileName) {
+        return cleanupRecoveryBaseName(fileName) != null;
+    }
+
+    private static String cleanupRecoveryBaseName(String fileName) {
+        String baseName;
+        if (fileName.startsWith(CLEANUP_IDENTITY_GUARD_PREFIX)) {
+            baseName = fileName.substring(CLEANUP_IDENTITY_GUARD_PREFIX.length());
+        } else if (fileName.startsWith(CLEANUP_VERIFICATION_GUARD_PREFIX)) {
+            baseName = fileName.substring(CLEANUP_VERIFICATION_GUARD_PREFIX.length());
+        } else {
+            return null;
+        }
+        return CANONICAL_SCRATCH_FILE.matcher(baseName).matches() ? baseName : null;
+    }
+
+    private static void requireInitialScratchSnapshot(
+            ScratchCandidate expected, BasicFileAttributes actual) {
+        if (expected.identity() != null
+                && !expected.identity().equals(actual.fileKey())) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+        if (expected.identity() == null
+                && (expected.size() != actual.size()
+                        || !expected.created().equals(
+                                actual.creationTime().toInstant())
+                        || !expected.modified().equals(
+                                actual.lastModifiedTime().toInstant()))) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+    }
+
+    private static void keepOldestScratch(
+            PriorityQueue<ScratchCandidate> selected, ScratchCandidate candidate) {
+        if (selected.size() < SCRATCH_CLEANUP_DELETE_LIMIT) {
+            selected.add(candidate);
+            return;
+        }
+        if (OLDEST_SCRATCH_FIRST.compare(candidate, selected.peek()) < 0) {
+            selected.remove();
+            selected.add(candidate);
+        }
+    }
+
+    private static String fileName(Path path) {
+        Path fileName = path.getFileName();
+        if (fileName == null) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+        return fileName.toString();
+    }
+
+    private static void requireCleanupNotInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new StorageException(STAGING_CLEANUP_FAILED);
+        }
+    }
+
+    private static void requireValidScanLimit(int maximumEntries) {
+        if (maximumEntries < 1 || maximumEntries > MAXIMUM_SCRATCH_SCAN_ENTRY_LIMIT) {
+            throw new IllegalArgumentException("COS scratch scan limit is invalid");
+        }
+    }
+
+    private static StagingCleanupResult cleanupResult(
+            long started, long scanned, long candidates, int deleted) {
+        Duration elapsed = elapsed(started);
+        StagingCleanupResult result =
+                new StagingCleanupResult(scanned, candidates, deleted, elapsed);
+        LOGGER.info(
+                "COS scratch cleanup scanned={} candidates={} deleted={} elapsedMs={}",
+                result.scanned(),
+                result.candidates(),
+                result.deleted(),
+                result.elapsed().toMillis());
+        return result;
+    }
+
+    private static void logCleanupFailure(
+            long started, long scanned, long candidates) {
+        LOGGER.warn(
+                "COS scratch cleanup failed scanned={} candidates={} elapsedMs={}",
+                scanned,
+                candidates,
+                elapsed(started).toMillis());
+    }
+
+    private static Duration elapsed(long started) {
+        return Duration.ofNanos(Math.max(0, System.nanoTime() - started));
+    }
+
     private void requireOfficialSignedUri(URI signed, ObjectKey key) {
         String expectedHost = properties.bucket() + ".cos." + properties.region()
                 + ".myqcloud.com";
@@ -427,5 +758,17 @@ public final class TencentCosStorageService implements StorageService, AutoClose
         void afterStageClosed(Path path) throws IOException;
 
         void beforeCleanup(Path path) throws IOException;
+
+        default void beforeScavengeGuardRelease(Path guard, Path target)
+                throws IOException {}
     }
+
+    private record ScratchCandidate(
+            Path path,
+            String stableKey,
+            boolean recoveryGuard,
+            Object identity,
+            long size,
+            Instant created,
+            Instant modified) {}
 }

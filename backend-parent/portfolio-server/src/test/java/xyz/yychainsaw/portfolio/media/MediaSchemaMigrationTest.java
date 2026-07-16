@@ -27,7 +27,7 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
     @Autowired JdbcClient jdbc;
 
     @Test
-    void flywayCreatesTheVersionThreeMediaAndJobTables() {
+    void flywayCreatesTheMediaJobAndLocalStagingSchemaVersions() {
         List<String> versions = migratorJdbc()
                 .sql("""
                         select version
@@ -52,7 +52,8 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
                 .list();
 
         SoftAssertions.assertSoftly(softly -> {
-            softly.assertThat(versions).containsExactly("1", "2", "3");
+            softly.assertThat(versions)
+                    .containsExactly("1", "2", "3", "4", "5", "6");
             softly.assertThat(tables).containsExactly(
                     "background_job",
                     "maintenance_run",
@@ -706,6 +707,7 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
                           and index_relation.relname in (
                               'background_job_ready_idx',
                               'background_job_expired_lease_idx',
+                              'background_job_terminal_retention_idx',
                               'media_asset_status_idx',
                               'media_asset_sha_idx',
                               'media_asset_created_at_id_idx',
@@ -783,6 +785,7 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
                     .containsExactly(
                             "background_job_expired_lease_idx",
                             "background_job_ready_idx",
+                            "background_job_terminal_retention_idx",
                             "media_asset_archived_idx",
                             "media_asset_created_at_id_idx",
                             "media_asset_sha_idx",
@@ -799,6 +802,18 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
                                         .get("background_job_expired_lease_idx")
                                         .predicate())
                         .contains("RUNNING");
+            }
+            if (indexesByName.containsKey("background_job_terminal_retention_idx")) {
+                softly.assertThat(
+                                indexesByName
+                                        .get("background_job_terminal_retention_idx")
+                                        .definition())
+                        .contains("(updated_at, created_at, id)");
+                softly.assertThat(
+                                indexesByName
+                                        .get("background_job_terminal_retention_idx")
+                                        .predicate())
+                        .contains("SUCCEEDED", "DEAD");
             }
             if (indexesByName.containsKey("media_asset_status_idx")) {
                 softly.assertThat(indexesByName.get("media_asset_status_idx").definition())

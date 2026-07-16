@@ -366,7 +366,7 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
     }
 
     @Test
-    void realIngestAuditConstraintRollbackRemovesEveryRowAndDeletesOwnedStagingOnce() {
+    void realRemoteIngestAuditConstraintRollbackRemovesEveryRowAndDeletesOwnedStagingOnce() {
         UUID nonexistentActor = UUID.randomUUID();
         assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
         assertThat(count("portfolio.admin_user", "id", nonexistentActor)).isZero();
@@ -471,6 +471,9 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
             boolean metadataEmpty) {}
 
     private static final class RecordingStorage implements StorageService {
+        private static final String BUCKET = "portfolio-test";
+        private static final String REGION = "ap-guangzhou";
+
         private final List<String> putKeys = new ArrayList<>();
         private final List<String> deleteKeys = new ArrayList<>();
         private final List<Boolean> deleteObservedTransaction = new ArrayList<>();
@@ -478,12 +481,12 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
 
         @Override
         public StorageProvider provider() {
-            return StorageProvider.LOCAL;
+            return StorageProvider.TENCENT_COS;
         }
 
         @Override
         public StorageLocation location() {
-            return new StorageLocation(StorageProvider.LOCAL, null, null);
+            return new StorageLocation(StorageProvider.TENCENT_COS, BUCKET, REGION);
         }
 
         @Override
@@ -503,9 +506,9 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
                 throw new IllegalStateException("storage read failed");
             }
             return new StoredObject(
-                    StorageProvider.LOCAL,
-                    null,
-                    null,
+                    StorageProvider.TENCENT_COS,
+                    BUCKET,
+                    REGION,
                     objectKey,
                     contentLength,
                     contentType,

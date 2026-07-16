@@ -1,19 +1,7 @@
 package xyz.yychainsaw.portfolio.system.job;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.StreamReadConstraints;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectReader;
-import com.fasterxml.jackson.databind.ObjectWriter;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Duration;
@@ -21,12 +9,14 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.zone.ZoneRules;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,9 +24,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class BackgroundJobService {
     static final int MAX_ATTEMPTS = 10;
 
-    private static final int MAX_PAYLOAD_BYTES = 16 * 1024;
-    private static final int MAX_NUMBER_CHARACTERS = MAX_PAYLOAD_BYTES;
-    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 160;
+    private static final Logger LOGGER = LoggerFactory.getLogger(BackgroundJobService.class);
+
     private static final int MAX_WORKER_ID_LENGTH = 120;
     private static final Duration MAX_LEASE_DURATION = Duration.ofHours(24);
     private static final Set<String> FAILURE_CODES = Set.of(
@@ -47,9 +36,7 @@ public class BackgroundJobService {
             "JOB_ATTEMPTS_EXHAUSTED");
 
     private final BackgroundJobMapper mapper;
-    private final ObjectReader exactJsonReader;
-    private final ObjectWriter inputJsonWriter;
-    private final JsonFactory exactJsonFactory;
+    private final JobPayloadCodec payloadCodec;
     private final Clock clock;
     private final JobHandlerRegistry handlers;
 
@@ -58,19 +45,18 @@ public class BackgroundJobService {
             ObjectMapper objectMapper,
             Clock clock,
             JobHandlerRegistry handlers) {
+        this(mapper, new JobPayloadCodec(objectMapper), clock, handlers);
+    }
+
+    @Autowired
+    public BackgroundJobService(
+            BackgroundJobMapper mapper,
+            JobPayloadCodec payloadCodec,
+            Clock clock,
+            JobHandlerRegistry handlers) {
         this.mapper = Objects.requireNonNull(mapper, "job mapper is required");
-        ObjectMapper requiredObjectMapper =
-                Objects.requireNonNull(objectMapper, "object mapper is required");
-        ObjectMapper exactObjectMapper = requiredObjectMapper.copy();
-        exactObjectMapper.getFactory().setStreamReadConstraints(
-                StreamReadConstraints.builder()
-                        .maxNumberLength(MAX_NUMBER_CHARACTERS)
-                        .build());
-        this.exactJsonFactory = exactObjectMapper.getFactory();
-        this.exactJsonReader = exactObjectMapper.readerFor(JsonNode.class)
-                .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
-                .with(JsonNodeFactory.withExactBigDecimals(true));
-        this.inputJsonWriter = requiredObjectMapper.writer();
+        this.payloadCodec = Objects.requireNonNull(
+                payloadCodec, "job payload codec is required");
         this.clock = requireUtcClock(clock);
         this.handlers = Objects.requireNonNull(handlers, "job handlers are required");
     }
@@ -79,15 +65,15 @@ public class BackgroundJobService {
     public UUID enqueue(
             String jobType, String idempotencyKey, Map<String, ?> payload) {
         requireRegisteredJobType(jobType);
-        requireIdempotencyKey(idempotencyKey);
-        SerializedPayload serialized = serializePayload(payload);
+        JobPayloadCodec.requireIdempotencyKey(idempotencyKey);
+        String serialized = payloadCodec.serialize(payload);
         OffsetDateTime now = now();
         UUID candidateId = UUID.randomUUID();
 
         Optional<UUID> inserted;
         try {
             inserted = mapper.insertIfAbsent(
-                    candidateId, jobType, idempotencyKey, serialized.json(), now);
+                    candidateId, jobType, idempotencyKey, serialized, now);
         } catch (RuntimeException exception) {
             throw fixedFailure("JOB_ENQUEUE_FAILED");
         }
@@ -97,7 +83,7 @@ public class BackgroundJobService {
 
         ExistingBackgroundJobRow existing;
         try {
-            existing = mapper.findByIdempotencyKey(idempotencyKey, serialized.json())
+            existing = mapper.findByIdempotencyKey(idempotencyKey, serialized)
                     .orElseThrow(() -> fixedFailure("JOB_ENQUEUE_FAILED"));
         } catch (RuntimeException exception) {
             if (isFixedFailure(exception, "JOB_ENQUEUE_FAILED")) {
@@ -127,12 +113,20 @@ public class BackgroundJobService {
 
         Optional<BackgroundJobRow> exhausted;
         try {
+            if (mapper.quarantineNextCorruptExpired(
+                    now, "JOB_STATE_INVALID") == 1) {
+                LOGGER.warn("Quarantined one corrupt expired background-job lease");
+            }
             exhausted = mapper.deadLetterNextExhausted(
                     now, "JOB_ATTEMPTS_EXHAUSTED");
         } catch (RuntimeException exception) {
             throw fixedFailure("JOB_LEASE_FAILED");
         }
-        exhausted.ifPresent(row -> invokeDeadLetter(row, "JOB_ATTEMPTS_EXHAUSTED"));
+        exhausted.ifPresent(row -> invokeDeadLetter(
+                row,
+                "JOB_ATTEMPTS_EXHAUSTED",
+                new JobExecutionContext(
+                        row.id(), row.leaseOwner(), row.attempts())));
 
         Optional<BackgroundJobRow> claimed;
         try {
@@ -197,7 +191,10 @@ public class BackgroundJobService {
         }
         BackgroundJobRow row = transitioned.get();
         if ("DEAD".equals(row.status())) {
-            invokeDeadLetter(row, summary);
+            invokeDeadLetter(
+                    row,
+                    summary,
+                    new JobExecutionContext(jobId, leaseOwner, attemptFence));
         }
         return true;
     }
@@ -208,69 +205,33 @@ public class BackgroundJobService {
         }
     }
 
-    private static void requireIdempotencyKey(String idempotencyKey) {
-        if (!isVisibleAscii(idempotencyKey, MAX_IDEMPOTENCY_KEY_LENGTH)) {
-            throw new IllegalArgumentException("job idempotency key is invalid");
-        }
-    }
-
-    private SerializedPayload serializePayload(Map<String, ?> payload) {
-        if (payload == null) {
-            throw invalidPayload();
-        }
-        try {
-            byte[] encoded = inputJsonWriter.writeValueAsBytes(payload);
-            if (encoded.length > MAX_PAYLOAD_BYTES) {
-                throw invalidPayload();
-            }
-            JsonNode semanticValue = exactJsonReader.readTree(encoded);
-            if (semanticValue == null
-                    || !semanticValue.isObject()
-                    || !hasSafeNumericForms(semanticValue)) {
-                throw invalidPayload();
-            }
-            byte[] canonical = writeCanonicalPayload(semanticValue);
-            return new SerializedPayload(new String(canonical, StandardCharsets.UTF_8));
-        } catch (IllegalArgumentException exception) {
-            if ("job payload is invalid".equals(exception.getMessage())) {
-                throw exception;
-            }
-            throw invalidPayload();
-        } catch (Exception exception) {
-            throw invalidPayload();
-        }
-    }
-
     private JsonNode parseStoredPayload(String payloadJson) {
-        if (payloadJson == null) {
-            throw fixedFailure("JOB_PAYLOAD_INVALID");
-        }
         try {
-            JsonNode payload = exactJsonReader.readTree(payloadJson);
-            if (payload == null
-                    || !payload.isObject()
-                    || !hasSafeNumericForms(payload)) {
-                throw fixedFailure("JOB_PAYLOAD_INVALID");
-            }
-            writeCanonicalPayload(payload);
-            return payload.deepCopy();
-        } catch (RuntimeException exception) {
-            if (isFixedFailure(exception, "JOB_PAYLOAD_INVALID")) {
-                throw exception;
-            }
-            throw fixedFailure("JOB_PAYLOAD_INVALID");
-        } catch (Exception exception) {
+            return payloadCodec.parseStored(payloadJson);
+        } catch (IllegalArgumentException exception) {
             throw fixedFailure("JOB_PAYLOAD_INVALID");
         }
     }
 
-    private void invokeDeadLetter(BackgroundJobRow row, String summaryCode) {
+    private void invokeDeadLetter(
+            BackgroundJobRow row,
+            String summaryCode,
+            JobExecutionContext context) {
         Optional<JobHandler> handler = handlers.find(row.jobType());
         if (handler.isEmpty()) {
             return;
         }
+        JsonNode payload;
         try {
-            handler.get().onDeadLetter(parseStoredPayload(row.payloadJson()), summaryCode);
+            payload = payloadCodec.parseStored(row.payloadJson());
+        } catch (IllegalArgumentException exception) {
+            LOGGER.warn(
+                    "Skipped dead-letter hook for job {} because its stored payload is invalid",
+                    row.id());
+            return;
+        }
+        try {
+            handler.get().onDeadLetter(context, payload, summaryCode);
         } catch (Exception exception) {
             throw fixedFailure("job dead-letter hook failed");
         }
@@ -320,89 +281,6 @@ public class BackgroundJobService {
                 : "JOB_FAILED";
     }
 
-    private static boolean hasSafeNumericForms(JsonNode node) {
-        if (node.isIntegralNumber()) {
-            return node.asText().length() <= MAX_NUMBER_CHARACTERS;
-        }
-        if (node.isFloatingPointNumber()) {
-            BigDecimal value = node.decimalValue();
-            if (value.signum() == 0 && value.scale() <= 0) {
-                return true;
-            }
-            long precision = value.precision();
-            long scale = value.scale();
-            long sign = value.signum() < 0 ? 1L : 0L;
-            long plainLength = scale <= 0
-                    ? sign + precision - scale
-                    : (precision > scale
-                            ? sign + precision + 1L
-                            : sign + scale + 2L);
-            return plainLength <= MAX_NUMBER_CHARACTERS;
-        }
-        if (node.isContainerNode()) {
-            Iterator<JsonNode> children = node.elements();
-            while (children.hasNext()) {
-                if (!hasSafeNumericForms(children.next())) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    private byte[] writeCanonicalPayload(JsonNode payload) throws IOException {
-        BoundedPayloadOutputStream output = new BoundedPayloadOutputStream();
-        try (JsonGenerator generator = exactJsonFactory.createGenerator(output)) {
-            writeCanonicalNode(generator, payload);
-        }
-        return output.toByteArray();
-    }
-
-    private static void writeCanonicalNode(JsonGenerator generator, JsonNode node)
-            throws IOException {
-        if (node.isObject()) {
-            generator.writeStartObject();
-            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> field = fields.next();
-                generator.writeFieldName(field.getKey());
-                writeCanonicalNode(generator, field.getValue());
-            }
-            generator.writeEndObject();
-            return;
-        }
-        if (node.isArray()) {
-            generator.writeStartArray();
-            Iterator<JsonNode> elements = node.elements();
-            while (elements.hasNext()) {
-                writeCanonicalNode(generator, elements.next());
-            }
-            generator.writeEndArray();
-            return;
-        }
-        if (node.isIntegralNumber()) {
-            generator.writeNumber(node.asText());
-            return;
-        }
-        if (node.isFloatingPointNumber()) {
-            generator.writeNumber(node.decimalValue().toPlainString());
-            return;
-        }
-        if (node.isTextual()) {
-            generator.writeString(node.textValue());
-            return;
-        }
-        if (node.isBoolean()) {
-            generator.writeBoolean(node.booleanValue());
-            return;
-        }
-        if (node.isNull()) {
-            generator.writeNull();
-            return;
-        }
-        throw new IOException("unsupported JSON node");
-    }
-
     private static boolean isVisibleAscii(String value, int maximumLength) {
         if (value == null
                 || value.isEmpty()
@@ -431,10 +309,6 @@ public class BackgroundJobService {
         return clock;
     }
 
-    private static IllegalArgumentException invalidPayload() {
-        return new IllegalArgumentException("job payload is invalid");
-    }
-
     private static IllegalArgumentException invalidLeaseDuration() {
         return new IllegalArgumentException("lease duration is invalid");
     }
@@ -449,33 +323,4 @@ public class BackgroundJobService {
                 && exception.getCause() == null;
     }
 
-    private record SerializedPayload(String json) {}
-
-    private static final class BoundedPayloadOutputStream extends OutputStream {
-        private final ByteArrayOutputStream output =
-                new ByteArrayOutputStream(MAX_PAYLOAD_BYTES);
-
-        @Override
-        public void write(int value) throws IOException {
-            requireCapacity(1);
-            output.write(value);
-        }
-
-        @Override
-        public void write(byte[] bytes, int offset, int length) throws IOException {
-            requireCapacity(length);
-            output.write(bytes, offset, length);
-        }
-
-        private void requireCapacity(int additionalBytes) throws IOException {
-            if (additionalBytes < 0
-                    || additionalBytes > MAX_PAYLOAD_BYTES - output.size()) {
-                throw new IOException("job payload exceeds its byte budget");
-            }
-        }
-
-        private byte[] toByteArray() {
-            return output.toByteArray();
-        }
-    }
 }

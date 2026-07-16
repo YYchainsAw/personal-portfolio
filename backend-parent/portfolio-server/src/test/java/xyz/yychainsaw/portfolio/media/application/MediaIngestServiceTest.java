@@ -17,7 +17,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
@@ -111,9 +110,9 @@ class MediaIngestServiceTest {
         verify(context.assets()).insertProcessing(insertCaptor.capture());
         MediaAssetRecord.Insert insert = insertCaptor.getValue();
         assertThat(insert.id()).isEqualTo(ASSET_ID);
-        assertThat(insert.provider()).isEqualTo(StorageProvider.LOCAL);
-        assertThat(insert.bucket()).isNull();
-        assertThat(insert.region()).isNull();
+        assertThat(insert.provider()).isEqualTo(StorageProvider.TENCENT_COS);
+        assertThat(insert.bucket()).isEqualTo("portfolio-1234567890");
+        assertThat(insert.region()).isEqualTo("ap-guangzhou");
         assertThat(insert.objectKey()).isEqualTo(originalKey);
         assertThat(insert.objectKey()).doesNotStartWith("staging/");
         assertThat(insert.originalFilename()).isEqualTo("document.pdf");
@@ -208,10 +207,27 @@ class MediaIngestServiceTest {
     @Test
     void rejectsWriterWhoseProviderDisagreesWithItsConfiguredLocationBeforePublication() {
         TestContext context = context(TransactionMode.NORMAL, false, ASSET_ID);
+        context.storage().provider = StorageProvider.LOCAL;
         context.storage().location = new StorageLocation(
                 StorageProvider.TENCENT_COS,
                 "portfolio-1234567890",
                 "ap-guangzhou");
+
+        assertUploadFailed(() -> context.service().ingest(
+                command(new CloseCountingInputStream(PDF)), ACTOR_ID));
+
+        assertThat(context.storage().putKeys()).isEmpty();
+        assertThat(context.storage().deleteKeys()).isEmpty();
+        verifyNoInteractions(context.assets(), context.jobs(), context.audit());
+        assertDirectoryEmpty();
+    }
+
+    @Test
+    void packagePrivateTestConstructorCannotBypassReservedLocalPublication() {
+        TestContext context = context(TransactionMode.NORMAL, false, ASSET_ID);
+        context.storage().provider = StorageProvider.LOCAL;
+        context.storage().location = new StorageLocation(
+                StorageProvider.LOCAL, null, null);
 
         assertUploadFailed(() -> context.service().ingest(
                 command(new CloseCountingInputStream(PDF)), ACTOR_ID));
@@ -449,7 +465,7 @@ class MediaIngestServiceTest {
     }
 
     @Test
-    void objectKeysAndProvisionalHandlerEnforceExactExternalContract() throws Exception {
+    void objectKeysEnforceTheExactExternalContract() {
         assertThat(MediaObjectKeys.stagingKey(ASSET_ID, SHA256, "image/jpeg"))
                 .isEqualTo("staging/" + ASSET_ID + "/" + SHA256 + ".jpg");
         assertThat(MediaObjectKeys.originalKey(ASSET_ID, SHA256, "application/pdf"))
@@ -458,19 +474,6 @@ class MediaIngestServiceTest {
                 .isThrownBy(() -> MediaObjectKeys.stagingKey(
                         ASSET_ID, "../request-text", "image/jpeg"));
 
-        FinalizeMediaUploadJobHandler handler = new FinalizeMediaUploadJobHandler();
-        var valid = new ObjectMapper().readTree("{\"assetId\":\"" + ASSET_ID + "\"}");
-        var extra = new ObjectMapper().readTree(
-                "{\"assetId\":\"" + ASSET_ID + "\",\"stagingKey\":\"private/key\"}");
-        assertThat(handler.jobType()).isEqualTo("FINALIZE_MEDIA_UPLOAD");
-        assertThatIllegalStateException()
-                .isThrownBy(() -> handler.handle(valid))
-                .withMessage("MEDIA_FINALIZER_NOT_READY")
-                .withNoCause();
-        assertThatIllegalArgumentException()
-                .isThrownBy(() -> handler.handle(extra))
-                .withMessage("MEDIA_FINALIZER_PAYLOAD_INVALID")
-                .withNoCause();
     }
 
     private TestContext context(
@@ -654,9 +657,11 @@ class MediaIngestServiceTest {
         private RuntimeException putFailure;
         private RuntimeException deleteFailure;
         private StoredObject returnedObject;
-        private StorageProvider provider = StorageProvider.LOCAL;
+        private StorageProvider provider = StorageProvider.TENCENT_COS;
         private StorageLocation location = new StorageLocation(
-                StorageProvider.LOCAL, null, null);
+                StorageProvider.TENCENT_COS,
+                "portfolio-1234567890",
+                "ap-guangzhou");
 
         @Override
         public StorageProvider provider() {

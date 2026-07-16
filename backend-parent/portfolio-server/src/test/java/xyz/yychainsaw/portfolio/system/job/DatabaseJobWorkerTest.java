@@ -114,6 +114,12 @@ class DatabaseJobWorkerTest extends PostgresIntegrationTestBase {
         assertThat(handler.transactionActive()).isFalse();
         assertThat(handler.payload()).isEqualTo(
                 objectMapper.valueToTree(Map.of("mode", "SUCCESS", "value", 7)));
+        assertThat(handler.context().jobId()).isEqualTo(id);
+        assertThat(handler.context().attemptFence()).isOne();
+        assertThat(handler.context().leaseOwner())
+                .startsWith("portfolio-worker-");
+        assertThat(handler.context().toString())
+                .doesNotContain(id.toString(), handler.context().leaseOwner());
         assertThat(row.status()).isEqualTo("SUCCEEDED");
         assertThat(row.attempts()).isOne();
         assertThat(row.leaseOwner()).isNull();
@@ -716,6 +722,7 @@ class DatabaseJobWorkerTest extends PostgresIntegrationTestBase {
     static final class ControllableJobHandler implements JobHandler {
         private final AtomicInteger calls = new AtomicInteger();
         private final AtomicReference<JsonNode> payload = new AtomicReference<>();
+        private final AtomicReference<JobExecutionContext> context = new AtomicReference<>();
         private final AtomicBoolean transactionActive = new AtomicBoolean();
         private final AtomicBoolean interruptFlagPreserved = new AtomicBoolean();
         private final AtomicReference<Thread> handlingThread = new AtomicReference<>();
@@ -786,6 +793,13 @@ class DatabaseJobWorkerTest extends PostgresIntegrationTestBase {
             }
         }
 
+        @Override
+        public void handle(JobExecutionContext execution, JsonNode value)
+                throws InterruptedException {
+            context.set(execution);
+            handle(value);
+        }
+
         int calls() {
             return calls.get();
         }
@@ -793,6 +807,10 @@ class DatabaseJobWorkerTest extends PostgresIntegrationTestBase {
         JsonNode payload() {
             JsonNode value = payload.get();
             return value == null ? null : value.deepCopy();
+        }
+
+        JobExecutionContext context() {
+            return context.get();
         }
 
         boolean transactionActive() {
@@ -822,6 +840,7 @@ class DatabaseJobWorkerTest extends PostgresIntegrationTestBase {
         void reset() {
             calls.set(0);
             payload.set(null);
+            context.set(null);
             transactionActive.set(false);
             interruptFlagPreserved.set(false);
             handlingThread.set(null);

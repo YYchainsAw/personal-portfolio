@@ -65,8 +65,28 @@ public class MediaAssetRepository {
                 .optional();
     }
 
+    public int markReadyIfProcessing(UUID id) {
+        return transitionProcessing(id, "READY");
+    }
+
+    public int markFailedIfProcessing(UUID id) {
+        return transitionProcessing(id, "FAILED");
+    }
+
     public MediaAssetView toView(MediaAssetRecord record) {
         return Objects.requireNonNull(record, "media asset record is required").toView();
+    }
+
+    private int transitionProcessing(UUID id, String targetStatus) {
+        Objects.requireNonNull(id, "media asset id is required");
+        return jdbc.sql("""
+                        update portfolio.media_asset
+                        set status=:targetStatus, version=version + 1
+                        where id=:id and status='PROCESSING'
+                        """)
+                .param("targetStatus", targetStatus, Types.VARCHAR)
+                .param("id", id, Types.OTHER)
+                .update();
     }
 
     private static MediaAssetRecord map(ResultSet resultSet, int rowNumber)

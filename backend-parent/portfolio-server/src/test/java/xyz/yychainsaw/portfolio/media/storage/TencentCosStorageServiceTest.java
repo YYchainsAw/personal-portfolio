@@ -30,6 +30,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Clock;
@@ -1074,6 +1075,180 @@ class TencentCosStorageServiceTest {
     }
 
     @Test
+    void scratchCleanupStreamsTheWholeRootButDeletesOnlyTheOldestBoundedCandidates()
+            throws Exception {
+        Path scratchRoot = stagingRoot();
+        FakeCosClient client = new FakeCosClient();
+        int limit = TencentCosStorageService.SCRATCH_CLEANUP_DELETE_LIMIT;
+        List<Path> eligible = createCrashScratchResidues(
+                client, scratchRoot, limit + 3);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        for (int index = 0; index < eligible.size(); index++) {
+            Files.setLastModifiedTime(
+                    eligible.get(index),
+                    FileTime.from(cutoff.minusSeconds(index + 1L)));
+        }
+        List<Path> young = createCrashScratchResidues(
+                client, scratchRoot, limit + 7);
+        for (int index = 0; index < young.size(); index++) {
+            Files.setLastModifiedTime(
+                    young.get(index), FileTime.from(cutoff.plusSeconds(index + 1L)));
+        }
+        Path unknown = scratchRoot.resolve("000-unknown-residue");
+        Files.write(unknown, new byte[] {1});
+        assertThat(client.putCalls).isZero();
+
+        try (TencentCosStorageService cleanup = new TencentCosStorageService(
+                client, properties(), CLOCK, scratchRoot)) {
+            StagingCleanupResult first = cleanup.cleanupScratch(cutoff);
+            assertThat(first.deleted()).isEqualTo(limit);
+            assertThat(first.scanned()).isEqualTo(
+                    2L * limit + 11L + 1L /* root marker */);
+            assertThat(first.candidates()).isEqualTo(limit + 3L);
+            assertThat(first.elapsed().isNegative()).isFalse();
+            assertThat(eligible.subList(0, 3)).allMatch(Files::exists);
+            assertThat(eligible.subList(3, eligible.size())).noneMatch(Files::exists);
+            assertThat(young).allMatch(Files::exists);
+            assertThat(unknown).exists();
+
+            assertThat(cleanup.cleanupScratch(cutoff).deleted()).isEqualTo(3);
+            assertThat(eligible).noneMatch(Files::exists);
+            assertThat(cleanup.cleanupScratch(cutoff).deleted()).isZero();
+        }
+        assertThat(client.putCalls).isZero();
+        assertThat(client.openCalls).isZero();
+        assertThat(client.existsCalls).isZero();
+        assertThat(client.copyCalls).isZero();
+        assertThat(client.deleteCalls).isZero();
+        assertThat(client.signCalls).isZero();
+    }
+
+    @Test
+    void scratchScanCeilingFailureOccursBeforeAnyLocalOrRemoteDeletion() throws Exception {
+        Path scratchRoot = stagingRoot();
+        FakeCosClient client = new FakeCosClient();
+        List<Path> residue = createCrashScratchResidues(client, scratchRoot, 3);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        for (Path path : residue) {
+            Files.setLastModifiedTime(path, FileTime.from(cutoff));
+        }
+
+        try (TencentCosStorageService cleanup = new TencentCosStorageService(
+                client,
+                properties(),
+                CLOCK,
+                scratchRoot,
+                TencentCosStorageService.StagingObserver.NOOP,
+                2)) {
+            assertStorageFailure(
+                    () -> cleanup.cleanupScratch(cutoff),
+                    "COS_STAGING_CLEANUP_FAILED");
+        }
+        assertThat(residue).allMatch(Files::exists);
+        assertThat(client.putCalls).isZero();
+        assertThat(client.openCalls).isZero();
+        assertThat(client.existsCalls).isZero();
+        assertThat(client.copyCalls).isZero();
+        assertThat(client.deleteCalls).isZero();
+        assertThat(client.signCalls).isZero();
+    }
+
+    @Test
+    void deterministicScratchIdentityGuardIsRecoveredAfterReleaseRefusal()
+            throws Exception {
+        Path scratchRoot = stagingRoot();
+        FakeCosClient client = new FakeCosClient();
+        Path residue = createCrashScratchResidues(client, scratchRoot, 1).get(0);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        Files.setLastModifiedTime(residue, FileTime.from(cutoff));
+        AtomicInteger releases = new AtomicInteger();
+        TencentCosStorageService.StagingObserver observer =
+                new TencentCosStorageService.StagingObserver() {
+                    @Override
+                    public void afterStageClosed(Path path) {}
+
+                    @Override
+                    public void beforeCleanup(Path path) {}
+
+                    @Override
+                    public void beforeScavengeGuardRelease(
+                            Path guard, Path target) throws IOException {
+                        if (releases.incrementAndGet() == 1) {
+                            throw new IOException("simulated guard release refusal");
+                        }
+                    }
+                };
+
+        try (TencentCosStorageService cleanup = new TencentCosStorageService(
+                client, properties(), CLOCK, scratchRoot, observer)) {
+            assertStorageFailure(
+                    () -> cleanup.cleanupScratch(cutoff),
+                    "COS_STAGING_CLEANUP_FAILED");
+            assertThat(residue).doesNotExist();
+            Path guard = scratchRoot.resolve(
+                    "@cleanup-identity-" + residue.getFileName());
+            assertThat(guard).exists();
+
+            assertThat(cleanup.cleanupScratch(cutoff).deleted()).isOne();
+            assertThat(guard).doesNotExist();
+            assertThat(releases).hasValue(1);
+        }
+    }
+
+    @Test
+    void scratchCleanupRejectsAnUnsafeCanonicalResidueWithoutRemoteCalls()
+            throws Exception {
+        Path scratchRoot = stagingRoot();
+        FakeCosClient client = new FakeCosClient();
+        try (TencentCosStorageService cleanup = new TencentCosStorageService(
+                client, properties(), CLOCK, scratchRoot)) {
+            Path unsafe = scratchRoot.resolve(
+                    "@part-11111111-1111-4111-8111-111111111111");
+            Files.createDirectory(unsafe);
+
+            assertStorageFailure(
+                    () -> cleanup.cleanupScratch(
+                            Instant.parse("2026-07-15T20:00:00Z")),
+                    "COS_STAGING_CLEANUP_FAILED");
+            assertThat(unsafe).exists();
+        }
+        assertThat(client.putCalls).isZero();
+        assertThat(client.openCalls).isZero();
+        assertThat(client.existsCalls).isZero();
+        assertThat(client.copyCalls).isZero();
+        assertThat(client.deleteCalls).isZero();
+        assertThat(client.signCalls).isZero();
+    }
+
+    @Test
+    void interruptedScratchCleanupFailsWithoutDeletingOrCallingCos() throws Exception {
+        Path scratchRoot = stagingRoot();
+        FakeCosClient client = new FakeCosClient();
+        List<Path> residue = createCrashScratchResidues(client, scratchRoot, 1);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        Files.setLastModifiedTime(residue.get(0), FileTime.from(cutoff));
+
+        try (TencentCosStorageService cleanup = new TencentCosStorageService(
+                client, properties(), CLOCK, scratchRoot)) {
+            Thread.currentThread().interrupt();
+            try {
+                assertStorageFailure(
+                        () -> cleanup.cleanupScratch(cutoff),
+                        "COS_STAGING_CLEANUP_FAILED");
+            } finally {
+                assertThat(Thread.interrupted()).isTrue();
+            }
+        }
+        assertThat(residue.get(0)).exists();
+        assertThat(client.putCalls).isZero();
+        assertThat(client.openCalls).isZero();
+        assertThat(client.existsCalls).isZero();
+        assertThat(client.copyCalls).isZero();
+        assertThat(client.deleteCalls).isZero();
+        assertThat(client.signCalls).isZero();
+    }
+
+    @Test
     void nonProdConfigurationWiresOnlyLocalStorageWithoutCosCredentials() {
         int index = 0;
         for (String profile : List.of("", "dev", "test")) {
@@ -1102,30 +1277,63 @@ class TencentCosStorageServiceTest {
                 assertThat(context.getBean(StorageRouter.class).defaultWriter().provider())
                         .isEqualTo(StorageProvider.LOCAL);
             });
-            assertThat(StorageConfiguration.cosStagingRoot(
-                            new LocalStorageProperties(localRoot)))
-                    .doesNotExist();
+            assertThat(localRoot.resolveSibling("cos-scratch")).doesNotExist();
         }
     }
 
     @Test
-    void cosStagingRootIsAFixedSiblingOfTheNormalizedLocalRoot() {
+    void cosStagingRootUsesTheDedicatedNormalizedConfiguredRoot() {
         Path localRoot = stagingRoot().resolve("media");
+        Path configuredScratch = stagingRoot().resolve("scratch/../cos-scratch");
 
         assertThat(StorageConfiguration.cosStagingRoot(
+                        configuredScratch.toString(),
                         new LocalStorageProperties(localRoot)))
-                .isEqualTo(localRoot.toAbsolutePath().normalize()
-                        .resolveSibling("@cos-staging"));
+                .isEqualTo(configuredScratch.toAbsolutePath().normalize());
     }
 
     @Test
-    void cosStagingRootCannotAliasTheLocalStorageRoot() {
-        Path aliasedRoot = stagingRoot().resolve("@cos-staging");
+    void cosStagingRootMustBeDedicatedAndDisjointFromLocalObjectStorage() {
+        Path localRoot = stagingRoot().resolve("media");
 
-        assertStorageFailure(
-                () -> StorageConfiguration.cosStagingRoot(
-                        new LocalStorageProperties(aliasedRoot)),
-                "COS_WRITE_FAILED");
+        for (Path unsafe : List.of(
+                localRoot,
+                localRoot.resolve("scratch"),
+                localRoot.getParent())) {
+            assertStorageFailure(
+                    () -> StorageConfiguration.cosStagingRoot(
+                            unsafe.toString(),
+                            new LocalStorageProperties(localRoot)),
+                    "COS_WRITE_FAILED");
+        }
+    }
+
+    @Test
+    void prodConfigurationRequiresAnExplicitCosScratchRootBeforeAdapterCreation() {
+        AtomicInteger adapterCreations = new AtomicInteger();
+        Path localRoot = stagingRoot().resolve("missing-scratch").resolve("media");
+        CosAdapterFactory factory = properties -> {
+            adapterCreations.incrementAndGet();
+            return new QcloudCosClientAdapter(new CapturingSdk(), properties);
+        };
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(StorageConfiguration.class)
+                .withBean(Clock.class, () -> CLOCK)
+                .withBean(CosSdkLogSilencer.class,
+                        () -> new CosSdkLogSilencer((loggerName, level) -> {}))
+                .withBean(CosAdapterFactory.class, () -> factory)
+                .withPropertyValues(
+                        "spring.profiles.active=prod",
+                        "portfolio.storage.local.root=" + localRoot,
+                        "portfolio.storage.default-provider=TENCENT_COS",
+                        "COS_REGION=ap-guangzhou",
+                        "COS_BUCKET=portfolio-1234567890",
+                        "COS_SECRET_ID=secret-id",
+                        "COS_SECRET_KEY=secret-key")
+                .run(context -> assertThat(context).hasFailed());
+
+        assertThat(adapterCreations).hasValue(0);
     }
 
     @Test
@@ -1140,7 +1348,7 @@ class TencentCosStorageServiceTest {
         };
 
         QcloudCosClientAdapter adapter = new StorageConfiguration().tencentCosClient(
-                properties(), silencer, factory);
+                properties(), silencer, factory, stagingRoot().resolve("dedicated"));
 
         assertThat(events).containsExactly(
                 "com.qcloud.cos=" + LogLevel.OFF,
@@ -1181,6 +1389,8 @@ class TencentCosStorageServiceTest {
                     .withPropertyValues(
                             "spring.profiles.active=prod",
                             "portfolio.storage.local.root=" + localRoot,
+                            "portfolio.storage.cos.staging-root="
+                                    + localRoot.resolveSibling("cos-scratch"),
                             "portfolio.storage.default-provider=TENCENT_COS",
                             "COS_REGION=ap-guangzhou",
                             "COS_BUCKET=portfolio-1234567890",
@@ -1224,6 +1434,7 @@ class TencentCosStorageServiceTest {
                     "create");
             assertThat(sdk.shutdownCalls).isOne();
             assertOwnerOnlyDirectory(StorageConfiguration.cosStagingRoot(
+                    localRoot.resolveSibling("cos-scratch").toString(),
                     new LocalStorageProperties(localRoot)));
         }
     }
@@ -1245,6 +1456,8 @@ class TencentCosStorageServiceTest {
                 .withPropertyValues(
                         "spring.profiles.active=prod",
                         "portfolio.storage.local.root=" + localRoot,
+                        "portfolio.storage.cos.staging-root="
+                                + localRoot.resolveSibling("cos-scratch"),
                         "portfolio.storage.default-provider=TENCENT_COS");
 
         base.run(context -> assertThat(context).hasFailed());
@@ -1309,6 +1522,8 @@ class TencentCosStorageServiceTest {
                     .withPropertyValues(
                             "spring.profiles.active=prod",
                             "portfolio.storage.local.root=" + localRoot,
+                            "portfolio.storage.cos.staging-root="
+                                    + localRoot.resolveSibling("cos-scratch"),
                             "portfolio.storage.default-provider=TENCENT_COS",
                             "COS_REGION=ap-guangzhou",
                             "COS_BUCKET=portfolio-1234567890",
@@ -1329,8 +1544,7 @@ class TencentCosStorageServiceTest {
     @Test
     void prodRefreshRollbackClosesAnAlreadyCreatedAdapterExactlyOnce() throws Exception {
         Path localRoot = stagingRoot().resolve("rollback").resolve("media");
-        Path invalidStagingRoot = StorageConfiguration.cosStagingRoot(
-                new LocalStorageProperties(localRoot));
+        Path invalidStagingRoot = localRoot.resolveSibling("invalid-cos-scratch");
         Files.createDirectories(invalidStagingRoot.getParent());
         Files.writeString(invalidStagingRoot, "not-a-directory", StandardCharsets.UTF_8);
         CapturingSdk sdk = new CapturingSdk();
@@ -1356,6 +1570,7 @@ class TencentCosStorageServiceTest {
                     .withPropertyValues(
                             "spring.profiles.active=prod",
                             "portfolio.storage.local.root=" + localRoot,
+                            "portfolio.storage.cos.staging-root=" + invalidStagingRoot,
                             "portfolio.storage.default-provider=TENCENT_COS",
                             "COS_REGION=ap-guangzhou",
                             "COS_BUCKET=portfolio-1234567890",
@@ -1687,6 +1902,8 @@ class TencentCosStorageServiceTest {
                 .withPropertyValues(
                         "spring.profiles.active=prod",
                         "portfolio.storage.local.root=" + localRoot,
+                        "portfolio.storage.cos.staging-root="
+                                + localRoot.resolveSibling("cos-scratch"),
                         "portfolio.storage.default-provider=TENCENT_COS",
                         "COS_REGION=ap-guangzhou",
                         "COS_BUCKET=portfolio-1234567890",
@@ -1697,6 +1914,41 @@ class TencentCosStorageServiceTest {
     private TencentCosStorageService service(FakeCosClient client, Clock clock) {
         return new TencentCosStorageService(
                 client, properties(), clock, stagingRoot());
+    }
+
+    private List<Path> createCrashScratchResidues(
+            FakeCosClient client, Path scratchRoot, int count) throws Exception {
+        List<Path> residues = new ArrayList<>();
+        TencentCosStorageService.StagingObserver crash =
+                new TencentCosStorageService.StagingObserver() {
+                    @Override
+                    public void afterStageClosed(Path path) {
+                        residues.add(path);
+                        throw new SimulatedScratchCrash();
+                    }
+
+                    @Override
+                    public void beforeCleanup(Path path) throws IOException {
+                        throw new IOException("simulated cleanup interruption");
+                    }
+                };
+        try (TencentCosStorageService writer = new TencentCosStorageService(
+                client, properties(), CLOCK, scratchRoot, crash)) {
+            for (int index = 0; index < count; index++) {
+                try {
+                    writer.put(
+                            "scratch-residue-" + index + ".jpg",
+                            tracking(new byte[] {1}),
+                            1,
+                            "image/jpeg");
+                    throw new AssertionError("simulated crash was not observed");
+                } catch (SimulatedScratchCrash expected) {
+                    // The process died after durable local staging and before remote publication.
+                }
+            }
+        }
+        assertThat(residues).hasSize(count).allMatch(path -> Files.exists(path, LinkOption.NOFOLLOW_LINKS));
+        return List.copyOf(residues);
     }
 
     private TencentCosStorageService service(
@@ -1955,6 +2207,12 @@ class TencentCosStorageServiceTest {
             if (deleteFailure != null) {
                 throw deleteFailure;
             }
+        }
+    }
+
+    private static final class SimulatedScratchCrash extends Error {
+        private SimulatedScratchCrash() {
+            super("simulated process crash", null, false, false);
         }
     }
 

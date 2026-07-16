@@ -404,6 +404,23 @@ class MediaFileInspectorTest {
     }
 
     @Test
+    void inspectRejectsGeometryThatCannotProduceTheFrozenVariantsBeforeDecode()
+            throws Exception {
+        byte[] bytes = monochromePng(6_000, 6_000);
+        CloseCountingInputStream input = new CloseCountingInputStream(bytes);
+
+        DomainException failure = failureOf(() -> inspect(
+                "incompatible.png", "image/png", bytes.length, input));
+
+        assertFrozen(
+                failure,
+                "MEDIA_PIXEL_LIMIT_EXCEEDED",
+                HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(input.closeCalls()).isOne();
+        assertDirectoryEmpty();
+    }
+
+    @Test
     void inspectRejectsStructurallyValidJpegAbovePixelLimitBeforeDecode()
             throws Exception {
         byte[] bytes = jpegWithDimensions(

@@ -39,6 +39,9 @@ public abstract class PostgresIntegrationTestBase {
         registry.add("portfolio.security.totp.active-key-version", () -> "1");
         registry.add("portfolio.security.totp.key-ring",
                 () -> "1=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+        registry.add("portfolio.media.local-staging.active-capacity", () -> "3");
+        registry.add("portfolio.media.local-staging.scan-entry-ceiling", () -> "64");
+        registry.add("portfolio.media.local-staging.reserved-headroom", () -> "16");
         registry.add("server.servlet.session.cookie.secure", () -> "false");
     }
 

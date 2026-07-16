@@ -637,6 +637,8 @@ class BackgroundJobServiceTest extends PostgresIntegrationTestBase {
         assertThat(row.leaseUntil()).isNull();
         assertThat(row.lastErrorSummary()).isEqualTo("JOB_HANDLER_FAILED");
         assertThat(handler.deadLetterCodes()).containsExactly("JOB_HANDLER_FAILED");
+        assertThat(handler.deadLetterContexts()).containsExactly(
+                new JobExecutionContext(id, "final-worker", 10));
         assertThat(service.leaseNext("eleventh-worker", LEASE)).isEmpty();
     }
 
@@ -755,6 +757,61 @@ class BackgroundJobServiceTest extends PostgresIntegrationTestBase {
         assertThat(countByKey(probeKey)).isOne();
         assertThat(handler.deadLetterTransactionActive()).isTrue();
         assertThat(handler.deadLetterCodes()).containsExactly("JOB_ATTEMPTS_EXHAUSTED");
+        assertThat(handler.deadLetterContexts()).containsExactly(
+                new JobExecutionContext(id, "crashed-worker", 10));
+    }
+
+    @Test
+    void corruptExpiredLeaseIsQuarantinedWithoutBlockingAValidJob() {
+        UUID corruptAttempts = insertJob(
+                "corrupt-attempts", "TEST", objectNode(Map.of()),
+                "RUNNING", 11, NOW.minusSeconds(120), "corrupt-worker",
+                NOW.minusSeconds(60), NOW.minusSeconds(120), null);
+        UUID corruptOwner = insertJob(
+                "corrupt-owner", "TEST", objectNode(Map.of()),
+                "RUNNING", 10, NOW.minusSeconds(110), "invalid owner",
+                NOW.minusSeconds(50), NOW.minusSeconds(110), null);
+        UUID valid = track(service.enqueue(
+                "TEST", key("valid-after-corrupt"), Map.of("value", 1)));
+
+        assertThat(service.leaseNext("healthy-worker", LEASE))
+                .get()
+                .extracting(LeasedJob::id)
+                .isEqualTo(valid);
+
+        assertThat(job(corruptAttempts).status()).isEqualTo("DEAD");
+        assertThat(job(corruptAttempts).lastErrorSummary())
+                .isEqualTo("JOB_STATE_INVALID");
+        assertThat(job(corruptOwner).status()).isEqualTo("RUNNING");
+        assertThat(handler.deadLetterCodes()).isEmpty();
+
+        assertThat(service.leaseNext("next-healthy-worker", LEASE)).isEmpty();
+        assertThat(job(corruptOwner).status()).isEqualTo("DEAD");
+        assertThat(job(corruptOwner).lastErrorSummary())
+                .isEqualTo("JOB_STATE_INVALID");
+        assertThat(handler.deadLetterCodes()).isEmpty();
+    }
+
+    @Test
+    void codecPoisonPayloadStaysDeadAndDoesNotBlockAValidJob() {
+        ObjectNode poison = objectMapper.createObjectNode()
+                .put("oversized", "x".repeat(70 * 1024));
+        UUID poisonId = insertJob(
+                "codec-poison", "TEST", poison,
+                "RUNNING", 10, NOW.minusSeconds(120), "crashed-worker",
+                NOW.minusSeconds(60), NOW.minusSeconds(120), null);
+        UUID valid = track(service.enqueue(
+                "TEST", key("valid-after-codec-poison"), Map.of("value", 2)));
+
+        assertThat(service.leaseNext("healthy-worker", LEASE))
+                .get()
+                .extracting(LeasedJob::id)
+                .isEqualTo(valid);
+
+        assertThat(job(poisonId).status()).isEqualTo("DEAD");
+        assertThat(job(poisonId).lastErrorSummary())
+                .isEqualTo("JOB_ATTEMPTS_EXHAUSTED");
+        assertThat(handler.deadLetterCodes()).isEmpty();
     }
 
     @Test
@@ -1239,6 +1296,8 @@ class BackgroundJobServiceTest extends PostgresIntegrationTestBase {
     static final class RecordingJobHandler implements JobHandler {
         private final JdbcClient jdbc;
         private final List<String> deadLetterCodes = new CopyOnWriteArrayList<>();
+        private final List<JobExecutionContext> deadLetterContexts =
+                new CopyOnWriteArrayList<>();
         private boolean deadLetterTransactionActive;
 
         private RecordingJobHandler(JdbcClient jdbc) {
@@ -1285,8 +1344,21 @@ class BackgroundJobServiceTest extends PostgresIntegrationTestBase {
             }
         }
 
+        @Override
+        public void onDeadLetter(
+                JobExecutionContext context,
+                JsonNode payload,
+                String safeSummaryCode) {
+            deadLetterContexts.add(context);
+            onDeadLetter(payload, safeSummaryCode);
+        }
+
         List<String> deadLetterCodes() {
             return List.copyOf(deadLetterCodes);
+        }
+
+        List<JobExecutionContext> deadLetterContexts() {
+            return List.copyOf(deadLetterContexts);
         }
 
         boolean deadLetterTransactionActive() {
@@ -1295,6 +1367,7 @@ class BackgroundJobServiceTest extends PostgresIntegrationTestBase {
 
         void reset() {
             deadLetterCodes.clear();
+            deadLetterContexts.clear();
             deadLetterTransactionActive = false;
         }
 

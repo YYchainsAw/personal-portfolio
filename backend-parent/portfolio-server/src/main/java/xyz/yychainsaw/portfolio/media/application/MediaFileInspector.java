@@ -9,22 +9,16 @@ import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFileAttributeView;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
 import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
@@ -60,22 +54,25 @@ public final class MediaFileInspector {
             "%PDF-".getBytes(StandardCharsets.US_ASCII);
     private static final Pattern PDF_HEADER =
             Pattern.compile("%PDF-(?:1\\.[0-7]|2\\.0)");
-    private static final Semaphore IMAGE_READ_GATE = new Semaphore(1, true);
-    private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
-            PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
-
     private final Path temporaryDirectory;
+    private final MediaImageGate imageGate;
 
     public MediaFileInspector() {
-        this(defaultTemporaryDirectory());
+        this(defaultTemporaryDirectory(), MediaImageGate.shared());
     }
 
     MediaFileInspector(Path temporaryDirectory) {
+        this(temporaryDirectory, MediaImageGate.shared());
+    }
+
+    MediaFileInspector(Path temporaryDirectory, MediaImageGate imageGate) {
         if (temporaryDirectory == null
                 || !Files.isDirectory(temporaryDirectory, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("media temporary directory is invalid");
         }
         this.temporaryDirectory = temporaryDirectory;
+        this.imageGate = java.util.Objects.requireNonNull(
+                imageGate, "media image gate is required");
     }
 
     public InspectedMedia inspect(UploadMediaCommand command) {
@@ -225,20 +222,7 @@ public final class MediaFileInspector {
     }
 
     private Path createTemporaryFile() throws IOException {
-        FileStore store = Files.getFileStore(temporaryDirectory);
-        Path created = store.supportsFileAttributeView(PosixFileAttributeView.class)
-                ? Files.createTempFile(
-                        temporaryDirectory,
-                        "portfolio-media-",
-                        ".upload",
-                        PosixFilePermissions.asFileAttribute(OWNER_ONLY))
-                : Files.createTempFile(
-                        temporaryDirectory, "portfolio-media-", ".upload");
-        if (!Files.isRegularFile(created, LinkOption.NOFOLLOW_LINKS)) {
-            deleteBestEffort(created);
-            throw new IOException("inspection temporary file is invalid");
-        }
-        return created;
+        return MediaTemporaryFiles.create(temporaryDirectory, ".upload");
     }
 
     private static CopyResult copyBounded(
@@ -535,14 +519,20 @@ public final class MediaFileInspector {
         throw corrupt();
     }
 
-    private static Dimensions validateImage(
+    private Dimensions validateImage(
             Path path, DetectedType detected, Dimensions structuralDimensions) {
         requireValidDimensions(
                 structuralDimensions.width(), structuralDimensions.height());
+        try {
+            ImageVariantGenerator.requireFinalizableDimensions(
+                    structuralDimensions.width(), structuralDimensions.height());
+        } catch (IllegalStateException incompatibleGeometry) {
+            throw pixelLimitExceeded();
+        }
         boolean acquired = false;
         ImageReader reader = null;
         try {
-            IMAGE_READ_GATE.acquire();
+            imageGate.acquire();
             acquired = true;
             try (ImageInputStream imageInput = ImageIO.createImageInputStream(path.toFile())) {
                 if (imageInput == null) {
@@ -599,7 +589,7 @@ public final class MediaFileInspector {
                 // Reader disposal cannot mask validation and must not strand the gate.
             } finally {
                 if (acquired) {
-                    IMAGE_READ_GATE.release();
+                    imageGate.release();
                 }
             }
         }

@@ -916,92 +916,17 @@ Expected: compilation FAIL because variant generation and finalization are absen
 
 - [ ] **Step 3: Implement deterministic processing and idempotent finalization**
 
-```java
-public final class ImageVariantGenerator {
-    private static final int[] WIDTHS = {640, 1280, 1920, 2560, 3840};
-    private static final long MAX_PIXELS = 80_000_000L;
+`FinalizeMediaUploadJobHandler` accepts only the exact Task 5 `{assetId}` payload and derives every key and storage fact from the persisted asset. It immediately succeeds without storage I/O for READY, FAILED, ARCHIVED, and PENDING_DELETE assets. A missing asset or unresolved PROCESSING failure is fixed and cause-free so the durable job retries.
 
-    public List<GeneratedVariant> generate(BufferedImage source, String mimeType) {
-        validatePixelCount(source.getWidth(), source.getHeight());
-        LinkedHashSet<Integer> widths = Arrays.stream(WIDTHS)
-            .filter(width -> width < source.getWidth()).boxed()
-            .collect(Collectors.toCollection(LinkedHashSet::new));
-        widths.add(Math.min(source.getWidth(), 3840));
-        return widths.stream().map(width -> render(source, width, mimeType)).toList();
-    }
+Add `StorageLocation` to the storage contract. The chosen adapter's provider/bucket/region must exactly equal the persisted asset location before object access. Treat `exists()` only as a hint: every reused staging, original, or variant object must be opened and fully verified for MIME, exact length/EOF, and SHA-256. Promote staging through create-only copy. If copy reports already-exists or any unknown outcome, verify the original and proceed only when it is exact; never overwrite or delete a mismatched deterministic object. Delete staging best-effort only after the original is proven. A cleanup failure never reverses an eventual READY result.
 
-    void validatePixelCount(int width, int height) {
-        if ((long) width * height > MAX_PIXELS) {
-            throw new DomainException("MEDIA_PIXEL_LIMIT_EXCEEDED", HttpStatus.UNPROCESSABLE_ENTITY, Map.of());
-        }
-    }
+Generate widths from standard values below the source plus `min(sourceWidth, 3840)`, de-duplicated and never upscaled. Decode only the fully SHA-verified original; require persisted dimensions; draw into new sRGB RGB/ARGB buffers; encode PNG without source metadata or JPEG with metadata disabled, progressive disabled, and fixed quality `0.92f`. Use one fair generation permit and owner-only no-follow temporary files. Every temporary/output owner closes on every path and hides its path from `toString` and errors.
 
-    private GeneratedVariant render(BufferedImage source, int width, String mimeType) {
-        int height = Math.max(1, (int) Math.round(source.getHeight() * (width / (double) source.getWidth())));
-        int imageType = "image/png".equals(mimeType) ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
-        BufferedImage target = new BufferedImage(width, height, imageType);
-        Graphics2D graphics = target.createGraphics();
-        graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-        graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-        graphics.drawImage(source, 0, 0, width, height, null);
-        graphics.dispose();
-        return EncodedImage.write(target, "image/png".equals(mimeType) ? "png" : "jpg", 0.92f, "w" + width);
-    }
-}
-```
+Publish image variants create-only at `variants/{assetId}/{variantName}/{encodedSha256}.{jpg|png}`. Pass a freshly opened input directly to `StorageService.put` because the provider owns closure. On success validate the complete `StoredObject`, and on already-exists or unknown outcome fully verify the deterministic object. PDF creates only a `document` row referencing the verified original.
 
-`EncodedImage.write` creates a new file with `ImageIO` and JPEG `ImageWriteParam#setCompressionQuality(0.92f)`; because it re-encodes pixels instead of copying metadata, EXIF is absent. It returns name, width, height, MIME, size, SHA-256, and path.
+After all objects are verified, one short database-only transaction inserts each READY variant with `ON CONFLICT DO NOTHING`; conflicts are accepted only after exact immutable row equality. In that same transaction CAS the asset from PROCESSING to READY with `version=version+1`. A concurrent exact READY is idempotent; every other state rolls back. Never use `DO UPDATE`, and never hold a transaction across storage or ImageIO. Rollback/unknown commit retains immutable objects so retry can converge. The finalizer dead-letter hook performs only PROCESSING-to-FAILED inside Task 4's job-failure transaction; malformed payload and non-PROCESSING/missing assets are no-ops, while a repository failure rolls back the DEAD transition.
 
-```java
-@Override public String jobType() { return "FINALIZE_MEDIA_UPLOAD"; }
-
-@Override
-public void handle(JsonNode payload) {
-    UUID assetId = UUID.fromString(payload.required("assetId").asText());
-    MediaAssetRecord asset = assets.require(assetId);
-    if (asset.status() == MediaStatus.READY || asset.status() == MediaStatus.ARCHIVED
-            || asset.status() == MediaStatus.PENDING_DELETE) return;
-    if (asset.status() != MediaStatus.PROCESSING) {
-        throw new IllegalStateException("Media asset cannot be finalized from " + asset.status());
-    }
-    StorageService storage = router.require(asset.provider());
-    String stagingKey = payload.required("stagingKey").asText();
-    String finalKey = payload.required("finalKey").asText();
-
-    if (!storage.exists(finalKey) && !storage.exists(stagingKey)) {
-        throw new StorageException("MEDIA_STAGING_OBJECT_MISSING", null);
-    }
-    if (!storage.exists(finalKey)) storage.copy(stagingKey, finalKey);
-    if (storage.exists(stagingKey)) storage.delete(stagingKey);
-    if ("application/pdf".equals(asset.mimeType())) {
-        variants.upsert(MediaVariantRecord.document(assetId, finalKey, asset));
-        assets.markReadyIfProcessing(assetId);
-        return;
-    }
-    StorageRead object = storage.open(finalKey, Optional.empty());
-    try (object) {
-        BufferedImage source = ImageIO.read(object.inputStream());
-        if (source == null) throw new IOException("Approved image could not be decoded");
-        List<GeneratedVariant> generatedVariants = generator.generate(source, asset.mimeType());
-        try {
-            for (GeneratedVariant generated : generatedVariants) {
-                String key = "variants/" + assetId + "/" + generated.name() + "." + generated.extension();
-                try (InputStream input = Files.newInputStream(generated.path())) {
-                    storage.put(key, input, generated.byteSize(), generated.mimeType());
-                }
-                variants.upsert(MediaVariantRecord.ready(assetId, generated, key));
-            }
-        } finally {
-            for (GeneratedVariant generated : generatedVariants) generated.close();
-        }
-    }
-    assets.markReadyIfProcessing(assetId);
-}
-```
-
-Use deterministic keys and execute `insert into media_variant(id, asset_id, variant_name, format, object_key, mime_type, byte_size, width, height, sha256, status, created_at) values (#{id}, #{assetId}, #{variantName}, #{format}, #{objectKey}, #{mimeType}, #{byteSize}, #{width}, #{height}, #{sha256}, 'READY', #{createdAt}) on conflict (asset_id, variant_name) do update set format = excluded.format, object_key = excluded.object_key, mime_type = excluded.mime_type, byte_size = excluded.byte_size, width = excluded.width, height = excluded.height, sha256 = excluded.sha256, status = 'READY'` so a retry updates the same object and row. Never hold a database row lock or transaction open during storage/image I/O; final READY uses a compare-and-set from PROCESSING. If any variant fails, leave the asset PROCESSING and rethrow so Task 4 schedules retry. On the tenth failure, a DEAD-job listener changes PROCESSING to FAILED with a sanitized error code. All generated temporary files close in `finally`, including partial failure.
-
-`StagingCleanupScheduler` is a servlet-only component enabled only when both the durable worker and `portfolio.media.staging-cleanup.enabled` are true. It requires a canonical `portfolio.release-id` matching `[a-z0-9][a-z0-9._-]{0,63}`. At startup and then daily at 04:00 `Asia/Hong_Kong`, it derives the most recent 04:00 Hong Kong schedule boundary that is not after the current instant, uses that boundary's Hong Kong calendar date, and sets the cutoff to exactly 24 hours before that boundary. Every replica of one release therefore derives the same safe boundary, including startup before 04:00, then idempotently enqueues exact job type `CLEAN_MEDIA_STAGING`, key `media-staging-cleanup:{releaseId}:{yyyy-MM-dd}`, and payload containing only `cutoffEpochSecond`. Different releases may safely enqueue the same idempotent scan, while a new release can never reuse an old release's activation evidence. `StagingCleanupJobHandler` accepts only that exact canonical payload, recomputes the same maximum safe cutoff from its injected clock, and rejects any payload cutoff later than that maximum before scanning. It deletes only parser-valid Local keys of the form `staging/{uuid}/{lowercase-sha256}.{jpg|png|pdf}` whose no-follow regular-file timestamp is at or before the cutoff. It revalidates identity immediately before deletion, bounds one run, treats already-absent objects idempotently, never follows links, and never scans or deletes `originals/`, `variants/`, unknown names, or young files. A repeated or concurrent run is safe. Startup enqueue makes activation observable immediately instead of waiting for the first cron tick.
+`StagingCleanupScheduler` is servlet-only and enabled only when both `portfolio.jobs.worker-enabled` and `portfolio.media.staging-cleanup.enabled` are true. It requires canonical `portfolio.release-id`. At startup and daily 04:00 `Asia/Hong_Kong`, derive the most recent nonfuture 04:00 boundary, subtract exactly 24 hours, and enqueue `CLEAN_MEDIA_STAGING` with key `media-staging-cleanup:{releaseId}:{yyyy-MM-dd}` and payload containing only `cutoffEpochSecond`. Startup enqueue failure propagates and aborts readiness; a validated fixed-delay retry (default five minutes) re-enqueues the same current-boundary key so a recurring failure does not wait a day. The handler requires an exact long-valued integer in `Instant` range and recomputes the maximum safe cutoff before scanning. Concrete `LocalStorageService` streams canonical `staging/{uuid}/{sha}.{jpg|png|pdf}` files only up to a configured hard entry ceiling; exceeding it fails before every deletion. A complete in-ceiling scan keeps only the oldest bounded candidate set, revalidates owner/identity/timestamp immediately before deleting at most the configured limit, and never touches young, unknown, other-prefix, or linked objects. Oldest-first selection prevents persistent young/unknown entries from starving eligible files without relying on unspecified directory order or a fake cursor. Sanitized scanned/candidate/deleted/duration observations feed an operational duration gate. Each scheduler replica also cleans only its own Tencent adapter's local tmpfs `@part-{uuid}` scratch through that adapter's access policy at startup/daily; the globally deduplicated database job never claims to clean every node's scratch and no remote COS object is listed or deleted. Repeated/concurrent runs are idempotent. Task 8/Plan 07 preflight enforces the same Local staging entry ceiling before workers start.
 
 - [ ] **Step 4: Run processing, idempotency, and cleanup tests**
 
@@ -1369,6 +1294,7 @@ portfolio:
       bucket: ${COS_BUCKET}
       secret-id: ${COS_SECRET_ID}
       secret-key: ${COS_SECRET_KEY}
+      staging-root: ${PORTFOLIO_COS_STAGING_ROOT:/tmp/portfolio-cos-staging}
   media:
     staging-cleanup:
       enabled: ${PORTFOLIO_STAGING_CLEANUP_ENABLED:false}
@@ -1377,13 +1303,13 @@ portfolio:
       cooling-period: 30d
 ```
 
-Add the four empty `COS_*` names, `PORTFOLIO_LOCAL_STORAGE`, `PORTFOLIO_JOBS_WORKER_ENABLED=true`, `PORTFOLIO_STAGING_CLEANUP_ENABLED=true`, and `PORTFOLIO_MEDIA_CLEANUP_ENABLED=false` to `deploy/.env.example`; do not add real values. Reuse the release bundle's required `PORTFOLIO_RELEASE_ID`. `application-prod.yml` maps the release ID to `portfolio.release-id`, the worker value to `portfolio.jobs.worker-enabled`, and the staging value to `portfolio.media.staging-cleanup.enabled`, while keeping both cleanup controls distinct from the 30-day archived-asset cleanup switch. Keep physical archived-asset cleanup disabled until plan 03 installs and tests its workspace/current/retained-revision checker; plan 07's production preflight then requires the release ID, worker, and both cleanup switches once the complete reference checker is installed.
+Add the four empty `COS_*` names, `PORTFOLIO_LOCAL_STORAGE`, `PORTFOLIO_COS_STAGING_ROOT=/tmp/portfolio-cos-staging`, `PORTFOLIO_LOCAL_VOLUME_ID`, `PORTFOLIO_JOBS_WORKER_ENABLED=true`, `PORTFOLIO_STAGING_CLEANUP_ENABLED=true`, and `PORTFOLIO_MEDIA_CLEANUP_ENABLED=false` to `deploy/.env.example`; do not add a real volume ID or credentials. Reuse the release bundle's required `PORTFOLIO_RELEASE_ID`. `application-prod.yml` maps the release ID to `portfolio.release-id`, the worker value to `portfolio.jobs.worker-enabled`, the scratch root to `portfolio.storage.cos.staging-root`, and the staging value to `portfolio.media.staging-cleanup.enabled`, while keeping both cleanup controls distinct from the 30-day archived-asset cleanup switch. The COS scratch root must resolve beneath the size-limited ephemeral `/tmp` mount and never beside or inside durable media objects. Provision the Local volume with a deployment-owned opaque `.portfolio-volume-id` whose exact protected expected value is checked before workers start; do not expose or log it. Keep physical archived-asset cleanup disabled until plan 03 installs and tests its workspace/current/retained-revision checker; plan 07's production preflight then requires the release ID, volume identity, worker, and both cleanup switches once the complete reference checker is installed.
 
 `deploy/cos/staging-lifecycle-rule.json` is an operations artifact, not an application secret: it declares one enabled rule whose prefix is exactly `staging/` and whose expiration is one day. `deploy/scripts/install-cos-staging-lifecycle.sh --apply` uses a separate, short-lived operations credential to read the complete remote lifecycle configuration, refuse unsafe overlapping/broad rules, preserve unrelated safe rules, and idempotently add or retain the exact repository rule; it then performs a read-back verification and never logs credentials. The installer is an explicit bucket-provisioning action, not part of routine application startup or read-only preflight. `deploy/scripts/verify-cos-staging-lifecycle.sh --check-live` requires only lifecycle-read authority and fails closed unless the live bucket has that exact enabled rule and proves no staging-intended rule can match `originals/`, `variants/`, `smoke/`, or backup prefixes. The runtime media credential must not receive bucket-lifecycle permission. Production preflight in plan 07 runs only the verifier before enabling upload/finalization workers. Do not treat a checked-in JSON file, documentation statement, or runtime application property as proof that the remote lifecycle is active.
 
 `deploy/tests/cos-staging-lifecycle-contract.sh` drives both scripts against sanitized local command fixtures. It proves the installer is idempotent for an exact existing rule, safely merges a missing rule without changing unrelated rules, rejects unsafe overlaps/malformed reads/apply or read-back failures, and never echoes credentials. It proves the verifier accepts only the exact enabled rule and rejects disabled, missing, broad-prefix, wrong-day, malformed, command-failure, and secret-bearing output cases. Task 8 runs this contract unconditionally. When a guarded live COS bucket and short-lived lifecycle-operations credential are present, Task 8 invokes the installer once and then the independent verifier; plan 07 repeats only the read-only verifier as mandatory production preflight.
 
-`docs/operations/media-storage.md` must document: provider is per asset, changing the default does not migrate, originals remain private, the Local scavenger owns canonical staging files at least 24 hours old, the separately verified COS rule expires only `staging/` after one day, live smoke keys are temporary, the cooling period is 30 days, and archived assets are not physically deleted until the complete reference checker reports no references twice (scan and delete handler).
+`docs/operations/media-storage.md` must document: provider is per asset, changing the default does not migrate, originals remain private, the opaque Local volume identity prevents silent wrong-volume starts, the Local scavenger owns canonical staging files at least 24 hours old, per-node COS upload scratch is a bounded ephemeral tmpfs and is not the remote lifecycle, the separately verified COS rule expires only remote `staging/` after one day, live smoke keys are temporary, the cooling period is 30 days, and archived assets are not physically deleted until the complete reference checker reports no references twice (scan and delete handler).
 
 - [ ] **Step 4: Run every media test and optionally the guarded live smoke**
 

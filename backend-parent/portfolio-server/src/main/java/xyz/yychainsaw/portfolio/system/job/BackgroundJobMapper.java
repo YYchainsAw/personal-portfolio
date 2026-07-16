@@ -117,19 +117,14 @@ public class BackgroundJobMapper {
             OffsetDateTime now, String summary) {
         return jdbc.sql("""
                         with candidate as (
-                            select job.id
+                            select job.id,
+                                   job.attempts as prior_attempts,
+                                   job.lease_owner as prior_lease_owner
                             from portfolio.background_job job
-                            where job.attempts >= 10
-                              and (
-                                  (
-                                      job.status in ('PENDING', 'FAILED')
-                                      and job.next_run_at <= :now
-                                  )
-                                  or (
-                                      job.status = 'RUNNING'
-                                      and job.lease_until < :now
-                                  )
-                              )
+                            where job.attempts = 10
+                              and job.status = 'RUNNING'
+                              and job.lease_until < :now
+                              and job.lease_owner ~ '^[!-~]{1,120}$'
                             order by job.next_run_at, job.created_at, job.id
                             for update skip locked
                             limit 1
@@ -143,13 +138,50 @@ public class BackgroundJobMapper {
                         where job.id=candidate.id
                         returning job.id, job.job_type,
                                   job.payload::text as payload_json,
-                                  job.status, job.attempts, job.lease_owner,
+                                  job.status,
+                                  candidate.prior_attempts as attempts,
+                                  candidate.prior_lease_owner as lease_owner,
                                   job.next_run_at
                         """)
                 .param("now", now, Types.TIMESTAMP_WITH_TIMEZONE)
                 .param("summary", summary)
                 .query(JOB_ROW_MAPPER)
                 .optional();
+    }
+
+    public int quarantineNextCorruptExpired(
+            OffsetDateTime now, String summary) {
+        return jdbc.sql("""
+                        with candidate as (
+                            select job.id
+                            from portfolio.background_job job
+                            where job.status = 'RUNNING'
+                              and job.lease_until < :now
+                              and (
+                                  job.attempts > 10
+                                  or (
+                                      job.attempts = 10
+                                      and (
+                                          job.lease_owner is null
+                                          or job.lease_owner !~ '^[!-~]{1,120}$'
+                                      )
+                                  )
+                              )
+                            order by job.next_run_at, job.created_at, job.id
+                            for update skip locked
+                            limit 1
+                        )
+                        update portfolio.background_job job
+                        set status='DEAD',
+                            lease_owner=null,
+                            lease_until=null,
+                            last_error_summary=:summary
+                        from candidate
+                        where job.id=candidate.id
+                        """)
+                .param("now", now, Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("summary", summary)
+                .update();
     }
 
     public int succeed(UUID id, String owner, int attempt) {

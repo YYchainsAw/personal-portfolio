@@ -14,8 +14,27 @@ public interface JobHandler {
 
     void handle(JsonNode payload) throws Exception;
 
+    default void handle(JobExecutionContext context, JsonNode payload) throws Exception {
+        requireContext(context);
+        handle(payload);
+    }
+
     default void onDeadLetter(JsonNode payload, String safeSummaryCode) throws Exception {
         // Most jobs need no terminal database reconciliation.
+    }
+
+    default void onDeadLetter(
+            JobExecutionContext context,
+            JsonNode payload,
+            String safeSummaryCode) throws Exception {
+        requireContext(context);
+        onDeadLetter(payload, safeSummaryCode);
+    }
+
+    private static void requireContext(JobExecutionContext context) {
+        if (context == null) {
+            throw new IllegalArgumentException("job execution context is required");
+        }
     }
 }
 

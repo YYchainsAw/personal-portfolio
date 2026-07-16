@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.logging.LogLevel;
@@ -15,14 +16,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
+import xyz.yychainsaw.portfolio.media.staging.LocalStagingPolicyProperties;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(LocalStorageProperties.class)
+@EnableConfigurationProperties({
+    LocalStorageProperties.class,
+    LocalStagingPolicyProperties.class
+})
 public class StorageConfiguration {
 
     @Bean(destroyMethod = "close")
-    LocalStorageService localStorageService(LocalStorageProperties properties) {
-        return new LocalStorageService(properties);
+    LocalStorageService localStorageService(
+            LocalStorageProperties properties,
+            LocalStagingPolicyProperties stagingPolicy) {
+        return new LocalStorageService(
+                properties, stagingPolicy.scanEntryCeiling());
     }
 
     @Bean
@@ -70,12 +78,24 @@ public class StorageConfiguration {
     QcloudCosClientAdapter tencentCosClient(
             TencentCosProperties properties,
             CosSdkLogSilencer logSilencer,
-            CosAdapterFactory adapterFactory) {
+            CosAdapterFactory adapterFactory,
+            @Qualifier("cosStagingRoot") Path stagingRoot) {
+        if (stagingRoot == null) {
+            throw new StorageException("COS_WRITE_FAILED");
+        }
         logSilencer.silence();
         logSilencer.blockRestoreUntilClientStops();
         QcloudCosClientAdapter adapter = adapterFactory.create(properties);
         adapter.onShutdownSuccess(logSilencer::clientStopped);
         return adapter;
+    }
+
+    @Bean(name = "cosStagingRoot")
+    @Profile("prod")
+    Path cosStagingRootPath(
+            @Value("${portfolio.storage.cos.staging-root}") String configuredRoot,
+            LocalStorageProperties localProperties) {
+        return cosStagingRoot(configuredRoot, localProperties);
     }
 
     @Bean(destroyMethod = "close")
@@ -84,22 +104,44 @@ public class StorageConfiguration {
             QcloudCosClientAdapter client,
             TencentCosProperties properties,
             Clock clock,
-            LocalStorageProperties localProperties) {
+            @Qualifier("cosStagingRoot") Path stagingRoot,
+            @Value("${portfolio.media.staging-cleanup.max-scan-entries:100000}")
+            int maximumScanEntries) {
         return new TencentCosStorageService(
-                client, properties, clock, cosStagingRoot(localProperties));
+                client,
+                properties,
+                clock,
+                stagingRoot,
+                TencentCosStorageService.StagingObserver.NOOP,
+                maximumScanEntries);
     }
 
-    static Path cosStagingRoot(LocalStorageProperties properties) {
-        if (properties == null) {
-            throw new IllegalArgumentException("Local storage properties are required");
-        }
-        Path localRoot = properties.root().toAbsolutePath().normalize();
-        Path parent = localRoot.getParent();
-        if (parent == null) {
+    static Path cosStagingRoot(
+            String configuredRoot, LocalStorageProperties properties) {
+        if (configuredRoot == null
+                || configuredRoot.isBlank()
+                || configuredRoot.contains("${")
+                || configuredRoot.contains("}")
+                || properties == null) {
             throw new StorageException("COS_WRITE_FAILED");
         }
-        Path stagingRoot = parent.resolve("@cos-staging").normalize();
-        if (stagingRoot.equals(localRoot)) {
+        Path localRoot;
+        Path stagingRoot;
+        try {
+            localRoot = properties.root().toAbsolutePath().normalize();
+            Path configuredPath = Path.of(configuredRoot);
+            if (!configuredPath.isAbsolute()) {
+                throw new StorageException("COS_WRITE_FAILED");
+            }
+            stagingRoot = configuredPath.normalize();
+        } catch (StorageException fixedFailure) {
+            throw fixedFailure;
+        } catch (RuntimeException invalidPath) {
+            throw new StorageException("COS_WRITE_FAILED");
+        }
+        if (stagingRoot.equals(localRoot)
+                || stagingRoot.startsWith(localRoot)
+                || localRoot.startsWith(stagingRoot)) {
             throw new StorageException("COS_WRITE_FAILED");
         }
         return stagingRoot;
