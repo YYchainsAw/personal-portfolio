@@ -462,6 +462,121 @@ class LocalStorageServiceTest {
                 .withMessage("Storage input is required");
     }
 
+    @Test
+    void storedObjectUsesTheSharedContentLengthBound() {
+        long maximum = 5L * 1024 * 1024 * 1024;
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StoredObject(
+                        StorageProvider.LOCAL,
+                        null,
+                        null,
+                        "asset.bin",
+                        maximum + 1,
+                        CONTENT_TYPE,
+                        "0".repeat(64)))
+                .withMessage("Invalid storage content length");
+
+        StoredObject valid = new StoredObject(
+                StorageProvider.LOCAL,
+                null,
+                null,
+                "asset.bin",
+                maximum,
+                CONTENT_TYPE,
+                "0".repeat(64));
+        assertThat(valid.contentLength()).isEqualTo(maximum);
+    }
+
+    @Test
+    void storedObjectRequiresTheKeysCanonicalContentType() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StoredObject(
+                        StorageProvider.LOCAL,
+                        null,
+                        null,
+                        "asset.pdf",
+                        1,
+                        CONTENT_TYPE,
+                        "0".repeat(64)))
+                .withMessage("Invalid storage content type");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StoredObject(
+                        StorageProvider.LOCAL,
+                        null,
+                        null,
+                        "asset.pdf",
+                        1,
+                        "application/*",
+                        "0".repeat(64)))
+                .withMessage("Invalid storage content type");
+
+        StoredObject valid = new StoredObject(
+                StorageProvider.LOCAL,
+                null,
+                null,
+                "asset.pdf",
+                1,
+                "Application/Pdf",
+                "0".repeat(64));
+        assertThat(valid.contentType()).isEqualTo("application/pdf");
+    }
+
+    @Test
+    void storageReadUsesTheSharedTotalLengthBound() {
+        long maximum = 5L * 1024 * 1024 * 1024;
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageRead(
+                        new ByteArrayInputStream(new byte[0]),
+                        maximum + 1,
+                        Optional.empty(),
+                        maximum + 1,
+                        CONTENT_TYPE,
+                        "0".repeat(64)))
+                .withMessage("Invalid storage content length");
+
+        StorageRead valid = new StorageRead(
+                new ByteArrayInputStream(new byte[0]),
+                maximum,
+                Optional.empty(),
+                maximum,
+                CONTENT_TYPE,
+                "0".repeat(64));
+        assertThat(valid.totalLength()).isEqualTo(maximum);
+    }
+
+    @Test
+    void storageReadRequiresAConcreteNormalizedContentType() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageRead(
+                        new ByteArrayInputStream(new byte[0]),
+                        1,
+                        Optional.empty(),
+                        1,
+                        "not a media type",
+                        "0".repeat(64)))
+                .withMessage("Invalid storage content type");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageRead(
+                        new ByteArrayInputStream(new byte[0]),
+                        1,
+                        Optional.empty(),
+                        1,
+                        "application/*",
+                        "0".repeat(64)))
+                .withMessage("Invalid storage content type");
+
+        StorageRead valid = new StorageRead(
+                new ByteArrayInputStream(new byte[0]),
+                1,
+                Optional.empty(),
+                1,
+                "Application/Octet-Stream",
+                "0".repeat(64));
+        assertThat(valid.contentType()).isEqualTo(CONTENT_TYPE);
+    }
+
     private LocalStorageService service(Path root) {
         LocalStorageService service = new LocalStorageService(new LocalStorageProperties(root));
         openServices.add(service);
@@ -527,7 +642,10 @@ class LocalStorageServiceTest {
             return;
         }
         try (var paths = Files.walk(root)) {
-            assertThat(paths.filter(path -> path.getFileName().toString().endsWith(".part")))
+            assertThat(paths.filter(path -> {
+                String name = path.getFileName().toString();
+                return name.endsWith(".part") || name.startsWith("@part-");
+            }))
                     .isEmpty();
         }
     }

@@ -84,12 +84,21 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
 
     static LocalStorageAccessPolicy initialize(Path root) {
         return initialize(root, (path, attributes) -> attributes.fileKey(),
-                LocalStorageAccessPolicy::openRootMarkerGuard);
+                LocalStorageAccessPolicy::openRootMarkerGuard,
+                DirectoryCreationObserver.NOOP);
     }
 
     static LocalStorageAccessPolicy initialize(
             Path root, FileKeyReader fileKeyReader, MarkerGuardOpener markerGuardOpener) {
-        if (fileKeyReader == null || markerGuardOpener == null) {
+        return initialize(root, fileKeyReader, markerGuardOpener, DirectoryCreationObserver.NOOP);
+    }
+
+    static LocalStorageAccessPolicy initialize(
+            Path root,
+            FileKeyReader fileKeyReader,
+            MarkerGuardOpener markerGuardOpener,
+            DirectoryCreationObserver creationObserver) {
+        if (fileKeyReader == null || markerGuardOpener == null || creationObserver == null) {
             throw new IllegalArgumentException("Local storage identity strategy is required");
         }
         FileChannel markerGuard = null;
@@ -114,8 +123,14 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
                     ? List.of(fullControlEntry(owner, false))
                     : List.of();
 
+            verifyCreationBoundary(existingAncestor, supportsPosix, supportsAcl, owner);
             createRootDirectories(
-                    root, supportsPosix, supportsAcl, owner, secureDirectoryAcl);
+                    root,
+                    supportsPosix,
+                    supportsAcl,
+                    owner,
+                    secureDirectoryAcl,
+                    creationObserver);
             verifySecureDirectory(
                     root, supportsPosix, supportsAcl, owner, secureDirectoryAcl);
             verifyParentChain(root, supportsPosix, supportsAcl, owner);
@@ -168,19 +183,19 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         }
         verifySecureDirectory(
                 root, posixAttributes, aclAttributes, serviceOwner, directoryAcl);
-        verifySecureFile(
-                rootMarker, posixAttributes, aclAttributes, serviceOwner, fileAcl);
-        Object currentIdentity = fileKeyReader.read(root, attributes);
-        if (rootIdentity != null) {
-            if (!rootIdentity.equals(currentIdentity)) {
+        try {
+            verifySecureFile(
+                    rootMarker, posixAttributes, aclAttributes, serviceOwner, fileAcl);
+            Object currentIdentity = fileKeyReader.read(root, attributes);
+            if (rootIdentity != null) {
+                if (!rootIdentity.equals(currentIdentity)) {
+                    throw unsafePath();
+                }
+            } else if (currentIdentity != null
+                    || rootMarkerGuard == null
+                    || !rootMarkerGuard.isOpen()) {
                 throw unsafePath();
             }
-        } else if (currentIdentity != null
-                || rootMarkerGuard == null
-                || !rootMarkerGuard.isOpen()) {
-            throw unsafePath();
-        }
-        try {
             if (!Arrays.equals(rootMarkerToken, readRootMarker(rootMarker))) {
                 throw unsafePath();
             }
@@ -244,7 +259,8 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
             boolean supportsPosix,
             boolean supportsAcl,
             UserPrincipal owner,
-            List<AclEntry> secureDirectoryAcl) throws IOException {
+            List<AclEntry> secureDirectoryAcl,
+            DirectoryCreationObserver creationObserver) throws IOException {
         List<Path> missing = new ArrayList<>();
         Path current = root;
         while (true) {
@@ -264,6 +280,9 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         }
         Collections.reverse(missing);
         for (Path directory : missing) {
+            creationObserver.beforeCreate(directory.getParent(), directory);
+            verifyCreationBoundary(
+                    directory.getParent(), supportsPosix, supportsAcl, owner);
             try {
                 createSecureDirectory(
                         directory, supportsPosix, supportsAcl, secureDirectoryAcl);
@@ -420,6 +439,58 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
             }
             child = parent;
             parent = parent.getParent();
+        }
+    }
+
+    private static void verifyCreationBoundary(
+            Path existingAncestor,
+            boolean supportsPosix,
+            boolean supportsAcl,
+            UserPrincipal serviceOwner) throws IOException {
+        BasicFileAttributes attributes = readAttributes(existingAncestor);
+        if (!isRealDirectory(attributes)) {
+            throw unsafePath();
+        }
+        verifyParentChain(existingAncestor, supportsPosix, supportsAcl, serviceOwner);
+        if (supportsPosix) {
+            verifyPosixCreationParent(existingAncestor, serviceOwner);
+        } else if (supportsAcl) {
+            verifyAclCreationParent(existingAncestor, serviceOwner);
+        } else {
+            throw unsafePath();
+        }
+    }
+
+    private static void verifyPosixCreationParent(
+            Path parent, UserPrincipal serviceOwner) throws IOException {
+        PosixFileAttributes attributes = Files.readAttributes(
+                parent, PosixFileAttributes.class, NOFOLLOW_LINKS);
+        if (!isTrustedPosixOwner(attributes.owner(), serviceOwner)) {
+            throw unsafePath();
+        }
+        Set<PosixFilePermission> permissions = attributes.permissions();
+        boolean groupCanReplace = permissions.contains(PosixFilePermission.GROUP_WRITE)
+                && permissions.contains(PosixFilePermission.GROUP_EXECUTE);
+        boolean othersCanReplace = permissions.contains(PosixFilePermission.OTHERS_WRITE)
+                && permissions.contains(PosixFilePermission.OTHERS_EXECUTE);
+        if ((groupCanReplace || othersCanReplace)
+                && !stickyDirectoryProtects(parent, serviceOwner, serviceOwner)) {
+            throw unsafePath();
+        }
+    }
+
+    private static void verifyAclCreationParent(
+            Path parent, UserPrincipal serviceOwner) throws IOException {
+        AclFileAttributeView view = Files.getFileAttributeView(
+                parent, AclFileAttributeView.class, NOFOLLOW_LINKS);
+        Set<AclEntryPermission> dangerous = EnumSet.of(
+                AclEntryPermission.DELETE_CHILD,
+                AclEntryPermission.WRITE_ACL,
+                AclEntryPermission.WRITE_OWNER);
+        if (view == null
+                || !isTrustedWindowsPrincipal(view.getOwner(), serviceOwner)
+                || hasUntrustedAllow(view.getAcl(), dangerous, serviceOwner)) {
+            throw unsafePath();
         }
     }
 
@@ -636,5 +707,12 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
     @FunctionalInterface
     interface MarkerGuardOpener {
         FileChannel open(Path marker, boolean windowsAcl) throws IOException;
+    }
+
+    @FunctionalInterface
+    interface DirectoryCreationObserver {
+        DirectoryCreationObserver NOOP = (parent, directory) -> {};
+
+        void beforeCreate(Path parent, Path directory) throws IOException;
     }
 }

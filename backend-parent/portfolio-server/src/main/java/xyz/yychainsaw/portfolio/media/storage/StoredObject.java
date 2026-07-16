@@ -15,11 +15,9 @@ public record StoredObject(
         if (provider == null) {
             throw new IllegalArgumentException("Storage provider is required");
         }
-        ObjectKey.parse(objectKey);
-        if (contentLength <= 0) {
-            throw new IllegalArgumentException("Invalid storage content length");
-        }
-        contentType = requireText(contentType, "Invalid storage content type");
+        ObjectKey key = ObjectKey.parse(objectKey);
+        StorageObjectContract.validateContentLength(contentLength);
+        contentType = StorageObjectContract.normalizeContentType(key, contentType);
         etag = requireText(etag, "Storage ETag is required");
         if (provider == StorageProvider.LOCAL) {
             if (bucket != null || region != null) {

@@ -16,9 +16,7 @@ public record StorageRead(
         if (inputStream == null) {
             throw new IllegalArgumentException("Storage input is required");
         }
-        if (totalLength <= 0) {
-            throw new IllegalArgumentException("Invalid total storage length");
-        }
+        StorageObjectContract.validateContentLength(totalLength);
         if (range == null) {
             throw new IllegalArgumentException("Storage range is required");
         }
@@ -35,7 +33,7 @@ public record StorageRead(
                 throw new IllegalArgumentException("Invalid storage response range");
             }
         }
-        contentType = requireText(contentType, "Invalid storage content type");
+        contentType = StorageObjectContract.normalizeContentType(contentType);
         etag = requireText(etag, "Storage ETag is required");
     }
 

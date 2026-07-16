@@ -21,7 +21,6 @@ import java.time.Duration;
 import java.util.HexFormat;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 
 public final class LocalStorageService implements StorageService, AutoCloseable {
@@ -99,6 +98,7 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             Path target = resolveTarget(key, false);
             BasicFileAttributes before = requireRegularFile(target);
             verifyStoredFile(target);
+            requireValidStoredLength(before.size());
             validateRequestedRange(requestedRange, before.size());
 
             channel = openReadChannel(target);
@@ -106,9 +106,10 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             requireSameIdentity(before, after);
             verifyStoredFile(target);
             long totalLength = channel.size();
-            if (totalLength <= 0 || totalLength != after.size()) {
+            if (totalLength != after.size()) {
                 throw unsafePath();
             }
+            requireValidStoredLength(totalLength);
             validateRequestedRange(requestedRange, totalLength);
 
             String etag = digest(channel, totalLength);
@@ -161,6 +162,7 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
                 throw unsafePath();
             }
             verifyStoredFile(target);
+            requireValidStoredLength(attributes.size());
             verifyRootIdentity();
             return true;
         } catch (NoSuchFileException exception) {
@@ -186,14 +188,16 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             Path sourcePath = resolveTarget(source, false);
             BasicFileAttributes before = requireRegularFile(sourcePath);
             verifyStoredFile(sourcePath);
+            requireValidStoredLength(before.size());
             channel = openReadChannel(sourcePath);
             BasicFileAttributes after = requireRegularFile(sourcePath);
             requireSameIdentity(before, after);
             verifyStoredFile(sourcePath);
             long contentLength = channel.size();
-            if (contentLength <= 0 || contentLength != after.size()) {
+            if (contentLength != after.size()) {
                 throw unsafePath();
             }
+            requireValidStoredLength(contentLength);
             InputStream input = Channels.newInputStream(channel);
             try (input) {
                 publication = prepare(
@@ -252,10 +256,10 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             long contentLength,
             String contentType,
             String failureCode) throws IOException {
+        StorageObjectContract.validateContentLength(contentLength);
         Path target = resolveTarget(key, true);
         rejectExistingTarget(target);
-        Path temporary = target.resolveSibling(
-                target.getFileName() + "." + UUID.randomUUID() + ".part");
+        Path temporary = LocalReservedNames.newPart(target.getParent());
         LocalFileIdentity identity = null;
         BasicFileAttributes initialIdentity = null;
         boolean prepared = false;
@@ -507,6 +511,14 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
             throw unsafePath();
         }
         StorageObjectContract.validateRange(range, totalLength);
+    }
+
+    private static void requireValidStoredLength(long contentLength) {
+        try {
+            StorageObjectContract.validateContentLength(contentLength);
+        } catch (IllegalArgumentException exception) {
+            throw unsafePath();
+        }
     }
 
     private static MessageDigest sha256() {

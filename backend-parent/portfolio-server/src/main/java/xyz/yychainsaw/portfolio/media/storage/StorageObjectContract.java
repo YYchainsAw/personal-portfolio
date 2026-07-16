@@ -17,6 +17,16 @@ final class StorageObjectContract {
     }
 
     static String normalizeContentType(ObjectKey key, String contentType) {
+        String normalized = normalizeContentType(contentType);
+        MediaType declared = MediaType.parseMediaType(normalized);
+        MediaType expected = MediaType.parseMediaType(contentType(key));
+        if (!declared.equals(expected)) {
+            throw invalidContentType();
+        }
+        return normalized;
+    }
+
+    static String normalizeContentType(String contentType) {
         if (contentType == null
                 || contentType.isBlank()
                 || contentType.indexOf('\r') >= 0
@@ -25,10 +35,7 @@ final class StorageObjectContract {
         }
         try {
             MediaType declared = MediaType.parseMediaType(contentType.trim());
-            MediaType expected = MediaType.parseMediaType(contentType(key));
-            if (declared.isWildcardType()
-                    || declared.isWildcardSubtype()
-                    || !declared.equals(expected)) {
+            if (declared.isWildcardType() || declared.isWildcardSubtype()) {
                 throw invalidContentType();
             }
             return declared.toString();
