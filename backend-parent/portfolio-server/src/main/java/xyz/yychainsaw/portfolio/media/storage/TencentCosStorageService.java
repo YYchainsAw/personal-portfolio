@@ -26,6 +26,7 @@ public final class TencentCosStorageService implements StorageService, AutoClose
     private static final String LENGTH_MISMATCH = "COS_CONTENT_LENGTH_MISMATCH";
     private final CosClientPort client;
     private final TencentCosProperties properties;
+    private final StorageLocation location;
     private final Clock clock;
     private final Path stagingRoot;
     private final LocalStorageAccessPolicy stagingAccess;
@@ -54,6 +55,10 @@ public final class TencentCosStorageService implements StorageService, AutoClose
         }
         this.client = client;
         this.properties = properties;
+        this.location = new StorageLocation(
+                StorageProvider.TENCENT_COS,
+                properties.bucket(),
+                properties.region());
         this.clock = clock;
         try {
             this.stagingRoot = stagingRoot.toAbsolutePath().normalize();
@@ -66,7 +71,12 @@ public final class TencentCosStorageService implements StorageService, AutoClose
 
     @Override
     public StorageProvider provider() {
-        return StorageProvider.TENCENT_COS;
+        return location.provider();
+    }
+
+    @Override
+    public StorageLocation location() {
+        return location;
     }
 
     @Override

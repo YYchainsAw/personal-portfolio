@@ -23,6 +23,7 @@ import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRecord;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRepository;
+import xyz.yychainsaw.portfolio.media.storage.StorageLocation;
 import xyz.yychainsaw.portfolio.media.storage.StorageRouter;
 import xyz.yychainsaw.portfolio.media.storage.StorageService;
 import xyz.yychainsaw.portfolio.media.storage.StoredObject;
@@ -101,13 +102,18 @@ public final class MediaIngestService {
         boolean mediaClosed = false;
         try {
             StorageService storage;
-            StorageProvider writerProvider;
+            StorageLocation writerLocation;
             UUID assetId;
             try {
                 storage = Objects.requireNonNull(
                         storageRouter.defaultWriter(), "storage writer is unavailable");
-                writerProvider = Objects.requireNonNull(
+                StorageProvider writerProvider = Objects.requireNonNull(
                         storage.provider(), "storage provider is unavailable");
+                writerLocation = Objects.requireNonNull(
+                        storage.location(), "storage location is unavailable");
+                if (writerProvider != writerLocation.provider()) {
+                    throw uploadFailed();
+                }
                 assetId = Objects.requireNonNull(
                         uuidGenerator.get(), "UUID generator returned no value");
             } catch (RuntimeException dependencyFailure) {
@@ -137,7 +143,7 @@ public final class MediaIngestService {
             }
             if (!matchesPublishedObject(
                     staged,
-                    writerProvider,
+                    writerLocation,
                     stagingKey,
                     media.byteSize(),
                     media.mimeType())) {
@@ -251,12 +257,14 @@ public final class MediaIngestService {
 
     private static boolean matchesPublishedObject(
             StoredObject staged,
-            StorageProvider writerProvider,
+            StorageLocation writerLocation,
             String stagingKey,
             long byteSize,
             String mimeType) {
         return staged != null
-                && staged.provider() == writerProvider
+                && staged.provider() == writerLocation.provider()
+                && Objects.equals(staged.bucket(), writerLocation.bucket())
+                && Objects.equals(staged.region(), writerLocation.region())
                 && stagingKey.equals(staged.objectKey())
                 && staged.contentLength() == byteSize
                 && mimeType.equals(staged.contentType());

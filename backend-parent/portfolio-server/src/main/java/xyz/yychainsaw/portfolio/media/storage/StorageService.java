@@ -9,6 +9,8 @@ import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 public interface StorageService {
     StorageProvider provider();
 
+    StorageLocation location();
+
     StoredObject put(String objectKey, InputStream input, long contentLength, String contentType);
 
     StorageRead open(String objectKey, Optional<ByteRange> range);

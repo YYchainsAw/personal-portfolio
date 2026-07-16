@@ -37,6 +37,7 @@ import xyz.yychainsaw.portfolio.media.application.UploadMediaCommand;
 import xyz.yychainsaw.portfolio.media.domain.MediaStatus;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.media.storage.ByteRange;
+import xyz.yychainsaw.portfolio.media.storage.StorageLocation;
 import xyz.yychainsaw.portfolio.media.storage.StorageRead;
 import xyz.yychainsaw.portfolio.media.storage.StorageRouter;
 import xyz.yychainsaw.portfolio.media.storage.StorageService;
@@ -478,6 +479,11 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
         @Override
         public StorageProvider provider() {
             return StorageProvider.LOCAL;
+        }
+
+        @Override
+        public StorageLocation location() {
+            return new StorageLocation(StorageProvider.LOCAL, null, null);
         }
 
         @Override

@@ -61,6 +61,9 @@ class LocalStorageServiceTest {
         StoredObject stored = service.put(
                 "originals/asset.bin", tracking(bytes), bytes.length, CONTENT_TYPE);
 
+        assertThat(service.location())
+                .isEqualTo(new StorageLocation(StorageProvider.LOCAL, null, null));
+        assertThat(service.location().provider()).isEqualTo(service.provider());
         assertThat(stored.provider()).isEqualTo(StorageProvider.LOCAL);
         assertThat(stored.bucket()).isNull();
         assertThat(stored.region()).isNull();
@@ -486,6 +489,26 @@ class LocalStorageServiceTest {
                 CONTENT_TYPE,
                 "0".repeat(64));
         assertThat(valid.contentLength()).isEqualTo(maximum);
+    }
+
+    @Test
+    void storageLocationRequiresTheExactProviderSpecificShape() {
+        assertThat(StorageLocation.class.isRecord()).isTrue();
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(null, null, null))
+                .withMessage("Storage location is invalid");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(
+                        StorageProvider.LOCAL, "private-root", null))
+                .withMessage("Storage location is invalid");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(
+                        StorageProvider.TENCENT_COS, null, "ap-guangzhou"))
+                .withMessage("Storage location is invalid");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(
+                        StorageProvider.TENCENT_COS, "portfolio-1234567890", "   "))
+                .withMessage("Storage location is invalid");
     }
 
     @Test

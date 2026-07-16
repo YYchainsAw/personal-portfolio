@@ -66,6 +66,7 @@ import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRecord;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRepository;
 import xyz.yychainsaw.portfolio.media.storage.ByteRange;
+import xyz.yychainsaw.portfolio.media.storage.StorageLocation;
 import xyz.yychainsaw.portfolio.media.storage.StorageRead;
 import xyz.yychainsaw.portfolio.media.storage.StorageRouter;
 import xyz.yychainsaw.portfolio.media.storage.StorageService;
@@ -202,6 +203,63 @@ class MediaIngestServiceTest {
         assertThat(context.storage().deleteKeys()).isEmpty();
         verifyNoInteractions(context.assets(), context.jobs(), context.audit());
         assertDirectoryEmpty();
+    }
+
+    @Test
+    void rejectsWriterWhoseProviderDisagreesWithItsConfiguredLocationBeforePublication() {
+        TestContext context = context(TransactionMode.NORMAL, false, ASSET_ID);
+        context.storage().location = new StorageLocation(
+                StorageProvider.TENCENT_COS,
+                "portfolio-1234567890",
+                "ap-guangzhou");
+
+        assertUploadFailed(() -> context.service().ingest(
+                command(new CloseCountingInputStream(PDF)), ACTOR_ID));
+
+        assertThat(context.storage().putKeys()).isEmpty();
+        assertThat(context.storage().deleteKeys()).isEmpty();
+        verifyNoInteractions(context.assets(), context.jobs(), context.audit());
+        assertDirectoryEmpty();
+    }
+
+    @Test
+    void rejectsForgedReturnedCosBucketOrRegionWithoutDeletingUnvalidatedPublication() {
+        String stagingKey = MediaObjectKeys.stagingKey(
+                ASSET_ID, SHA256, "application/pdf");
+        List<StorageLocation> forgedLocations = List.of(
+                new StorageLocation(
+                        StorageProvider.TENCENT_COS,
+                        "forged-1234567890",
+                        "ap-guangzhou"),
+                new StorageLocation(
+                        StorageProvider.TENCENT_COS,
+                        "portfolio-1234567890",
+                        "ap-shanghai"));
+
+        for (StorageLocation forged : forgedLocations) {
+            TestContext context = context(TransactionMode.NORMAL, false, ASSET_ID);
+            context.storage().provider = StorageProvider.TENCENT_COS;
+            context.storage().location = new StorageLocation(
+                    StorageProvider.TENCENT_COS,
+                    "portfolio-1234567890",
+                    "ap-guangzhou");
+            context.storage().returnedObject = new StoredObject(
+                    forged.provider(),
+                    forged.bucket(),
+                    forged.region(),
+                    stagingKey,
+                    PDF.length,
+                    "application/pdf",
+                    "test-etag");
+
+            assertUploadFailed(() -> context.service().ingest(
+                    command(new CloseCountingInputStream(PDF)), ACTOR_ID));
+
+            assertThat(context.storage().putKeys()).containsExactly(stagingKey);
+            assertThat(context.storage().deleteKeys()).isEmpty();
+            verifyNoInteractions(context.assets(), context.jobs(), context.audit());
+            assertDirectoryEmpty();
+        }
     }
 
     @Test
@@ -596,10 +654,18 @@ class MediaIngestServiceTest {
         private RuntimeException putFailure;
         private RuntimeException deleteFailure;
         private StoredObject returnedObject;
+        private StorageProvider provider = StorageProvider.LOCAL;
+        private StorageLocation location = new StorageLocation(
+                StorageProvider.LOCAL, null, null);
 
         @Override
         public StorageProvider provider() {
-            return StorageProvider.LOCAL;
+            return provider;
+        }
+
+        @Override
+        public StorageLocation location() {
+            return location;
         }
 
         @Override
@@ -630,9 +696,9 @@ class MediaIngestServiceTest {
                 return returnedObject;
             }
             return new StoredObject(
-                    StorageProvider.LOCAL,
-                    null,
-                    null,
+                    location.provider(),
+                    location.bucket(),
+                    location.region(),
                     objectKey,
                     contentLength,
                     contentType,

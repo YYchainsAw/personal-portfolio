@@ -28,6 +28,8 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
     private static final String OBJECT_EXISTS = "STORAGE_OBJECT_ALREADY_EXISTS";
     private static final String UNSAFE_PATH = "LOCAL_UNSAFE_PATH";
     private static final String LENGTH_MISMATCH = "LOCAL_CONTENT_LENGTH_MISMATCH";
+    private static final StorageLocation LOCATION =
+            new StorageLocation(StorageProvider.LOCAL, null, null);
     private final Path root;
     private final LocalStorageAccessPolicy accessPolicy;
     private final OperationObserver observer;
@@ -50,7 +52,12 @@ public final class LocalStorageService implements StorageService, AutoCloseable 
 
     @Override
     public StorageProvider provider() {
-        return StorageProvider.LOCAL;
+        return LOCATION.provider();
+    }
+
+    @Override
+    public StorageLocation location() {
+        return LOCATION;
     }
 
     @Override

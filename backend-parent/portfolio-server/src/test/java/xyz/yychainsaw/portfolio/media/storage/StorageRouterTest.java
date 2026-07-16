@@ -140,6 +140,20 @@ class StorageRouterTest {
         }
 
         @Override
+        public StorageLocation location() {
+            if (provider == StorageProvider.LOCAL) {
+                return new StorageLocation(StorageProvider.LOCAL, null, null);
+            }
+            if (provider == StorageProvider.TENCENT_COS) {
+                return new StorageLocation(
+                        StorageProvider.TENCENT_COS,
+                        "portfolio-1234567890",
+                        "ap-guangzhou");
+            }
+            return null;
+        }
+
+        @Override
         public StoredObject put(
                 String objectKey, InputStream input, long contentLength, String contentType) {
             throw new UnsupportedOperationException();

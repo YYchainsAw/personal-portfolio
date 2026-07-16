@@ -97,6 +97,11 @@ class TencentCosStorageServiceTest {
                             + "variants/a/1280.jpg?ttl=300"));
             assertThat(client.lastExpiration).isEqualTo(NOW.plus(Duration.ofMinutes(5)));
             assertThat(service.provider()).isEqualTo(StorageProvider.TENCENT_COS);
+            assertThat(service.location()).isEqualTo(new StorageLocation(
+                    StorageProvider.TENCENT_COS,
+                    "portfolio-1234567890",
+                    "ap-guangzhou"));
+            assertThat(service.location().provider()).isEqualTo(service.provider());
         }
     }
 
