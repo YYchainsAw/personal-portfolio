@@ -73,16 +73,79 @@ CREATE TABLE portfolio.maintenance_run (
     CONSTRAINT maintenance_run_details_ck CHECK (
         jsonb_typeof(details) = 'object'
         AND octet_length(details::text) <= 8192
-        AND details::text !~* '"([^" ]*_)?(path|object_key|credentials?|password|secret|token|exception(_text|_message)?|stack_trace|pii|email|phone|address|ip_address)"[[:space:]]*:'
+        AND (
+            details - ARRAY[
+                'input_count',
+                'output_count',
+                'processed_count',
+                'deleted_count',
+                'failed_count',
+                'skipped_count',
+                'object_count',
+                'cutoff_epoch_second'
+            ]
+        ) = '{}'::jsonb
+        AND CASE
+            WHEN NOT (details ? 'input_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'input_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'input_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'input_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'output_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'output_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'output_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'output_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'processed_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'processed_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'processed_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'processed_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'deleted_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'deleted_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'deleted_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'deleted_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'failed_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'failed_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'failed_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'failed_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'skipped_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'skipped_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'skipped_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'skipped_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'object_count') THEN TRUE
+            WHEN jsonb_typeof(details -> 'object_count') <> 'number' THEN FALSE
+            WHEN (details ->> 'object_count') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'object_count')::NUMERIC <= 9223372036854775807
+        END
+        AND CASE
+            WHEN NOT (details ? 'cutoff_epoch_second') THEN TRUE
+            WHEN jsonb_typeof(details -> 'cutoff_epoch_second') <> 'number' THEN FALSE
+            WHEN (details ->> 'cutoff_epoch_second') !~ '^(0|[1-9][0-9]{0,18})$' THEN FALSE
+            ELSE (details ->> 'cutoff_epoch_second')::NUMERIC <= 9223372036854775807
+        END
     ),
     CONSTRAINT maintenance_run_timing_ck CHECK (
         (status = 'RUNNING' AND finished_at IS NULL)
-        OR (status IN ('SUCCEEDED', 'FAILED') AND finished_at IS NOT NULL)
+        OR (
+            status IN ('SUCCEEDED', 'FAILED')
+            AND finished_at IS NOT NULL
+            AND finished_at >= started_at
+        )
     )
 );
 
 COMMENT ON COLUMN portfolio.maintenance_run.details IS
-    'Bounded operational counts and cutoffs only; must not contain paths, object keys, credentials, exception text, or PII.';
+    'Bounded operational counts and cutoffs only; values are non-negative 64-bit JSON integers under an explicit top-level allowlist and cannot contain paths, object keys, credentials, exception text, or PII.';
 
 CREATE TABLE portfolio.media_asset (
     id UUID PRIMARY KEY,

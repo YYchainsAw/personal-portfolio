@@ -9,8 +9,12 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -458,6 +462,83 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
                         "{\"processed_count\":\"" + "x".repeat(8192) + "\"}"));
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidMaintenanceDetails")
+    void maintenanceDetailsRejectNonAllowlistedKeysAndNonBigintValues(
+            String description, String details) {
+        assertCheckViolation(
+                """
+                insert into portfolio.maintenance_run(
+                    id, run_type, status, details, started_at
+                ) values (
+                    :id, 'RETENTION', 'RUNNING', cast(:details as jsonb), clock_timestamp()
+                )
+                """,
+                Map.of("id", UUID.randomUUID(), "details", details));
+    }
+
+    @Test
+    void maintenanceDetailsAcceptEveryAllowlistedNonNegativeBigintKey() {
+        UUID runId = UUID.randomUUID();
+        String details = """
+                {
+                  "input_count": 0,
+                  "output_count": 1,
+                  "processed_count": 2,
+                  "deleted_count": 3,
+                  "failed_count": 4,
+                  "skipped_count": 5,
+                  "object_count": 6,
+                  "cutoff_epoch_second": 9223372036854775807
+                }
+                """;
+        JdbcClient migrator = migratorJdbc();
+        try {
+            int inserted = migrator.sql("""
+                            insert into portfolio.maintenance_run(
+                                id, run_type, status, details, started_at
+                            ) values (
+                                :id, 'RETENTION', 'RUNNING',
+                                cast(:details as jsonb), clock_timestamp()
+                            )
+                            """)
+                    .params(Map.of("id", runId, "details", details))
+                    .update();
+            Boolean detailsRoundTrip = migrator.sql("""
+                            select details = cast(:details as jsonb)
+                            from portfolio.maintenance_run
+                            where id = :id
+                            """)
+                    .params(Map.of("id", runId, "details", details))
+                    .query(Boolean.class)
+                    .single();
+
+            SoftAssertions.assertSoftly(softly -> {
+                softly.assertThat(inserted).isOne();
+                softly.assertThat(detailsRoundTrip).isTrue();
+            });
+        } finally {
+            migrator.sql("delete from portfolio.maintenance_run where id = :id")
+                    .param("id", runId)
+                    .update();
+        }
+    }
+
+    @Test
+    void terminalMaintenanceRunRejectsFinishedAtBeforeStartedAt() {
+        assertCheckViolation(
+                """
+                insert into portfolio.maintenance_run(
+                    id, run_type, status, started_at, finished_at
+                ) values (
+                    :id, 'BACKUP', 'SUCCEEDED',
+                    '2026-07-16T02:00:00Z'::timestamptz,
+                    '2026-07-16T01:59:59.999999Z'::timestamptz
+                )
+                """,
+                Map.of("id", UUID.randomUUID()));
+    }
+
     @Test
     void databaseChecksRejectInvalidMediaAndEnforceNullSafeStorageIdentity() {
         assertCheckViolation(
@@ -760,6 +841,25 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
 
     private static void assertCheckViolation(String sql, Map<String, ?> parameters) {
         assertSqlState("23514", sql, parameters);
+    }
+
+    private static Stream<Arguments> invalidMaintenanceDetails() {
+        return Stream.of(
+                Arguments.of("unknown key", "{\"note\":1}"),
+                Arguments.of("camelCase key", "{\"objectCount\":1}"),
+                Arguments.of("nested object", "{\"processed_count\":{\"value\":1}}"),
+                Arguments.of("array value", "{\"processed_count\":[1]}"),
+                Arguments.of("token string value", "{\"processed_count\":\"token-value\"}"),
+                Arguments.of(
+                        "path string value",
+                        "{\"cutoff_epoch_second\":\"/runtime/private/file\"}"),
+                Arguments.of("boolean value", "{\"processed_count\":true}"),
+                Arguments.of("null value", "{\"processed_count\":null}"),
+                Arguments.of("negative integer", "{\"processed_count\":-1}"),
+                Arguments.of("fractional number", "{\"processed_count\":1.5}"),
+                Arguments.of(
+                        "signed 64-bit overflow",
+                        "{\"processed_count\":9223372036854775808}"));
     }
 
     private static void assertSqlState(
