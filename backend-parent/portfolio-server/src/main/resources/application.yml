@@ -28,6 +28,8 @@ spring:
       initialize-schema: never
       cleanup-cron: "-"
       table-name: SPRING_SESSION
+      flush-mode: immediate
+      save-mode: on-set-attribute
   jackson:
     default-property-inclusion: non_null
     time-zone: UTC
@@ -38,8 +40,10 @@ server:
   servlet:
     session:
       timeout: 30m
+      tracking-modes: cookie
       cookie:
         name: PORTFOLIO_SESSION
+        path: /
         http-only: true
         secure: ${PORTFOLIO_SESSION_COOKIE_SECURE:true}
         same-site: strict
@@ -86,10 +90,14 @@ portfolio:
         limit: 60
         window: PT1M
   web:
+    allow-development-cors: ${PORTFOLIO_ALLOW_DEVELOPMENT_CORS:false}
     development-origin: ${PORTFOLIO_ADMIN_DEV_ORIGIN:http://localhost:5174}
   recovery:
-    directory: ${PORTFOLIO_RECOVERY_DIRECTORY:runtime/recovery}
+    directory: ${PORTFOLIO_RECOVERY_DIRECTORY:${user.dir}/runtime/recovery}
     pg-dump-bin: ${PORTFOLIO_PG_DUMP_BIN:pg_dump}
+    username: ${PORTFOLIO_DB_MIGRATOR_USER}
+    password: ${PORTFOLIO_DB_MIGRATOR_PASSWORD}
+    timeout: ${PORTFOLIO_PG_DUMP_TIMEOUT:PT2M}
 
 ---
 spring:

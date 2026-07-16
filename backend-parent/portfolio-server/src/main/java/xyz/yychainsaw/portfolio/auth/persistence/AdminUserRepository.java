@@ -6,12 +6,16 @@ import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import xyz.yychainsaw.portfolio.auth.crypto.EncryptedTotpSecret;
 import xyz.yychainsaw.portfolio.auth.model.AdminStatus;
 import xyz.yychainsaw.portfolio.auth.model.AdminUser;
@@ -54,6 +58,37 @@ public class AdminUserRepository {
                                totp_ciphertext, last_login_at, version, created_at, updated_at
                         from portfolio.admin_user
                         where id=:id
+                        """)
+                .param("id", id)
+                .query(ADMIN_MAPPER)
+                .optional();
+    }
+
+    public AdminUser requireOnlyAdmin() {
+        List<AdminUser> rows = jdbc.sql("""
+                        select id, username, password_hash, status, totp_key_version, totp_nonce,
+                               totp_ciphertext, last_login_at, version, created_at, updated_at
+                        from portfolio.admin_user
+                        order by id
+                        limit 2
+                        """)
+                .query(ADMIN_MAPPER)
+                .list();
+        if (rows.size() != 1) {
+            throw new IllegalStateException("exactly one administrator is required");
+        }
+        return rows.get(0);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<AdminUser> findByIdForUpdate(UUID id) {
+        Objects.requireNonNull(id, "admin id is required");
+        return jdbc.sql("""
+                        select id, username, password_hash, status, totp_key_version, totp_nonce,
+                               totp_ciphertext, last_login_at, version, created_at, updated_at
+                        from portfolio.admin_user
+                        where id=:id
+                        for update
                         """)
                 .param("id", id)
                 .query(ADMIN_MAPPER)
@@ -125,6 +160,133 @@ public class AdminUserRepository {
         requireOne(changed, "admin credential update affected an unexpected number of rows");
     }
 
+    @Transactional(propagation = Propagation.MANDATORY)
+    public OptionalLong replaceCredentialsIfVersion(
+            UUID adminId,
+            long expectedVersion,
+            String passwordHash,
+            EncryptedTotpSecret secret) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        long nextVersion = requireNextVersion(expectedVersion);
+        requirePasswordHash(passwordHash);
+        EncryptedTotpSecret snapshot = snapshot(
+                Objects.requireNonNull(secret, "encrypted TOTP secret is required"));
+        Optional<Long> changed = jdbc.sql("""
+                        update portfolio.admin_user
+                        set password_hash=:passwordHash,
+                            totp_key_version=:keyVersion,
+                            totp_nonce=:nonce,
+                            totp_ciphertext=:ciphertext,
+                            status='ACTIVE',
+                            version=version+1
+                        where id=:adminId and version=:expectedVersion
+                        returning version
+                        """)
+                .param("passwordHash", passwordHash)
+                .param("keyVersion", snapshot.keyVersion())
+                .param("nonce", snapshot.nonce())
+                .param("ciphertext", snapshot.ciphertext())
+                .param("adminId", adminId, Types.OTHER)
+                .param("expectedVersion", expectedVersion, Types.BIGINT)
+                .query(Long.class)
+                .optional();
+        return checkedCasResult(changed, nextVersion);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public OptionalLong updateTotpIfVersion(
+            UUID adminId,
+            long expectedVersion,
+            int expectedKeyVersion,
+            EncryptedTotpSecret secret) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        long nextVersion = requireNextVersion(expectedVersion);
+        if (expectedKeyVersion <= 0) {
+            throw new IllegalArgumentException("expected TOTP key version must be positive");
+        }
+        EncryptedTotpSecret snapshot = snapshot(
+                Objects.requireNonNull(secret, "encrypted TOTP secret is required"));
+        Optional<Long> changed = jdbc.sql("""
+                        update portfolio.admin_user
+                        set totp_key_version=:keyVersion,
+                            totp_nonce=:nonce,
+                            totp_ciphertext=:ciphertext,
+                            version=version+1
+                        where id=:adminId
+                          and version=:expectedVersion
+                          and totp_key_version=:expectedKeyVersion
+                        returning version
+                        """)
+                .param("keyVersion", snapshot.keyVersion())
+                .param("nonce", snapshot.nonce())
+                .param("ciphertext", snapshot.ciphertext())
+                .param("adminId", adminId, Types.OTHER)
+                .param("expectedVersion", expectedVersion, Types.BIGINT)
+                .param("expectedKeyVersion", expectedKeyVersion, Types.INTEGER)
+                .query(Long.class)
+                .optional();
+        return checkedCasResult(changed, nextVersion);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public long updatePassword(UUID adminId, String passwordHash) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        requirePasswordHash(passwordHash);
+        return jdbc.sql("""
+                        update portfolio.admin_user
+                        set password_hash=:passwordHash,
+                            version=version+1
+                        where id=:adminId
+                        returning version
+                        """)
+                .param("passwordHash", passwordHash)
+                .param("adminId", adminId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "admin password update affected an unexpected number of rows"));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public long updateTotp(UUID adminId, EncryptedTotpSecret secret) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        EncryptedTotpSecret snapshot = snapshot(
+                Objects.requireNonNull(secret, "encrypted TOTP secret is required"));
+        return jdbc.sql("""
+                        update portfolio.admin_user
+                        set totp_key_version=:keyVersion,
+                            totp_nonce=:nonce,
+                            totp_ciphertext=:ciphertext,
+                            version=version+1
+                        where id=:adminId
+                        returning version
+                        """)
+                .param("keyVersion", snapshot.keyVersion())
+                .param("nonce", snapshot.nonce())
+                .param("ciphertext", snapshot.ciphertext())
+                .param("adminId", adminId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "admin TOTP update affected an unexpected number of rows"));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public long bumpSecurityVersion(UUID adminId) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        return jdbc.sql("""
+                        update portfolio.admin_user
+                        set version=version+1
+                        where id=:adminId
+                        returning version
+                        """)
+                .param("adminId", adminId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "admin security-version update affected an unexpected number of rows"));
+    }
+
     private static AdminUser map(ResultSet resultSet, int rowNumber) throws SQLException {
         OffsetDateTime lastLogin = resultSet.getObject("last_login_at", OffsetDateTime.class);
         return new AdminUser(
@@ -148,6 +310,37 @@ public class AdminUserRepository {
         }
         int length = username.codePointCount(0, username.length());
         return length >= 3 && length <= 64;
+    }
+
+    private static void requirePasswordHash(String passwordHash) {
+        if (passwordHash == null || passwordHash.isBlank() || passwordHash.length() > 255) {
+            throw new IllegalArgumentException(
+                    "password hash must contain between 1 and 255 characters");
+        }
+    }
+
+    private static EncryptedTotpSecret snapshot(EncryptedTotpSecret secret) {
+        return new EncryptedTotpSecret(
+                secret.keyVersion(), secret.nonce(), secret.ciphertext());
+    }
+
+    private static long requireNextVersion(long expectedVersion) {
+        if (expectedVersion < 0 || expectedVersion == Long.MAX_VALUE) {
+            throw new IllegalArgumentException("expected administrator version is invalid");
+        }
+        return expectedVersion + 1;
+    }
+
+    private static OptionalLong checkedCasResult(Optional<Long> changed, long nextVersion) {
+        if (changed.isEmpty()) {
+            return OptionalLong.empty();
+        }
+        long actualVersion = changed.orElseThrow();
+        if (actualVersion != nextVersion) {
+            throw new IllegalStateException(
+                    "administrator CAS returned an unexpected version");
+        }
+        return OptionalLong.of(actualVersion);
     }
 
     private static OffsetDateTime toOffsetDateTime(Instant instant) {

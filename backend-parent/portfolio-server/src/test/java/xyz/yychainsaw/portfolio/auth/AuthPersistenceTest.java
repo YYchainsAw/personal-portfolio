@@ -38,6 +38,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.annotation.Propagation;
@@ -53,7 +54,6 @@ import xyz.yychainsaw.portfolio.auth.persistence.RecoveryCodeRepository.StoredCo
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 @SpringBootTest
-@Transactional
 @Isolated
 class AuthPersistenceTest extends PostgresIntegrationTestBase {
     private static final String RECOVERY_CODE = "ABCD-EFGH-JKLM";
@@ -67,6 +67,11 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     @Autowired PasswordEncoder encoder;
     @Autowired JdbcClient jdbc;
     @Autowired PlatformTransactionManager transactionManager;
+
+    @Test
+    void persistenceTestClassDoesNotSupplyAnAmbientTransaction() {
+        assertThat(AuthPersistenceTest.class.getDeclaredAnnotation(Transactional.class)).isNull();
+    }
 
     @Test
     void adminModelValidatesCodePointAndSecretBoundariesAndRedactsSecrets() {
@@ -388,6 +393,7 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    @Transactional
     void repositoryAndServiceInputsAreValidatedBeforeJdbcWork() {
         assertThatNullPointerException()
                 .isThrownBy(() -> new AdminUserRepository(null))
@@ -427,6 +433,27 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
         assertThatNullPointerException()
                 .isThrownBy(() -> admins.replaceCredentials(UUID.randomUUID(), "hash", null))
                 .withMessage("encrypted TOTP secret is required");
+        assertThatNullPointerException()
+                .isThrownBy(() -> admins.updatePassword(null, "hash"))
+                .withMessage("admin id is required");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> admins.updatePassword(UUID.randomUUID(), null))
+                .withMessage("password hash must contain between 1 and 255 characters");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> admins.updatePassword(UUID.randomUUID(), " "))
+                .withMessage("password hash must contain between 1 and 255 characters");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> admins.updatePassword(UUID.randomUUID(), "h".repeat(256)))
+                .withMessage("password hash must contain between 1 and 255 characters");
+        assertThatNullPointerException()
+                .isThrownBy(() -> admins.updateTotp(null, secret(1)))
+                .withMessage("admin id is required");
+        assertThatNullPointerException()
+                .isThrownBy(() -> admins.updateTotp(UUID.randomUUID(), null))
+                .withMessage("encrypted TOTP secret is required");
+        assertThatNullPointerException()
+                .isThrownBy(() -> admins.bumpSecurityVersion(null))
+                .withMessage("admin id is required");
 
         RecoveryCodeRepository direct = new RecoveryCodeRepository(jdbc);
         UUID adminId = UUID.randomUUID();
@@ -466,6 +493,108 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    void findByIdForUpdateRejectsNullBeforeJdbcWork() {
+        JdbcClient mockedJdbc = mock(JdbcClient.class);
+        AdminUserRepository direct = new AdminUserRepository(mockedJdbc);
+
+        assertThatNullPointerException()
+                .isThrownBy(() -> direct.findByIdForUpdate(null))
+                .withMessage("admin id is required");
+
+        verifyNoInteractions(mockedJdbc);
+    }
+
+    @Test
+    @Transactional
+    void findByIdForUpdateReturnsEmptyOrUsesTheExactAdminMapperWithQualifiedSql() {
+        setHostileSearchPath();
+        UUID adminId = UUID.randomUUID();
+        AdminUser expected = admin(
+                adminId,
+                "LockMappedAdmin",
+                Instant.parse("2026-07-15T03:04:05.123456Z"),
+                AdminStatus.DISABLED,
+                7,
+                secret(11));
+        admins.insert(expected);
+
+        assertThat(admins.findByIdForUpdate(UUID.randomUUID())).isEmpty();
+        assertThat(admins.findByIdForUpdate(adminId)).contains(expected);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void findByIdForUpdateRequiresAnExistingTransactionBeforeJdbcWork() {
+        assertThatThrownBy(() -> admins.findByIdForUpdate(UUID.randomUUID()))
+                .isInstanceOf(IllegalTransactionStateException.class)
+                .hasMessageContaining("existing transaction")
+                .hasMessageContaining("mandatory");
+        assertThatThrownBy(() -> admins.updatePassword(UUID.randomUUID(), "hash"))
+                .isInstanceOf(IllegalTransactionStateException.class)
+                .hasMessageContaining("existing transaction")
+                .hasMessageContaining("mandatory");
+        assertThatThrownBy(() -> admins.updateTotp(UUID.randomUUID(), secret(1)))
+                .isInstanceOf(IllegalTransactionStateException.class)
+                .hasMessageContaining("existing transaction")
+                .hasMessageContaining("mandatory");
+        assertThatThrownBy(() -> admins.bumpSecurityVersion(UUID.randomUUID()))
+                .isInstanceOf(IllegalTransactionStateException.class)
+                .hasMessageContaining("existing transaction")
+                .hasMessageContaining("mandatory");
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void findByIdForUpdateHoldsTheRealPostgresRowLockUntilItsTransactionCompletes()
+            throws Exception {
+        UUID adminId = UUID.randomUUID();
+        AdminUser expected = admin(
+                adminId,
+                "LockedAdmin",
+                Instant.parse("2026-07-15T04:05:06.654321Z"),
+                AdminStatus.ACTIVE,
+                3,
+                secret(12));
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        List<Future<AdminUser>> futures = new ArrayList<>();
+        try {
+            admins.insert(expected);
+            futures.add(executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                AdminUser locked = admins.findByIdForUpdate(adminId).orElseThrow();
+                firstLocked.countDown();
+                awaitWithoutChecked(releaseFirst, "first admin lock was not released");
+                return locked;
+            })));
+            await(firstLocked, "first transaction did not acquire the admin lock");
+
+            futures.add(executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                secondStarted.countDown();
+                return admins.findByIdForUpdate(adminId).orElseThrow();
+            })));
+            await(secondStarted, "second transaction did not attempt the admin lock");
+
+            assertThatExceptionOfType(TimeoutException.class)
+                    .as("the second transaction must block on the first transaction's row lock")
+                    .isThrownBy(() -> futures.get(1).get(1, SECONDS));
+
+            releaseFirst.countDown();
+            assertThat(futures.get(0).get(20, SECONDS)).isEqualTo(expected);
+            assertThat(futures.get(1).get(20, SECONDS)).isEqualTo(expected);
+        } finally {
+            releaseFirst.countDown();
+            try {
+                stopExecutor(executor, futures);
+            } finally {
+                cleanupCommittedAdmin(adminId);
+            }
+        }
+    }
+
+    @Test
+    @Transactional
     void adminPersistenceRoundTripsNullLastLoginAndUpdatesUnderHostileSearchPath() {
         setHostileSearchPath();
         UUID adminId = UUID.randomUUID();
@@ -503,6 +632,72 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    void securitySettingsUpdatesAdvanceAndReturnOnlyTheirIntendedSecurityEpoch() {
+        UUID adminId = UUID.randomUUID();
+        EncryptedTotpSecret originalSecret = secret(3);
+        EncryptedTotpSecret replacement = secret(4);
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        try {
+            transaction.executeWithoutResult(status -> {
+                setHostileSearchPath();
+                admins.insert(admin(
+                        adminId, "SecurityEpochAdmin", null,
+                        AdminStatus.DISABLED, 7, originalSecret));
+            });
+
+            Long passwordVersion = transaction.execute(status -> {
+                setHostileSearchPath();
+                return admins.updatePassword(adminId, "new-password-hash");
+            });
+            assertThat(passwordVersion).isEqualTo(8L);
+            AdminUser afterPassword = admins.findById(adminId).orElseThrow();
+            assertThat(afterPassword.passwordHash()).isEqualTo("new-password-hash");
+            assertThat(afterPassword.totpSecret()).isEqualTo(originalSecret);
+            assertThat(afterPassword.status()).isEqualTo(AdminStatus.DISABLED);
+            assertThat(afterPassword.version()).isEqualTo(8);
+
+            Long totpVersion = transaction.execute(status -> {
+                setHostileSearchPath();
+                return admins.updateTotp(adminId, replacement);
+            });
+            assertThat(totpVersion).isEqualTo(9L);
+            AdminUser afterTotp = admins.findById(adminId).orElseThrow();
+            assertThat(afterTotp.passwordHash()).isEqualTo("new-password-hash");
+            assertThat(afterTotp.totpSecret()).isEqualTo(replacement);
+            assertThat(afterTotp.status()).isEqualTo(AdminStatus.DISABLED);
+            assertThat(afterTotp.version()).isEqualTo(9);
+
+            Long bumpedVersion = transaction.execute(status -> {
+                setHostileSearchPath();
+                return admins.bumpSecurityVersion(adminId);
+            });
+            assertThat(bumpedVersion).isEqualTo(10L);
+            AdminUser afterBump = admins.findById(adminId).orElseThrow();
+            assertThat(afterBump.passwordHash()).isEqualTo("new-password-hash");
+            assertThat(afterBump.totpSecret()).isEqualTo(replacement);
+            assertThat(afterBump.status()).isEqualTo(AdminStatus.DISABLED);
+            assertThat(afterBump.version()).isEqualTo(10);
+
+            UUID missing = UUID.randomUUID();
+            assertThatThrownBy(() -> transaction.execute(status ->
+                    admins.updatePassword(missing, "hash")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("admin password update affected an unexpected number of rows");
+            assertThatThrownBy(() -> transaction.execute(status ->
+                    admins.updateTotp(missing, secret(5))))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("admin TOTP update affected an unexpected number of rows");
+            assertThatThrownBy(() -> transaction.execute(status ->
+                    admins.bumpSecurityVersion(missing)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("admin security-version update affected an unexpected number of rows");
+        } finally {
+            cleanupCommittedAdmin(adminId);
+        }
+    }
+
+    @Test
+    @Transactional
     void insertPreservesNonNullLastLoginAndUtcEnvelopeRoundTrip() {
         UUID adminId = UUID.randomUUID();
         Instant loginAt = Instant.parse("2025-12-31T23:59:59.999999Z");
@@ -518,6 +713,7 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    @Transactional
     void secondSingletonInsertRetainsPostgresUniqueViolation() {
         admins.insert(admin(UUID.randomUUID(), "FirstAdmin", null));
         Throwable failure = catchThrowable(() -> admins.insert(admin(UUID.randomUUID(), "SecondAdmin", null)));
@@ -528,6 +724,7 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    @Transactional
     void recoveryReplacementOrderingAndSequentialSingleUseWorkWithHostileSearchPath() {
         setHostileSearchPath();
         UUID adminId = UUID.randomUUID();
@@ -550,6 +747,7 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    @Transactional
     void unusedRecoveryCodesHaveStableCreatedAtThenIdOrdering() {
         UUID adminId = UUID.randomUUID();
         admins.insert(admin(adminId, "OrderingAdmin", null));
@@ -567,6 +765,7 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    @Transactional
     void recoveryReplacementRequiresItsExactExistingParent() {
         assertThatThrownBy(() -> recoveryCodes.replace(UUID.randomUUID(), List.of("hash")))
                 .isInstanceOf(IllegalStateException.class)
@@ -574,6 +773,7 @@ class AuthPersistenceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    @Transactional
     void recoveryConsumptionRequiresItsExactExistingParent() {
         assertThatThrownBy(() -> recoveryCodes.markUsed(UUID.randomUUID(), UUID.randomUUID()))
                 .isInstanceOf(IllegalStateException.class)
