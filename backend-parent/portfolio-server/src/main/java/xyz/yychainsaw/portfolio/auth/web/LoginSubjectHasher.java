@@ -64,6 +64,11 @@ public final class LoginSubjectHasher {
         return digest("admin-second-factor", challengeId.toString());
     }
 
+    public String hashTotpEnrollment(UUID enrollmentId) {
+        Objects.requireNonNull(enrollmentId, "enrollment id is required");
+        return digest("admin-totp-enrollment", enrollmentId.toString());
+    }
+
     public String hashSessionId(String publicSessionId) {
         return digest("admin-session-concurrency", boundedRaw(publicSessionId));
     }

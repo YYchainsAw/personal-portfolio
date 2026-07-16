@@ -6,10 +6,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -17,6 +17,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.audit.AuditCommand;
 import xyz.yychainsaw.portfolio.audit.AuditOutcome;
 import xyz.yychainsaw.portfolio.audit.AuditService;
+import xyz.yychainsaw.portfolio.auth.model.AdminStatus;
+import xyz.yychainsaw.portfolio.auth.model.AdminUser;
 import xyz.yychainsaw.portfolio.auth.persistence.AdminUserRepository;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 
@@ -98,22 +100,95 @@ public final class AdminSessionService {
         return List.copyOf(repository.list(adminId, currentPublicSessionId));
     }
 
-    public void revoke(UUID metadataId, UUID actorAdminId, String reason) {
+    public ActiveSession requireCurrentSessionInCurrentTransaction(
+            UUID adminId, ActiveSession expected) {
+        return findCurrentSessionInCurrentTransaction(adminId, expected)
+                .orElseThrow(AdminSessionService::unauthorized);
+    }
+
+    public Optional<ActiveSession> findCurrentSessionInCurrentTransaction(
+            UUID adminId, ActiveSession expected) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        Objects.requireNonNull(expected, "current session is required");
+        requireAmbientTransaction("current-session lock requires an ambient transaction");
+        if (!adminId.equals(expected.adminId())) {
+            return Optional.empty();
+        }
+
+        AdminUser admin = adminRepository.findByIdForUpdate(adminId).orElse(null);
+        if (admin == null) {
+            return Optional.empty();
+        }
+        AdminSessionRepository.SessionRow row = repository
+                .findByMetadataIdForUpdate(expected.metadataId(), adminId)
+                .orElse(null);
+        if (row == null) {
+            return Optional.empty();
+        }
+        Instant now = Objects.requireNonNull(clock.instant(), "clock returned no instant");
+        if (admin.status() != AdminStatus.ACTIVE
+                || !isCurrentActive(row, expected, now)) {
+            return Optional.empty();
+        }
+        return Optional.of(expected);
+    }
+
+    public List<AdminSessionRepository.TerminalSession>
+            markOtherSessionsRevokedInCurrentTransaction(
+                    UUID adminId, ActiveSession current, String reason) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        Objects.requireNonNull(current, "current session is required");
+        AdminSessionRepository.requireReason(reason);
+        requireAmbientTransaction("session marking requires an ambient transaction");
+        requireCurrentSessionInCurrentTransaction(adminId, current);
+
+        List<AdminSessionRepository.TerminalSession> revoked =
+                repository.markOtherRevoked(
+                        adminId, current.metadataId(), reason,
+                        Objects.requireNonNull(clock.instant(), "clock returned no instant"));
+        for (AdminSessionRepository.TerminalSession terminal : revoked) {
+            audit.record(new AuditCommand(
+                    adminId,
+                    "SESSION_REVOKED",
+                    "ADMIN_SESSION",
+                    terminal.metadataId().toString(),
+                    AuditOutcome.SUCCESS,
+                    null,
+                    Map.of("reason", reason)));
+        }
+        return List.copyOf(revoked);
+    }
+
+    public void deleteMarkedSessions(
+            List<AdminSessionRepository.TerminalSession> marked) {
+        requireNoAmbientTransaction(
+                "marked-session deletion requires no ambient transaction");
+        List<AdminSessionRepository.TerminalSession> snapshot = List.copyOf(
+                Objects.requireNonNull(marked, "marked sessions are required"));
+        for (AdminSessionRepository.TerminalSession terminal : snapshot) {
+            deleteBestEffort(terminal.primaryId());
+        }
+    }
+
+    public void revoke(UUID metadataId, ActiveSession actor, String reason) {
         Objects.requireNonNull(metadataId, "metadata id is required");
-        Objects.requireNonNull(actorAdminId, "admin id is required");
+        Objects.requireNonNull(actor, "actor session is required");
         AdminSessionRepository.requireReason(reason);
         requireNoAmbientTransaction("session revoke requires no ambient transaction");
 
         AdminSessionRepository.TerminalSession revoked = transactions.execute(status -> {
-            adminRepository.findByIdForUpdate(actorAdminId)
-                    .orElseThrow(AdminSessionService::unauthorized);
-            AdminSessionRepository.SessionRow existing = repository
-                    .findByMetadataId(metadataId, actorAdminId)
-                    .orElseThrow(() -> new DomainException(
-                            "SESSION_NOT_FOUND", HttpStatus.NOT_FOUND, Map.of()));
-            if (existing.status() != AdminSessionStatus.ACTIVE) {
-                throw new DomainException(
-                        "SESSION_NOT_ACTIVE", HttpStatus.CONFLICT, Map.of());
+            UUID actorAdminId = actor.adminId();
+            ActiveSession lockedActor =
+                    requireCurrentSessionInCurrentTransaction(actorAdminId, actor);
+            if (!metadataId.equals(lockedActor.metadataId())) {
+                AdminSessionRepository.SessionRow existing = repository
+                        .findByMetadataIdForUpdate(metadataId, actorAdminId)
+                        .orElseThrow(() -> new DomainException(
+                                "SESSION_NOT_FOUND", HttpStatus.NOT_FOUND, Map.of()));
+                if (existing.status() != AdminSessionStatus.ACTIVE) {
+                    throw new DomainException(
+                            "SESSION_NOT_ACTIVE", HttpStatus.CONFLICT, Map.of());
+                }
             }
             AdminSessionRepository.TerminalSession terminal = repository
                     .markRevoked(metadataId, actorAdminId, reason, clock.instant())
@@ -132,7 +207,7 @@ public final class AdminSessionService {
         if (revoked == null) {
             throw new IllegalStateException("session revoke transaction returned no result");
         }
-        deleteBestEffort(revoked.primaryId());
+        deleteMarkedSessions(List.of(revoked));
     }
 
     void deleteBestEffort(String primaryId) {
@@ -141,11 +216,33 @@ public final class AdminSessionService {
         }
         try {
             repository.deleteSpringSession(primaryId);
-        } catch (DataAccessException exception) {
+        } catch (RuntimeException exception) {
             log.warn(
                     "Spring Session row deletion deferred for retry type={}",
                     exception.getClass().getName());
         }
+    }
+
+    private boolean isCurrentActive(
+            AdminSessionRepository.SessionRow row,
+            ActiveSession expected,
+            Instant now) {
+        boolean absoluteExpired;
+        try {
+            absoluteExpired = !row.createdAt()
+                    .plus(properties.absoluteLifetime())
+                    .isAfter(now);
+        } catch (DateTimeException | ArithmeticException invalidLifetime) {
+            return false;
+        }
+        return row.status() == AdminSessionStatus.ACTIVE
+                && row.adminId().equals(expected.adminId())
+                && row.metadataId().equals(expected.metadataId())
+                && row.springSessionPrimaryId() != null
+                && row.springSessionPrimaryId().equals(expected.springSessionPrimaryId())
+                && row.createdAt().equals(expected.createdAt())
+                && row.expiryMillis() > now.toEpochMilli()
+                && !absoluteExpired;
     }
 
     private static void requireValidPublicSessionId(String value) {
@@ -156,6 +253,12 @@ public final class AdminSessionService {
 
     private static void requireNoAmbientTransaction(String message) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException(message);
+        }
+    }
+
+    private static void requireAmbientTransaction(String message) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException(message);
         }
     }

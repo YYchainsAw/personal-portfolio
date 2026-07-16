@@ -74,7 +74,7 @@ public final class AdminSecurityController {
                 SecurityContextHolder.getContext().getAuthentication();
 
         try (ParentMutationGate.Lease ignored = parentMutations.acquire(response)) {
-            sessions.revoke(metadataId, principal.id(), REVOCATION_REASON);
+            sessions.revoke(metadataId, active, REVOCATION_REASON);
             if (currentSession) {
                 response.setHeader(CLEAR_SITE_DATA, "\"cookies\"");
                 logout.logout(request, response, localAuthentication);

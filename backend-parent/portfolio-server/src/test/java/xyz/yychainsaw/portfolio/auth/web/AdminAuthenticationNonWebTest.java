@@ -52,8 +52,10 @@ class AdminAuthenticationNonWebTest extends PostgresIntegrationTestBase {
                     .isNotInstanceOf(ServletWebServerApplicationContext.class);
 
             assertThat(context.getBeansOfType(AdminAuthenticationService.class)).isEmpty();
+            assertThat(context.getBeansOfType(AdminSecuritySettingsService.class)).isEmpty();
             assertThat(context.getBeansOfType(AdminAuthController.class)).isEmpty();
             assertThat(context.getBeansOfType(AdminSecurityController.class)).isEmpty();
+            assertThat(context.getBeansOfType(AdminSecuritySettingsController.class)).isEmpty();
             assertThat(context.getBeansOfType(SecurityCurrentAdminProvider.class)).isEmpty();
             assertThat(context.getBeansOfType(LoginSubjectHasher.class)).isEmpty();
             assertThat(context.getBeansOfType(SecurityProblemWriter.class)).isEmpty();

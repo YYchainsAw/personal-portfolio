@@ -283,8 +283,9 @@ class AdminAuthenticationServiceTest {
                         login,
                         hasher.hashSecurity(request, ADMIN_ID),
                         hasher.hashSecondFactor(ADMIN_ID),
+                        hasher.hashTotpEnrollment(ADMIN_ID),
                         hasher.hashSessionId(PUBLIC_ID)))
-                .hasSize(4);
+                .hasSize(5);
         assertThat(hasher.hash(request, null))
                 .isEqualTo(hasher.hash(request, "\uD800"))
                 .isEqualTo(hasher.hash(request, "x".repeat(129)));
@@ -1026,8 +1027,15 @@ class AdminAuthenticationServiceTest {
             releaseGate.countDown();
             holder.get(2, SECONDS);
 
+            UUID otherMetadataId = UUID.randomUUID();
+            MockHttpServletResponse accepted = new MockHttpServletResponse();
+            assertThat(securityController.revoke(otherMetadataId, request, accepted).getStatusCode())
+                    .isEqualTo(HttpStatus.NO_CONTENT);
+            verify(fixture.sessions).revoke(
+                    otherMetadataId, active, "ADMIN_REQUEST");
+
             org.mockito.Mockito.doThrow(new IllegalStateException("revoke failed"))
-                    .when(fixture.sessions).revoke(METADATA_ID, ADMIN_ID, "LOGOUT");
+                    .when(fixture.sessions).revoke(METADATA_ID, active, "LOGOUT");
             assertThatThrownBy(() -> authController.logout(
                             request, new MockHttpServletResponse()))
                     .isInstanceOf(IllegalStateException.class)

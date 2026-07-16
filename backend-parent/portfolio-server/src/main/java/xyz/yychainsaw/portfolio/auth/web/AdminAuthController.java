@@ -121,7 +121,7 @@ public final class AdminAuthController {
         Authentication localAuthentication =
                 SecurityContextHolder.getContext().getAuthentication();
         try (ParentMutationGate.Lease ignored = parentMutations.acquire(response)) {
-            sessions.revoke(active.metadataId(), principal.id(), "LOGOUT");
+            sessions.revoke(active.metadataId(), active, "LOGOUT");
             response.setHeader(CLEAR_SITE_DATA, "\"cookies\"");
             logout.logout(request, response, localAuthentication);
             return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();

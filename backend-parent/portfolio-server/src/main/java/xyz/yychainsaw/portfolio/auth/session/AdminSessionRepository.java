@@ -104,6 +104,26 @@ public class AdminSessionRepository {
                 .optional();
     }
 
+    public Optional<SessionRow> findByMetadataIdForUpdate(UUID id, UUID adminId) {
+        Objects.requireNonNull(id, "metadata id is required");
+        Objects.requireNonNull(adminId, "admin id is required");
+        return jdbc.sql("""
+                        select m.id, m.admin_id, m.session_primary_id, m.status, m.created_at,
+                               m.last_activity_at metadata_last_activity_at,
+                               s.last_access_time,
+                               coalesce(s.expiry_time, 0) expiry_time
+                        from portfolio.admin_session_metadata m
+                        left join portfolio.spring_session s
+                          on s.primary_id=m.session_primary_id
+                        where m.id=:id and m.admin_id=:adminId
+                        for update of m
+                        """)
+                .param("id", id)
+                .param("adminId", adminId)
+                .query(SESSION_ROW_MAPPER)
+                .optional();
+    }
+
     public List<SessionView> list(UUID adminId, String currentPublicSessionId) {
         Objects.requireNonNull(adminId, "admin id is required");
         if (!isCanonicalSessionId(currentPublicSessionId)) {
@@ -162,6 +182,43 @@ public class AdminSessionRepository {
                 .param("adminId", adminId)
                 .query(TERMINAL_SESSION_MAPPER)
                 .optional();
+    }
+
+    public List<TerminalSession> markOtherRevoked(
+            UUID adminId, UUID currentMetadataId, String reason, Instant now) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        Objects.requireNonNull(currentMetadataId, "current metadata id is required");
+        requireReason(reason);
+        Objects.requireNonNull(now, "revocation timestamp is required");
+        List<TerminalSession> revoked = jdbc.sql("""
+                        with updated as (
+                            update portfolio.admin_session_metadata m
+                            set status='REVOKED',
+                                ended_at=:now,
+                                last_activity_at=coalesce(
+                                    (select to_timestamp(s.last_access_time / 1000.0)
+                                     from portfolio.spring_session s
+                                     where s.primary_id=m.session_primary_id),
+                                    m.last_activity_at),
+                                revocation_reason=:reason,
+                                version=m.version+1
+                            where m.admin_id=:adminId
+                              and m.id<>:currentMetadataId
+                              and m.status='ACTIVE'
+                            returning m.id, m.admin_id, m.session_primary_id,
+                                      m.revocation_reason
+                        )
+                        select id, admin_id, session_primary_id, revocation_reason
+                        from updated
+                        order by id
+                        """)
+                .param("now", toOffsetDateTime(now), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("reason", reason)
+                .param("adminId", adminId)
+                .param("currentMetadataId", currentMetadataId)
+                .query(TERMINAL_SESSION_MAPPER)
+                .list();
+        return List.copyOf(revoked);
     }
 
     public List<TerminalSession> expireDue(Instant now, Instant absoluteCutoff) {

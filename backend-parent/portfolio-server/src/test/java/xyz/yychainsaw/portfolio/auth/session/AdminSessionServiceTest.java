@@ -307,9 +307,11 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
         assertThatIllegalArgumentException().isThrownBy(() -> service.start(
                 UUID.randomUUID(), uuid(1), "x".repeat(256)));
         assertThatIllegalArgumentException().isThrownBy(() -> service.revoke(
-                UUID.randomUUID(), UUID.randomUUID(), "bad-reason"));
+                UUID.randomUUID(), active(UUID.randomUUID(), UUID.randomUUID(), uuid(98)),
+                "bad-reason"));
         assertThatIllegalArgumentException().isThrownBy(() -> service.revoke(
-                UUID.randomUUID(), UUID.randomUUID(), "R".repeat(65)));
+                UUID.randomUUID(), active(UUID.randomUUID(), UUID.randomUUID(), uuid(99)),
+                "R".repeat(65)));
     }
 
     @Test
@@ -419,9 +421,14 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
                 mockedRepository, mockedService, properties, mockedAudit, transactions(), mockedClock);
 
         transactions().executeWithoutResult(status -> {
+            AdminSessionService.ActiveSession actor = active(
+                    UUID.randomUUID(), UUID.randomUUID(), uuid(189));
             assertThatIllegalStateException().isThrownBy(() -> guardedService.revoke(
-                    UUID.randomUUID(), UUID.randomUUID(), "ADMIN_REQUEST"))
+                    UUID.randomUUID(), actor, "ADMIN_REQUEST"))
                     .withMessage("session revoke requires no ambient transaction");
+            assertThatIllegalStateException().isThrownBy(() ->
+                    guardedService.deleteMarkedSessions(List.of()))
+                    .withMessage("marked-session deletion requires no ambient transaction");
             assertThatIllegalStateException().isThrownBy(guardedCleanup::runOnce)
                     .withMessage("session cleanup requires no ambient transaction");
         });
@@ -447,12 +454,14 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
                 NOW.minusSeconds(60),
                 NOW.minusSeconds(10).toEpochMilli(),
                 NOW.plusSeconds(600).toEpochMilli());
+        AdminSessionService.ActiveSession actor = active(
+                metadataId, actorAdminId, primaryId);
         AdminSessionRepository.TerminalSession terminal =
                 new AdminSessionRepository.TerminalSession(
                         metadataId, actorAdminId, primaryId, "ADMIN_REQUEST");
         when(mockedAdmins.findByIdForUpdate(actorAdminId))
                 .thenReturn(Optional.of(admin(actorAdminId)));
-        when(mockedRepository.findByMetadataId(metadataId, actorAdminId))
+        when(mockedRepository.findByMetadataIdForUpdate(metadataId, actorAdminId))
                 .thenReturn(Optional.of(active));
         when(mockedRepository.markRevoked(metadataId, actorAdminId, "ADMIN_REQUEST", NOW))
                 .thenReturn(Optional.of(terminal));
@@ -468,11 +477,11 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
                 transactions(),
                 fixedClock);
 
-        service.revoke(metadataId, actorAdminId, "ADMIN_REQUEST");
+        service.revoke(metadataId, actor, "ADMIN_REQUEST");
 
         InOrder order = inOrder(mockedAdmins, mockedRepository, mockedAudit);
         order.verify(mockedAdmins).findByIdForUpdate(actorAdminId);
-        order.verify(mockedRepository).findByMetadataId(metadataId, actorAdminId);
+        order.verify(mockedRepository).findByMetadataIdForUpdate(metadataId, actorAdminId);
         order.verify(mockedRepository).markRevoked(
                 metadataId, actorAdminId, "ADMIN_REQUEST", NOW);
         order.verify(mockedAudit).record(any(AuditCommand.class));
@@ -486,6 +495,8 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
         AdminSessionRepository mockedRepository = mock(AdminSessionRepository.class);
         AuditService mockedAudit = mock(AuditService.class);
         Clock mockedClock = mock(Clock.class);
+        AdminSessionService.ActiveSession actor = active(
+                UUID.randomUUID(), actorAdminId, uuid(192));
         when(mockedAdmins.findByIdForUpdate(actorAdminId)).thenReturn(Optional.empty());
         AdminSessionService service = new AdminSessionService(
                 mockedRepository,
@@ -497,7 +508,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
 
         DomainException failure = org.assertj.core.api.Assertions.catchThrowableOfType(
                 DomainException.class,
-                () -> service.revoke(UUID.randomUUID(), actorAdminId, "ADMIN_REQUEST"));
+                () -> service.revoke(UUID.randomUUID(), actor, "ADMIN_REQUEST"));
 
         assertThat(failure).isNotNull();
         assertThat(failure.code()).isEqualTo("AUTHENTICATION_REQUIRED");
@@ -506,6 +517,123 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
         assertThat(failure).hasNoCause();
         verify(mockedAdmins).findByIdForUpdate(actorAdminId);
         verifyNoInteractions(mockedRepository, mockedAudit, mockedClock);
+    }
+
+    @Test
+    void typedCurrentValidationUsesEmptyOnlyForObservedInvalidStateAndPropagatesFailures() {
+        UUID adminId = UUID.randomUUID();
+        AdminSessionService.ActiveSession expected = active(
+                UUID.randomUUID(), adminId, uuid(192));
+        AdminUserRepository mockedAdmins = mock(AdminUserRepository.class);
+        AdminSessionRepository mockedRepository = mock(AdminSessionRepository.class);
+        AuditService mockedAudit = mock(AuditService.class);
+        Clock mockedClock = mock(Clock.class);
+        AdminSessionService service = new AdminSessionService(
+                mockedRepository,
+                mockedAdmins,
+                properties,
+                mockedAudit,
+                transactions(),
+                mockedClock);
+        when(mockedAdmins.findByIdForUpdate(adminId)).thenReturn(Optional.empty());
+
+        Optional<AdminSessionService.ActiveSession> invalid = transactions().execute(status ->
+                service.findCurrentSessionInCurrentTransaction(adminId, expected));
+
+        assertThat(invalid).isEmpty();
+        verifyNoInteractions(mockedRepository, mockedAudit, mockedClock);
+
+        DomainException forged = new DomainException(
+                "AUTHENTICATION_REQUIRED",
+                HttpStatus.UNAUTHORIZED,
+                Map.of("credential", "dependency-secret"));
+        when(mockedAdmins.findByIdForUpdate(adminId)).thenThrow(forged);
+
+        assertThatThrownBy(() -> transactions().execute(status ->
+                service.findCurrentSessionInCurrentTransaction(adminId, expected)))
+                .isSameAs(forged);
+    }
+
+    @Test
+    void currentLockAndMarkOthersRequireCallerTransactionRetainActorAndDeleteAfterCommit() {
+        try (Fixture fixture = fixture()) {
+            AdminSessionService fixed = service(
+                    repository, audit, Clock.fixed(NOW, ZoneOffset.UTC));
+            UUID currentId = startSession(fixture, fixed, 193, 194,
+                    NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            UUID firstOther = startSession(fixture, fixed, 195, 196,
+                    NOW.minusSeconds(50), NOW.minusSeconds(9), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            UUID secondOther = startSession(fixture, fixed, 197, 198,
+                    NOW.minusSeconds(40), NOW.minusSeconds(8), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            AdminSessionService.ActiveSession current = active(
+                    currentId, fixture.adminId, uuid(193));
+
+            assertThatIllegalStateException().isThrownBy(() ->
+                    fixed.requireCurrentSessionInCurrentTransaction(fixture.adminId, current))
+                    .withMessage("current-session lock requires an ambient transaction");
+            assertThatIllegalStateException().isThrownBy(() ->
+                    fixed.markOtherSessionsRevokedInCurrentTransaction(
+                            fixture.adminId, current, "SECURITY_SETTINGS_CHANGED"))
+                    .withMessage("session marking requires an ambient transaction");
+
+            List<AdminSessionRepository.TerminalSession> marked = transactions().execute(status -> {
+                AdminSessionService.ActiveSession locked =
+                        fixed.requireCurrentSessionInCurrentTransaction(
+                                fixture.adminId, current);
+                assertThat(locked).isEqualTo(current);
+                return fixed.markOtherSessionsRevokedInCurrentTransaction(
+                        fixture.adminId, current, "SECURITY_SETTINGS_CHANGED");
+            });
+
+            assertThat(marked).isNotNull();
+            assertThat(marked).extracting(AdminSessionRepository.TerminalSession::metadataId)
+                    .containsExactlyInAnyOrder(firstOther, secondOther);
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> marked.add(null));
+            assertThat(metadata(currentId).status()).isEqualTo("ACTIVE");
+            assertThat(metadata(firstOther).status()).isEqualTo("REVOKED");
+            assertThat(metadata(secondOther).status()).isEqualTo("REVOKED");
+            assertThat(countSpring(uuid(193))).isOne();
+            assertThat(countSpring(uuid(195))).isOne();
+            assertThat(countSpring(uuid(197))).isOne();
+            assertThat(audit.commands()).hasSize(2)
+                    .allSatisfy(command -> {
+                        assertThat(command.action()).isEqualTo("SESSION_REVOKED");
+                        assertThat(command.actorAdminId()).isEqualTo(fixture.adminId);
+                        assertThat(command.metadata()).containsExactly(
+                                Map.entry("reason", "SECURITY_SETTINGS_CHANGED"));
+                    });
+
+            fixed.deleteMarkedSessions(marked);
+            assertThat(countSpring(uuid(193))).isOne();
+            assertThat(countSpring(uuid(195))).isZero();
+            assertThat(countSpring(uuid(197))).isZero();
+        }
+    }
+
+    @Test
+    void revokedActorSnapshotCannotMutateAnOtherwiseActiveTarget() {
+        try (Fixture fixture = fixture()) {
+            AdminSessionService fixed = service(
+                    repository, audit, Clock.fixed(NOW, ZoneOffset.UTC));
+            UUID actorId = startSession(fixture, fixed, 199, 200,
+                    NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            UUID targetId = startSession(fixture, fixed, 201, 202,
+                    NOW.minusSeconds(50), NOW.minusSeconds(9), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            AdminSessionService.ActiveSession actor = active(
+                    actorId, fixture.adminId, uuid(199));
+            markTerminal(actorId, "PASSWORD_CHANGED", NOW.minusSeconds(1));
+
+            assertUnauthorized(() -> fixed.revoke(targetId, actor, "ADMIN_REQUEST"));
+            assertThat(metadata(targetId).status()).isEqualTo("ACTIVE");
+            assertThat(countSpring(uuid(201))).isOne();
+            assertThat(audit.commands()).isEmpty();
+        }
     }
 
     @Test
@@ -757,9 +885,14 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
         try (Fixture fixture = fixture()) {
             AdminSessionService fixed = service(
                     repository, audit, Clock.fixed(NOW, ZoneOffset.UTC));
+            UUID actorId = startSession(fixture, fixed, 497, 498,
+                    NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            AdminSessionService.ActiveSession actor = active(
+                    actorId, fixture.adminId, uuid(497));
             DomainException missing = org.assertj.core.api.Assertions.catchThrowableOfType(
                     DomainException.class,
-                    () -> fixed.revoke(UUID.randomUUID(), fixture.adminId, "ADMIN_REQUEST"));
+                    () -> fixed.revoke(UUID.randomUUID(), actor, "ADMIN_REQUEST"));
             assertThat(missing).isNotNull();
             assertThat(missing.code()).isEqualTo("SESSION_NOT_FOUND");
             assertThat(missing.status()).isEqualTo(HttpStatus.NOT_FOUND);
@@ -767,7 +900,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
             UUID metadataId = startSession(fixture, fixed, 501, 502,
                     NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
                     "Chrome/Windows @ 203.0.113.x");
-            fixed.revoke(metadataId, fixture.adminId, "ADMIN_REQUEST");
+            fixed.revoke(metadataId, actor, "ADMIN_REQUEST");
 
             MetadataRow terminal = metadata(metadataId);
             assertThat(terminal.status()).isEqualTo("REVOKED");
@@ -786,7 +919,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
 
             DomainException conflict = org.assertj.core.api.Assertions.catchThrowableOfType(
                     DomainException.class,
-                    () -> fixed.revoke(metadataId, fixture.adminId, "ADMIN_REQUEST"));
+                    () -> fixed.revoke(metadataId, actor, "ADMIN_REQUEST"));
             assertThat(conflict).isNotNull();
             assertThat(conflict.code()).isEqualTo("SESSION_NOT_ACTIVE");
             assertThat(conflict.status()).isEqualTo(HttpStatus.CONFLICT);
@@ -804,10 +937,12 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
             UUID metadataId = startSession(fixture, fixed, 511, 512,
                     NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
                     "Other/Other @ unknown");
+            AdminSessionService.ActiveSession actor = active(
+                    metadataId, fixture.adminId, uuid(511));
 
             assertThatExceptionOfType(SyntheticAuditException.class)
                     .isThrownBy(() -> fixed.revoke(
-                            metadataId, fixture.adminId, "ADMIN_REQUEST"));
+                            metadataId, actor, "ADMIN_REQUEST"));
 
             MetadataRow active = metadata(metadataId);
             assertThat(active.status()).isEqualTo("ACTIVE");
@@ -855,8 +990,10 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
             UUID metadataId = startSession(fixture, fixed, 531, 532,
                     NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
                     "Other/Other @ unknown");
+            AdminSessionService.ActiveSession actor = active(
+                    metadataId, fixture.adminId, uuid(531));
 
-            fixed.revoke(metadataId, fixture.adminId, "ADMIN_REQUEST");
+            fixed.revoke(metadataId, actor, "ADMIN_REQUEST");
 
             assertThat(metadata(metadataId).status()).isEqualTo("REVOKED");
             assertThat(metadata(metadataId).primaryId()).isEqualTo(uuid(531));
@@ -927,6 +1064,11 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
         try {
             AdminSessionService fixed = service(
                     repository, audit, Clock.fixed(NOW, ZoneOffset.UTC));
+            UUID actorId = startSession(fixture, fixed, 547, 548,
+                    NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
+                    "Other/Other @ unknown");
+            AdminSessionService.ActiveSession actor = active(
+                    actorId, fixture.adminId, uuid(547));
             UUID metadataId = startSession(fixture, fixed, 551, 552,
                     NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
                     "Other/Other @ unknown");
@@ -935,7 +1077,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
                     ready.countDown();
                     await(start, "revoke workers did not start");
                     try {
-                        fixed.revoke(metadataId, fixture.adminId, "ADMIN_REQUEST");
+                        fixed.revoke(metadataId, actor, "ADMIN_REQUEST");
                         return "SUCCESS";
                     } catch (DomainException exception) {
                         return exception.code();
@@ -975,6 +1117,8 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
             UUID metadataId = startSession(fixture, fixed, 555, 556,
                     NOW.minusSeconds(60), NOW.minusSeconds(10), NOW.plusSeconds(600),
                     "Other/Other @ unknown");
+            AdminSessionService.ActiveSession actor = active(
+                    metadataId, fixture.adminId, uuid(555));
 
             futures.add(executor.submit(() -> {
                 transactions().executeWithoutResult(status -> {
@@ -1005,7 +1149,7 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
 
             futures.add(executor.submit(() -> {
                 revokeEntered.countDown();
-                fixed.revoke(metadataId, fixture.adminId, "ADMIN_REQUEST");
+                fixed.revoke(metadataId, actor, "ADMIN_REQUEST");
                 return null;
             }));
             await(revokeEntered, "revoke worker did not enter the service");
@@ -1305,6 +1449,16 @@ class AdminSessionServiceTest extends PostgresIntegrationTestBase {
                 0,
                 NOW.minusSeconds(60),
                 NOW.minusSeconds(30));
+    }
+
+    private static AdminSessionService.ActiveSession active(
+            UUID metadataId, UUID adminId, String primaryId) {
+        return new AdminSessionService.ActiveSession(
+                metadataId,
+                adminId,
+                primaryId,
+                NOW.minusSeconds(60),
+                NOW.minusSeconds(10));
     }
 
     private static Instant millis(Instant value) {

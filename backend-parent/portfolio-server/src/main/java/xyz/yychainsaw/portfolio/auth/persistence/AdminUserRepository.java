@@ -142,6 +142,65 @@ public class AdminUserRepository {
         requireOne(changed, "admin credential update affected an unexpected number of rows");
     }
 
+    @Transactional(propagation = Propagation.MANDATORY)
+    public long updatePassword(UUID adminId, String passwordHash) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        requirePasswordHash(passwordHash);
+        return jdbc.sql("""
+                        update portfolio.admin_user
+                        set password_hash=:passwordHash,
+                            version=version+1
+                        where id=:adminId
+                        returning version
+                        """)
+                .param("passwordHash", passwordHash)
+                .param("adminId", adminId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "admin password update affected an unexpected number of rows"));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public long updateTotp(UUID adminId, EncryptedTotpSecret secret) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        EncryptedTotpSecret snapshot = snapshot(
+                Objects.requireNonNull(secret, "encrypted TOTP secret is required"));
+        return jdbc.sql("""
+                        update portfolio.admin_user
+                        set totp_key_version=:keyVersion,
+                            totp_nonce=:nonce,
+                            totp_ciphertext=:ciphertext,
+                            version=version+1
+                        where id=:adminId
+                        returning version
+                        """)
+                .param("keyVersion", snapshot.keyVersion())
+                .param("nonce", snapshot.nonce())
+                .param("ciphertext", snapshot.ciphertext())
+                .param("adminId", adminId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "admin TOTP update affected an unexpected number of rows"));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public long bumpSecurityVersion(UUID adminId) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        return jdbc.sql("""
+                        update portfolio.admin_user
+                        set version=version+1
+                        where id=:adminId
+                        returning version
+                        """)
+                .param("adminId", adminId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "admin security-version update affected an unexpected number of rows"));
+    }
+
     private static AdminUser map(ResultSet resultSet, int rowNumber) throws SQLException {
         OffsetDateTime lastLogin = resultSet.getObject("last_login_at", OffsetDateTime.class);
         return new AdminUser(
@@ -165,6 +224,18 @@ public class AdminUserRepository {
         }
         int length = username.codePointCount(0, username.length());
         return length >= 3 && length <= 64;
+    }
+
+    private static void requirePasswordHash(String passwordHash) {
+        if (passwordHash == null || passwordHash.isBlank() || passwordHash.length() > 255) {
+            throw new IllegalArgumentException(
+                    "password hash must contain between 1 and 255 characters");
+        }
+    }
+
+    private static EncryptedTotpSecret snapshot(EncryptedTotpSecret secret) {
+        return new EncryptedTotpSecret(
+                secret.keyVersion(), secret.nonce(), secret.ciphertext());
     }
 
     private static OffsetDateTime toOffsetDateTime(Instant instant) {
