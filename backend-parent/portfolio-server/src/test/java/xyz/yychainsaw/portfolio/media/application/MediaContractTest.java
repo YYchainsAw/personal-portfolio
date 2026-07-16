@@ -20,6 +20,7 @@ import xyz.yychainsaw.portfolio.api.admin.media.MediaTranslationInput;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaTranslationView;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaVariantView;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
+import xyz.yychainsaw.portfolio.media.persistence.MediaTranslationRecord;
 
 class MediaContractTest {
     private static final UUID ASSET_ID = UUID.fromString(
@@ -125,12 +126,36 @@ class MediaContractTest {
                 .containsExactly("name", "width", "height", "status");
         assertThat(componentNames(MediaPageView.class))
                 .containsExactly("items", "page", "size", "totalItems", "totalPages");
+        assertThat(componentNames(MediaAssetView.class))
+                .containsExactly(
+                        "id", "originalFilename", "mimeType", "byteSize", "width",
+                        "height", "sha256", "status", "version", "createdAt",
+                        "updatedAt", "translations", "variants");
 
-        List<MediaAssetView> source = new ArrayList<>(List.of(assetView()));
+        MediaAssetView detailed = new MediaAssetView(
+                ASSET_ID,
+                "work.png",
+                "image/png",
+                12,
+                640,
+                360,
+                SHA256,
+                "READY",
+                1,
+                java.time.Instant.parse("2026-07-17T00:00:00Z"),
+                java.time.Instant.parse("2026-07-17T00:00:01Z"),
+                List.of(new MediaTranslationView(
+                        "en", "Gameplay", "Combat", "Yi Jiaxuan", null)),
+                List.of(new MediaVariantView("w640", 640, 360, "READY")));
+        List<MediaAssetView> source = new ArrayList<>(List.of(detailed));
         MediaPageView page = new MediaPageView(source, 0, 24, 1, 1);
         source.clear();
 
-        assertThat(page.items()).containsExactly(assetView());
+        assertThat(page.items()).containsExactly(detailed);
+        assertThatThrownBy(() -> detailed.translations().clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> detailed.variants().clear())
+                .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> page.items().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
     }
@@ -152,10 +177,37 @@ class MediaContractTest {
     }
 
     @Test
+    void translationInputRejectsUnsafeHttpsSourceAuthorities() {
+        for (String sourceUrl : List.of(
+                "https:///missing-host",
+                "https://user:secret@example.com/path#private",
+                "https://example.com:0/path",
+                "https://example.com:65536/path",
+                "https://example.com/path#private")) {
+            MediaTranslationInput input = new MediaTranslationInput(
+                    "en", "Alt", null, null, sourceUrl);
+
+            assertThat(VALIDATOR.validate(input))
+                    .as("source URL %s", sourceUrl)
+                    .extracting(violation -> violation.getPropertyPath().toString())
+                    .containsExactly("sourceUrl");
+        }
+    }
+
+    @Test
     void adminViewRecordsRejectImpossibleShapes() {
-        assertThatThrownBy(() -> new MediaTranslationView(
-                        "en", "Alt", null, null, "http://example.com/source"))
-                .isInstanceOf(IllegalArgumentException.class);
+        for (String sourceUrl : List.of(
+                "http://example.com/source",
+                "https:///missing-host",
+                "https://user:secret@example.com/path#private",
+                "https://example.com:0/path",
+                "https://example.com:65536/path",
+                "https://example.com/path#private")) {
+            assertThatThrownBy(() -> new MediaTranslationView(
+                            "en", "Alt", null, null, sourceUrl))
+                    .as("source URL %s", sourceUrl)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
         assertThatThrownBy(() -> new MediaVariantView("document", 1, null, "READY"))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new MediaVariantView("w640", null, 360, "READY"))
@@ -166,6 +218,23 @@ class MediaContractTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new MediaPageView(List.of(), 0, 24, -1, 0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void persistenceTranslationRecordRejectsUnsafeHttpsSourceAuthorities() {
+        for (String sourceUrl : List.of(
+                "https:///missing-host",
+                "https://user:secret@example.com/path#private",
+                "https://example.com:0/path",
+                "https://example.com:65536/path",
+                "https://example.com/path#private")) {
+            assertThatThrownBy(() -> new MediaTranslationRecord(
+                            ASSET_ID, "en", "Alt", null, null, sourceUrl))
+                    .as("source URL %s", sourceUrl)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("media translation is invalid")
+                    .hasNoCause();
+        }
     }
 
     private static List<String> componentNames(Class<?> type) {

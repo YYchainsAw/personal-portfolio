@@ -120,6 +120,13 @@ public class MediaVariantRepository {
                 .list();
     }
 
+    public int deleteByAssetId(UUID assetId) {
+        Objects.requireNonNull(assetId, "media asset id is required");
+        return jdbc.sql("delete from portfolio.media_variant where asset_id=:assetId")
+                .param("assetId", assetId, Types.OTHER)
+                .update();
+    }
+
     private static MediaVariantRecord map(ResultSet resultSet, int rowNumber)
             throws SQLException {
         return new MediaVariantRecord(

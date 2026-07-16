@@ -15,5 +15,5 @@ public record MediaTranslationInput(
         @Size(max = 300, message = "must be at most 300 UTF-16 units")
         String credit,
         @Size(max = 2048, message = "must be at most 2048 UTF-16 units")
-        @Pattern(regexp = "https://[^\\s]+", message = "must be an HTTPS URL")
+        @ValidHttpsSourceUrl
         String sourceUrl) { }

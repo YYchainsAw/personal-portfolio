@@ -1,8 +1,10 @@
 package xyz.yychainsaw.portfolio.api.admin.media;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+@JsonInclude(JsonInclude.Include.ALWAYS)
 public record MediaVariantView(
         String name,
         Integer width,

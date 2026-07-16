@@ -1,8 +1,10 @@
 package xyz.yychainsaw.portfolio.api.admin.media;
 
-import java.net.URI;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import java.util.Objects;
 import java.util.Set;
 
+@JsonInclude(JsonInclude.Include.ALWAYS)
 public record MediaTranslationView(
         String locale,
         String altText,
@@ -15,36 +17,27 @@ public record MediaTranslationView(
         if (!LOCALES.contains(locale)) {
             throw new IllegalArgumentException("media translation locale is invalid");
         }
+        altText = Objects.requireNonNullElse(altText, "");
+        caption = Objects.requireNonNullElse(caption, "");
+        credit = Objects.requireNonNullElse(credit, "");
         requireBounded(altText, 500, "media translation alt text is invalid");
         requireBounded(caption, 1000, "media translation caption is invalid");
         requireBounded(credit, 300, "media translation credit is invalid");
-        requireHttps(sourceUrl);
+        sourceUrl = requireSourceUrl(sourceUrl);
     }
 
     private static void requireBounded(String value, int maximum, String message) {
-        if (value != null && value.length() > maximum) {
+        if (value.length() > maximum) {
             throw new IllegalArgumentException(message);
         }
     }
 
-    private static void requireHttps(String sourceUrl) {
-        if (sourceUrl == null) {
-            return;
-        }
-        if (sourceUrl.length() > 2048) {
-            throw new IllegalArgumentException("media translation source URL is invalid");
-        }
-        URI parsed;
+    private static String requireSourceUrl(String value) {
         try {
-            parsed = URI.create(sourceUrl);
-        } catch (IllegalArgumentException exception) {
+            return StrictHttpsSourceUrl.requireValidNullable(value);
+        } catch (IllegalArgumentException invalid) {
             throw new IllegalArgumentException(
-                    "media translation source URL is invalid", exception);
-        }
-        if (!"https".equalsIgnoreCase(parsed.getScheme())
-                || parsed.getRawAuthority() == null
-                || parsed.getRawAuthority().isBlank()) {
-            throw new IllegalArgumentException("media translation source URL is invalid");
+                    "media translation source URL is invalid");
         }
     }
 }

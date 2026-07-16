@@ -1,11 +1,14 @@
 package xyz.yychainsaw.portfolio.api.admin.media;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+@JsonInclude(JsonInclude.Include.ALWAYS)
 public record MediaAssetView(
         UUID id,
         String originalFilename,
@@ -17,7 +20,9 @@ public record MediaAssetView(
         String status,
         long version,
         Instant createdAt,
-        Instant updatedAt) {
+        Instant updatedAt,
+        List<MediaTranslationView> translations,
+        List<MediaVariantView> variants) {
     private static final Set<String> MIME_TYPES =
             Set.of("image/jpeg", "image/png", "application/pdf");
     private static final Set<String> STATUSES = Set.of(
@@ -48,6 +53,38 @@ public record MediaAssetView(
         }
         Objects.requireNonNull(createdAt, "media created timestamp is required");
         Objects.requireNonNull(updatedAt, "media updated timestamp is required");
+        translations = List.copyOf(Objects.requireNonNull(
+                translations, "media translations are required"));
+        variants = List.copyOf(Objects.requireNonNull(
+                variants, "media variants are required"));
+    }
+
+    public MediaAssetView(
+            UUID id,
+            String originalFilename,
+            String mimeType,
+            long byteSize,
+            Integer width,
+            Integer height,
+            String sha256,
+            String status,
+            long version,
+            Instant createdAt,
+            Instant updatedAt) {
+        this(
+                id,
+                originalFilename,
+                mimeType,
+                byteSize,
+                width,
+                height,
+                sha256,
+                status,
+                version,
+                createdAt,
+                updatedAt,
+                List.of(),
+                List.of());
     }
 
     private static String requireText(String value, String message) {

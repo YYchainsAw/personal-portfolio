@@ -97,11 +97,14 @@ class MediaAssetRepositoryTest extends PostgresIntegrationTestBase {
                 .containsExactly(
                         ASSET_ID, "photo.jpg", "image/jpeg", 123L, 10, 20,
                         SHA256, "PROCESSING", 0L, NOW, NOW);
+        assertThat(view.translations()).isEmpty();
+        assertThat(view.variants()).isEmpty();
         assertThat(MediaAssetView.class.getRecordComponents())
                 .extracting(component -> component.getName())
                 .containsExactly(
                         "id", "originalFilename", "mimeType", "byteSize", "width", "height",
-                        "sha256", "status", "version", "createdAt", "updatedAt");
+                        "sha256", "status", "version", "createdAt", "updatedAt",
+                        "translations", "variants");
     }
 
     @Test

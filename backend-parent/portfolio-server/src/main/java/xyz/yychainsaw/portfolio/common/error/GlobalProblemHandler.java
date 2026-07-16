@@ -2,8 +2,10 @@ package xyz.yychainsaw.portfolio.common.error;
 
 import java.net.URI;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.springframework.context.MessageSourceResolvable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -13,10 +15,14 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.validation.ObjectError;
+import org.springframework.validation.method.ParameterErrors;
+import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 import xyz.yychainsaw.portfolio.common.trace.TraceIds;
 
@@ -48,6 +54,35 @@ public final class GlobalProblemHandler extends ResponseEntityExceptionHandler {
         for (FieldError error : exception.getBindingResult().getFieldErrors()) {
             String message = error.getDefaultMessage();
             fieldErrors.putIfAbsent(error.getField(), message == null ? "invalid" : message);
+        }
+        return handleProblem(
+                exception,
+                headers,
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                "VALIDATION_ERROR",
+                "Request validation failed",
+                fieldErrors,
+                request);
+    }
+
+    @Override
+    protected ResponseEntity<Object> handleHandlerMethodValidationException(
+            HandlerMethodValidationException exception,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request) {
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        for (ParameterValidationResult result : exception.getParameterValidationResults()) {
+            if (result instanceof ParameterErrors errors) {
+                addBeanErrors(fieldErrors, result, errors.getAllErrors());
+            } else {
+                addValueErrors(fieldErrors, result, result.getResolvableErrors());
+            }
+        }
+        int crossParameterIndex = 0;
+        for (MessageSourceResolvable error : exception.getCrossParameterValidationResults()) {
+            fieldErrors.putIfAbsent(
+                    "request[" + crossParameterIndex++ + "]", message(error));
         }
         return handleProblem(
                 exception,
@@ -170,6 +205,55 @@ public final class GlobalProblemHandler extends ResponseEntityExceptionHandler {
                     ? new ProblemContract("CLIENT_ERROR", "Request could not be completed")
                     : new ProblemContract("INTERNAL_ERROR", "Internal server error");
         };
+    }
+
+    private static void addBeanErrors(
+            Map<String, String> fieldErrors,
+            ParameterValidationResult result,
+            List<ObjectError> errors) {
+        for (ObjectError error : errors) {
+            String field = error instanceof FieldError fieldError
+                    ? fieldError.getField()
+                    : parameterName(result);
+            fieldErrors.putIfAbsent(containerPath(result, field), message(error));
+        }
+    }
+
+    private static void addValueErrors(
+            Map<String, String> fieldErrors,
+            ParameterValidationResult result,
+            List<MessageSourceResolvable> errors) {
+        String field = containerPath(result, parameterName(result));
+        for (MessageSourceResolvable error : errors) {
+            fieldErrors.putIfAbsent(field, message(error));
+        }
+    }
+
+    private static String containerPath(
+            ParameterValidationResult result, String field) {
+        Integer index = result.getContainerIndex();
+        Object key = result.getContainerKey();
+        if (index != null) {
+            return "[" + index + "]" + suffix(field);
+        }
+        if (key != null) {
+            return "[" + key + "]" + suffix(field);
+        }
+        return field == null || field.isBlank() ? "request" : field;
+    }
+
+    private static String suffix(String field) {
+        return field == null || field.isBlank() ? "" : "." + field;
+    }
+
+    private static String parameterName(ParameterValidationResult result) {
+        String name = result.getMethodParameter().getParameterName();
+        return name == null || name.isBlank() ? "request" : name;
+    }
+
+    private static String message(MessageSourceResolvable error) {
+        String message = error.getDefaultMessage();
+        return message == null || message.isBlank() ? "invalid" : message;
     }
 
     private record ProblemContract(String code, String detail) {

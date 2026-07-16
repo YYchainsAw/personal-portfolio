@@ -20,6 +20,7 @@
 - Public readers never query workspace translation tables and never expose a draft, non-current revision, or archived publication.
 - Published revisions and their media references are immutable; restoration writes a new draft and never edits history.
 - Plan 03 registers the content/history media-reference checker before cleanup can run, but production scheduling and cleanup enablement remain disabled until plan 07.
+- Every transaction that inserts or replaces a workspace, revision, restore, or import media reference must first lock every referenced READY asset through plan 02's `MediaQueryService` in deterministic UUID/variant order and retain those `FOR SHARE` locks until commit. These media locks precede every SITE/project/catalog `FOR UPDATE` lock globally, matching plan 02's media-change-listener path; a foreign key proves only identity, not READY lifecycle eligibility, and is not a substitute for this lock.
 - No Redis, message queue, Elasticsearch, microservice, arbitrary EAV field, arbitrary HTML, uploaded video, or generic page builder is introduced.
 - Use TDD for every task: add one focused failing test, observe the expected failure, add the smallest implementation, run the focused test, then run the affected module suite.
 - Each task ends with the exact commit shown. Do not combine task commits.
@@ -2207,6 +2208,8 @@ public final class ContentWorkspaceService {
 }
 ```
 
+The service skeleton above is subordinate to the cross-plan media-lifecycle contract: each mutation method is one caller-owned transaction, extracts the complete referenced asset/variant set from the request or an unlocked consistent read, sorts it deterministically, calls `MediaQueryService.requireReadyAsset` / `requireReadyVariant` for every reference, and only then takes SITE/project/catalog row locks and performs `replace` plus success audit. After taking content locks it must re-read and validate the expected version before writing. The importer, publish snapshot writer, and restore path use the same media-before-content order and transaction boundary. This prevents archive or cleanup from crossing a concurrent durable-reference insertion and prevents translation-vs-publish deadlocks; relying on the media foreign key alone is forbidden.
+
 `AdminContentController` exposes exactly:
 
 ```text
@@ -2229,10 +2232,10 @@ Each taxonomy PUT passes `UpdateTaxonomyRequest.names/expectedVersion` to the ma
 Run from `backend-parent/`:
 
 ```powershell
-.\mvnw.cmd -pl portfolio-server -am -Dtest=ContentWorkspaceRepositoryTest,AdminContentControllerTest test
+.\mvnw.cmd -pl portfolio-server -am -Dtest=ContentWorkspaceRepositoryTest,AdminContentControllerTest,ContentMediaReferenceConcurrencyTest test
 ```
 
-Expected: PASS; anonymous GET is `401`, stale update is `409`, and repository round-trip remains green.
+Expected: PASS; anonymous GET is `401`, stale update is `409`, repository round-trip remains green, and real PostgreSQL archive-vs-reference plus cleanup-vs-reference races prove the reference transaction holds READY `FOR SHARE` locks through commit.
 
 - [ ] **Step 9: Commit aggregate persistence and APIs**
 
@@ -2252,6 +2255,10 @@ git commit -m "feat(content): add workspace persistence and APIs"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportMapper.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportService.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportCli.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/PortfolioApplication.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/auth/cli/AdminCliRunner.java`
+- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/PortfolioApplicationTest.java`
+- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/auth/cli/AdminCliRunnerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/resources/import/portfolio-v1-valid.json`
 - Create: `backend-parent/portfolio-server/src/test/resources/import/portfolio-v1-incomplete-translations.json`
@@ -2591,13 +2598,15 @@ Any exception from media import, taxonomy/project insertion, or `assertEquivalen
 
 `PortfolioImportCli` is enabled only when `portfolio.cli.command=import`. Read these required properties: `portfolio.import.input`, `portfolio.import.asset-root`, `portfolio.import.sha256`, and `portfolio.import.commit`. Print exactly one JSON `ImportReport` to stdout and exit with code `2` for structure errors, `3` for a domain conflict, and `0` otherwise. Do not print content fields or absolute asset paths.
 
+Extend `PortfolioApplication`'s pre-context command parser at the same time: `import` becomes an explicit non-web command, and only its command token plus the exact four `portfolio.import.*` options above are accepted (each exactly once, no positional or arbitrary Spring options). `PortfolioApplication` itself selects `WebApplicationType.NONE`, so the invocation must not pass `spring.main.web-application-type`. `AdminCliRunner` must return without handling the already preflight-approved `import` command; `PortfolioImportCli` is its sole owner. Tests must prove unknown/duplicate/missing/extra options fail before context creation, maintenance commands retain their old one-option boundary, and the real import NONE context contains the plan 02 `MediaImportService` stack.
+
 Dry-run command from repository root after Task 1 generates the artifact:
 
 ```powershell
 Push-Location frontend
 $export = npm run --silent export:portfolio | Select-Object -Last 1 | ConvertFrom-Json
 Pop-Location
-java -jar backend-parent/portfolio-server/target/portfolio-server.jar --spring.main.web-application-type=none --portfolio.cli.command=import --portfolio.import.input=runtime/import/portfolio-v1.json --portfolio.import.asset-root=frontend/public --portfolio.import.sha256=$($export.sha256) --portfolio.import.commit=false
+java -jar backend-parent/portfolio-server/target/portfolio-server.jar --portfolio.cli.command=import --portfolio.import.input=runtime/import/portfolio-v1.json --portfolio.import.asset-root=frontend/public --portfolio.import.sha256=$($export.sha256) --portfolio.import.commit=false
 ```
 
 Expected: exit `0`; JSON has `committed:false`, `projectCount:3`, and seven fixed publish warnings.
@@ -3868,6 +3877,8 @@ Registering this checker makes plan 02 archive checks and direct cleanup-handler
 
 These locks participate in `MediaManagementService`'s existing transaction. A concurrent aggregate replacement either commits first and is followed by the listener's increment, or observes a stale expected version after the listener commits; no edit or dirty signal is lost. Any listener/query failure escapes and makes plan 02 roll back the media translation/metadata edit as well.
 
+This listener already enters with the media asset `FOR UPDATE` lock held, so it defines the global media-before-content lock order. All workspace, import, publish, and restore transactions must acquire their deterministic media `FOR SHARE` set before any SITE/project/catalog `FOR UPDATE`; add a real PostgreSQL translation-vs-publish concurrency case that proves both transactions complete without SQLSTATE `40P01` and that version/dirty signals remain exact.
+
 - [ ] **Step 10: Run the downstream port and physical-cleanup integration tests**
 
 Run from `backend-parent/`:
@@ -5068,7 +5079,7 @@ Then run from repository root:
 
 ```powershell
 $sha = (Get-FileHash 'runtime/import/portfolio-v1.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-java -jar backend-parent/portfolio-server/target/portfolio-server.jar --spring.main.web-application-type=none --portfolio.cli.command=import --portfolio.import.input=runtime/import/portfolio-v1.json --portfolio.import.asset-root=frontend/public --portfolio.import.sha256=$sha --portfolio.import.commit=false
+java -jar backend-parent/portfolio-server/target/portfolio-server.jar --portfolio.cli.command=import --portfolio.import.input=runtime/import/portfolio-v1.json --portfolio.import.asset-root=frontend/public --portfolio.import.sha256=$sha --portfolio.import.commit=false
 ```
 
 Expected: exit `0`; report is `committed:false`, `projectCount:3`, has no structure errors, and lists exactly the seven approved publish-warning paths.

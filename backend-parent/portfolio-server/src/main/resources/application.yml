@@ -33,6 +33,10 @@ spring:
   jackson:
     default-property-inclusion: non_null
     time-zone: UTC
+  servlet:
+    multipart:
+      max-file-size: 30MB
+      max-request-size: 32MB
 
 server:
   address: ${PORTFOLIO_BIND_ADDRESS:127.0.0.1}
@@ -70,6 +74,8 @@ portfolio:
       batch-size: ${PORTFOLIO_JOBS_RETENTION_BATCH_SIZE:500}
       max-batches: ${PORTFOLIO_JOBS_RETENTION_MAX_BATCHES:10}
   media:
+    cleanup:
+      enabled: ${PORTFOLIO_MEDIA_CLEANUP_ENABLED:false}
     ingest:
       transaction-timeout: ${PORTFOLIO_MEDIA_INGEST_TRANSACTION_TIMEOUT:PT30S}
     local-publication:
@@ -121,3 +127,7 @@ logging:
   structured:
     format:
       console: logstash
+portfolio:
+  media:
+    cleanup:
+      enabled: false

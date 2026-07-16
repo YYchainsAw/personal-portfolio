@@ -1173,7 +1173,7 @@ public interface MediaQueryService {
 
 1. acquire `MediaLifecycleBarrier.acquireExclusiveDeletionLease()` before the final reload and retain only that dedicated advisory-lock connection—not a transaction or row lock—through object deletion;
 2. reload the asset and return unless its status is ARCHIVED or PENDING_DELETE;
-3. re-run every checker; if any reference now exists, atomically restore ARCHIVED and stop without deleting an object;
+3. re-run every checker; if any reference now exists, leave the current lifecycle state unchanged, audit `REFERENCE_BLOCKED`, and stop without deleting an object. An ARCHIVED asset remains ARCHIVED, while a PENDING_DELETE asset stays quarantined because a previous attempt may already have deleted only some provider objects; PENDING_DELETE never returns to ARCHIVED;
 4. compare-and-set ARCHIVED to PENDING_DELETE, or continue an earlier PENDING_DELETE retry;
 5. delete every recorded variant key and the original key through the row's provider, treating a missing object as success;
 6. in a short transaction delete translations, variants, and the asset row only after every object deletion succeeds;
