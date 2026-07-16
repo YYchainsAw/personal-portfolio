@@ -738,7 +738,7 @@ git commit -m "feat(system): add durable background jobs"
 ### Task 5: Validate and persist immutable uploads
 
 **Files:**
-- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/media/api/MediaAssetView.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/MediaAssetView.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/domain/MediaAsset.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/domain/MediaStatus.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/persistence/MediaAssetRecord.java`
@@ -948,8 +948,10 @@ git commit -m "feat(media): generate responsive image variants"
 ### Task 7: Add authenticated media management, preview, and delayed cleanup
 
 **Files:**
-- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/media/api/MediaTranslationInput.java`
-- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/media/api/MediaPageView.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/MediaTranslationInput.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/MediaTranslationView.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/MediaVariantView.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/MediaPageView.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaReferenceChecker.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaReference.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaChangeListener.java`
@@ -974,6 +976,7 @@ git commit -m "feat(media): generate responsive image variants"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaQueryServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/ArchivedMediaCleanupJobHandlerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaLifecycleBarrierIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaContractTest.java`
 
 **Interfaces:**
 - Consumes: Plan 01 authenticated `/api/admin/**`, CSRF token, `MediaUploadService`, `StorageRouter`, `AuditService`.
