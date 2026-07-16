@@ -221,6 +221,47 @@ public class AdminSessionRepository {
         return List.copyOf(revoked);
     }
 
+    public List<TerminalSession> markAllRevoked(
+            UUID adminId, String reason, Instant now) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        requireReason(reason);
+        Objects.requireNonNull(now, "revocation timestamp is required");
+        List<TerminalSession> revoked = jdbc.sql("""
+                        with claimed as (
+                            select m.id, s.last_access_time
+                            from portfolio.admin_session_metadata m
+                            left join portfolio.spring_session s
+                              on s.primary_id=m.session_primary_id
+                            where m.admin_id=:adminId and m.status='ACTIVE'
+                            order by m.id
+                            for update of m
+                        ), updated as (
+                            update portfolio.admin_session_metadata m
+                            set status='REVOKED',
+                                ended_at=:now,
+                                last_activity_at=case
+                                    when c.last_access_time is null then m.last_activity_at
+                                    else to_timestamp(c.last_access_time / 1000.0)
+                                end,
+                                revocation_reason=:reason,
+                                version=m.version+1
+                            from claimed c
+                            where m.id=c.id and m.status='ACTIVE'
+                            returning m.id, m.admin_id, m.session_primary_id,
+                                      m.revocation_reason
+                        )
+                        select id, admin_id, session_primary_id, revocation_reason
+                        from updated
+                        order by id
+                        """)
+                .param("adminId", adminId, Types.OTHER)
+                .param("now", toOffsetDateTime(now), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("reason", reason)
+                .query(TERMINAL_SESSION_MAPPER)
+                .list();
+        return List.copyOf(revoked);
+    }
+
     public List<TerminalSession> expireDue(Instant now, Instant absoluteCutoff) {
         Objects.requireNonNull(now, "expiry timestamp is required");
         Objects.requireNonNull(absoluteCutoff, "absolute cutoff is required");
@@ -294,6 +335,15 @@ public class AdminSessionRepository {
                 .param("primaryId", primaryId)
                 .update();
         if (changed < 0 || changed > 1) {
+            throw new IllegalStateException(
+                    "Spring Session deletion affected an unexpected number of rows");
+        }
+        return changed;
+    }
+
+    public int deleteAllSpringSessions() {
+        int changed = jdbc.sql("delete from portfolio.spring_session").update();
+        if (changed < 0) {
             throw new IllegalStateException(
                     "Spring Session deletion affected an unexpected number of rows");
         }

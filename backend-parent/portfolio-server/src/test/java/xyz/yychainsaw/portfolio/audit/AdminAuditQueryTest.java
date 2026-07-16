@@ -411,7 +411,8 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
                 {"stage":"PASSWORD","next":"SECOND_FACTOR","method":"TOTP",
                  "reason":"EXPLICIT","channel":"LOCAL_CLI","backupSha256":"abc",
                  "recoveryCodeCount":"10","revokedOtherSessions":"2",
-                 "staleActor":"false","password":"secret","rawIp":"203.0.113.8",
+                 "staleActor":"false","fromKeyVersion":"1","toKeyVersion":"2",
+                 "password":"secret","rawIp":"203.0.113.8",
                  "userAgent":"user-agent-secret","sessionId":"session-secret",
                  "recoveryCode":"recovery-secret","totpSecret":"totp-secret",
                  "databaseUrl":"jdbc:postgresql://database-secret",
@@ -420,7 +421,8 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
                 """);
         assertThat(safe).containsOnlyKeys(
                 "stage", "next", "method", "reason", "channel", "backupSha256",
-                "recoveryCodeCount", "revokedOtherSessions", "staleActor");
+                "recoveryCodeCount", "revokedOtherSessions", "staleActor",
+                "fromKeyVersion", "toKeyVersion");
         assertThat(safe.toString()).doesNotContain(
                 "secret", "rawIp", "userAgent", "sessionId", "totpSecret",
                 "databaseUrl", "unknown", "filePath", "exception",
@@ -429,7 +431,7 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
 
         Map<String, String> textOnly = metadata.redact("""
                 {"stage":42,"next":true,"method":null,"reason":[],"channel":{},
-                 "backupSha256":"safe"}
+                 "backupSha256":"safe","fromKeyVersion":1,"toKeyVersion":2}
                 """);
         assertThat(textOnly).containsExactlyEntriesOf(Map.of("backupSha256", "safe"));
         String truncated = metadata.redact(

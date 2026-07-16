@@ -22,7 +22,12 @@ import xyz.yychainsaw.portfolio.audit.JdbcAuditService;
 import xyz.yychainsaw.portfolio.auth.RecoveryCodeService;
 import xyz.yychainsaw.portfolio.auth.cli.AdminBootstrapService;
 import xyz.yychainsaw.portfolio.auth.cli.AdminCliRunner;
+import xyz.yychainsaw.portfolio.auth.cli.AdminRecoveryService;
+import xyz.yychainsaw.portfolio.auth.cli.DatabaseRestorePointService;
+import xyz.yychainsaw.portfolio.auth.cli.PgDumpRestorePointService;
+import xyz.yychainsaw.portfolio.auth.cli.RecoveryProperties;
 import xyz.yychainsaw.portfolio.auth.cli.SecretConsole;
+import xyz.yychainsaw.portfolio.auth.cli.TotpKeyReencryptionService;
 import xyz.yychainsaw.portfolio.auth.persistence.AdminUserRepository;
 import xyz.yychainsaw.portfolio.auth.persistence.RecoveryCodeRepository;
 import xyz.yychainsaw.portfolio.auth.session.AdminSessionCleanupJob;
@@ -67,6 +72,11 @@ class AdminAuthenticationNonWebTest extends PostgresIntegrationTestBase {
 
             assertThat(context.getBean(AdminCliRunner.class)).isNotNull();
             assertThat(context.getBean(AdminBootstrapService.class)).isNotNull();
+            assertThat(context.getBean(AdminRecoveryService.class)).isNotNull();
+            assertThat(context.getBean(TotpKeyReencryptionService.class)).isNotNull();
+            assertThat(context.getBean(DatabaseRestorePointService.class))
+                    .isInstanceOf(PgDumpRestorePointService.class);
+            assertThat(context.getBean(RecoveryProperties.class)).isNotNull();
             assertThat(context.getBean(AdminUserRepository.class)).isNotNull();
             assertThat(context.getBean(RecoveryCodeRepository.class)).isNotNull();
             assertThat(context.getBean(RecoveryCodeService.class)).isNotNull();

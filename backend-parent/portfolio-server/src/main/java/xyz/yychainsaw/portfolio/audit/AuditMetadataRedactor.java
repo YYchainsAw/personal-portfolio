@@ -22,7 +22,9 @@ class AuditMetadataRedactor {
             "backupSha256",
             "recoveryCodeCount",
             "revokedOtherSessions",
-            "staleActor");
+            "staleActor",
+            "fromKeyVersion",
+            "toKeyVersion");
 
     private final ObjectMapper json;
 

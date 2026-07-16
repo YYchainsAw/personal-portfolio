@@ -159,6 +159,30 @@ public final class AdminSessionService {
         return List.copyOf(revoked);
     }
 
+    public List<AdminSessionRepository.TerminalSession>
+            markAllSessionsRevokedInCurrentTransaction(UUID adminId, String reason) {
+        Objects.requireNonNull(adminId, "admin id is required");
+        AdminSessionRepository.requireReason(reason);
+        requireAmbientTransaction("all-session marking requires an ambient transaction");
+
+        List<AdminSessionRepository.TerminalSession> revoked = List.copyOf(
+                repository.markAllRevoked(
+                        adminId,
+                        reason,
+                        Objects.requireNonNull(clock.instant(), "clock returned no instant")));
+        for (AdminSessionRepository.TerminalSession terminal : revoked) {
+            audit.record(new AuditCommand(
+                    adminId,
+                    "SESSION_REVOKED",
+                    "ADMIN_SESSION",
+                    terminal.metadataId().toString(),
+                    AuditOutcome.SUCCESS,
+                    null,
+                    Map.of("reason", reason)));
+        }
+        return revoked;
+    }
+
     public void deleteMarkedSessions(
             List<AdminSessionRepository.TerminalSession> marked) {
         requireNoAmbientTransaction(
@@ -167,6 +191,18 @@ public final class AdminSessionService {
                 Objects.requireNonNull(marked, "marked sessions are required"));
         for (AdminSessionRepository.TerminalSession terminal : snapshot) {
             deleteBestEffort(terminal.primaryId());
+        }
+    }
+
+    public void deleteAllSpringSessionsBestEffort() {
+        requireNoAmbientTransaction(
+                "all-session deletion requires no ambient transaction");
+        try {
+            repository.deleteAllSpringSessions();
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Spring Session bulk deletion deferred for retry type={}",
+                    exception.getClass().getName());
         }
     }
 

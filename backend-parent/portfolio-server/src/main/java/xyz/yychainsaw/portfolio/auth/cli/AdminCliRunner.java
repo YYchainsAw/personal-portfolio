@@ -13,21 +13,39 @@ import org.springframework.stereotype.Component;
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public final class AdminCliRunner implements ApplicationRunner {
     private static final String COMMAND_OPTION = "portfolio.cli.command";
-    private static final String COMMAND = "admin-bootstrap";
+    private static final String BOOTSTRAP_COMMAND = "admin-bootstrap";
+    private static final String RECOVERY_COMMAND = "admin-recover";
+    private static final String REENCRYPT_COMMAND = "totp-reencrypt";
     private static final String INPUT_CANCELLED = "administrator CLI input was cancelled";
+    private static final String RECOVERY_CONFIRMATION = "RECOVER ADMIN";
+    private static final String REENCRYPT_CONFIRMATION = "REENCRYPT TOTP KEY";
 
     private final SecretConsole console;
     private final AdminBootstrapService bootstrap;
+    private final AdminRecoveryService recovery;
+    private final TotpKeyReencryptionService reencrypt;
 
-    public AdminCliRunner(SecretConsole console, AdminBootstrapService bootstrap) {
+    public AdminCliRunner(
+            SecretConsole console,
+            AdminBootstrapService bootstrap,
+            AdminRecoveryService recovery,
+            TotpKeyReencryptionService reencrypt) {
         if (console == null) {
             throw new IllegalArgumentException("secret console is required");
         }
         if (bootstrap == null) {
             throw new IllegalArgumentException("bootstrap service is required");
         }
+        if (recovery == null) {
+            throw new IllegalArgumentException("recovery service is required");
+        }
+        if (reencrypt == null) {
+            throw new IllegalArgumentException("TOTP re-encryption service is required");
+        }
         this.console = console;
         this.bootstrap = bootstrap;
+        this.recovery = recovery;
+        this.reencrypt = reencrypt;
     }
 
     @Override
@@ -53,11 +71,12 @@ public final class AdminCliRunner implements ApplicationRunner {
             throw new IllegalArgumentException(
                     "portfolio CLI accepts only its command option");
         }
-        if (!COMMAND.equals(values.get(0))) {
-            throw new IllegalArgumentException("unknown portfolio CLI command");
+        switch (values.get(0)) {
+            case BOOTSTRAP_COMMAND -> runBootstrap();
+            case RECOVERY_COMMAND -> runRecovery();
+            case REENCRYPT_COMMAND -> runReencryption();
+            default -> throw new IllegalArgumentException("unknown portfolio CLI command");
         }
-
-        runBootstrap();
     }
 
     private void runBootstrap() {
@@ -98,6 +117,71 @@ public final class AdminCliRunner implements ApplicationRunner {
             }
         } finally {
             wipe(password);
+        }
+    }
+
+    private void runRecovery() {
+        String confirmation = requireLine(console.readLine(
+                "Type RECOVER ADMIN to create a dump and replace administrator credentials: "));
+        if (!RECOVERY_CONFIRMATION.equals(confirmation)) {
+            throw new IllegalArgumentException("administrator recovery was not confirmed");
+        }
+
+        char[] password = requireSecret(console.readSecret("New password: "));
+        try {
+            char[] repeated = null;
+            try {
+                repeated = requireSecret(console.readSecret("Repeat password: "));
+                if (!Arrays.equals(password, repeated)) {
+                    throw new IllegalArgumentException("passwords differ");
+                }
+            } finally {
+                wipe(repeated);
+            }
+
+            AdminRecoveryService.Enrollment prepared = recovery.prepare(password);
+            try (AdminRecoveryService.Enrollment enrollment = prepared) {
+                console.println(
+                        "Database restore point SHA-256: " + enrollment.backupSha256());
+                console.println("Add this provisioning URI to the authenticator:");
+                console.println(enrollment.provisioningUri());
+
+                char[] totpCode = requireSecret(
+                        console.readSecret("Current six-digit TOTP: "));
+                try {
+                    recovery.complete(enrollment, totpCode);
+                } finally {
+                    wipe(totpCode);
+                }
+
+                console.println(
+                        "Store these one-time recovery codes offline; they will not be shown again:");
+                for (String recoveryCode : enrollment.takePlaintextRecoveryCodes()) {
+                    console.println(recoveryCode);
+                }
+            }
+        } finally {
+            wipe(password);
+        }
+    }
+
+    private void runReencryption() {
+        String confirmation = requireLine(console.readLine(
+                "Type REENCRYPT TOTP KEY to create a dump and re-encrypt the TOTP key: "));
+        if (!REENCRYPT_CONFIRMATION.equals(confirmation)) {
+            throw new IllegalArgumentException("TOTP key re-encryption was not confirmed");
+        }
+
+        TotpKeyReencryptionResult result = reencrypt.reencryptToActiveKey();
+        if (result.changed()) {
+            console.println("TOTP key re-encryption completed.");
+        } else {
+            console.println("TOTP key already uses the active encryption key.");
+        }
+        console.println("TOTP key version: " + result.previousKeyVersion()
+                + " -> " + result.activeKeyVersion());
+        if (result.changed()) {
+            console.println("Database restore point SHA-256: " + result.backupSha256());
         }
     }
 

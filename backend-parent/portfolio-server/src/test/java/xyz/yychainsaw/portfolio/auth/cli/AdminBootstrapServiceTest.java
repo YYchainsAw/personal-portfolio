@@ -107,6 +107,14 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
     private static final String PASSWORD_HASH = "sha256$password-hash";
     private static final String TOTP_SECRET = "JBSWY3DPEHPK3PXP";
     private static final String TOTP_CODE = "123456";
+    private static final String RECOVERY_CONFIRM_PROMPT =
+            "Type RECOVER ADMIN to create a dump and replace administrator credentials: ";
+    private static final String RECOVERY_TOTP_PROMPT = "Current six-digit TOTP: ";
+    private static final String RECOVERY_CHECKSUM = "a".repeat(64);
+    private static final String RECOVERY_URI_HEADING =
+            "Add this provisioning URI to the authenticator:";
+    private static final String RECOVERY_CODES_HEADING =
+            "Store these one-time recovery codes offline; they will not be shown again:";
     private static final String PROVISIONING_URI =
             "otpauth://totp/Portfolio:YYchainsaw.Admin?secret=JBSWY3DPEHPK3PXP";
     private static final Instant NOW = Instant.parse("2026-07-15T08:09:10.123456Z");
@@ -195,7 +203,12 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         assertThat(AdminCliRunner.class.getDeclaredConstructors())
                 .singleElement()
                 .extracting(Constructor::getParameterTypes)
-                .isEqualTo(new Class<?>[] {SecretConsole.class, AdminBootstrapService.class});
+                .isEqualTo(new Class<?>[] {
+                    SecretConsole.class,
+                    AdminBootstrapService.class,
+                    AdminRecoveryService.class,
+                    TotpKeyReencryptionService.class
+                });
 
         Class<AdminBootstrapService.Enrollment> enrollment =
                 AdminBootstrapService.Enrollment.class;
@@ -245,11 +258,33 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
                 .withMessage("bootstrap transaction template must use REQUIRED propagation");
 
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> new AdminCliRunner(null, bootstrap))
+                .isThrownBy(() -> new AdminCliRunner(
+                        null,
+                        bootstrap,
+                        mock(AdminRecoveryService.class),
+                        mock(TotpKeyReencryptionService.class)))
                 .withMessage("secret console is required");
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> new AdminCliRunner(mock(SecretConsole.class), null))
+                .isThrownBy(() -> new AdminCliRunner(
+                        mock(SecretConsole.class),
+                        null,
+                        mock(AdminRecoveryService.class),
+                        mock(TotpKeyReencryptionService.class)))
                 .withMessage("bootstrap service is required");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new AdminCliRunner(
+                        mock(SecretConsole.class),
+                        bootstrap,
+                        null,
+                        mock(TotpKeyReencryptionService.class)))
+                .withMessage("recovery service is required");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new AdminCliRunner(
+                        mock(SecretConsole.class),
+                        bootstrap,
+                        mock(AdminRecoveryService.class),
+                        null))
+                .withMessage("TOTP re-encryption service is required");
     }
 
     @Test
@@ -1173,7 +1208,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
     void runnerIsNoOpWithoutCommandEvenWhenUnrelatedOptionsExist() throws Exception {
         SecretConsole console = mock(SecretConsole.class);
         AdminBootstrapService service = mock(AdminBootstrapService.class);
-        AdminCliRunner runner = new AdminCliRunner(console, service);
+        AdminCliRunner runner = runner(console, service);
 
         runner.run(arguments());
         runner.run(arguments("--spring.datasource.password=must-not-activate", "positional"));
@@ -1232,7 +1267,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         for (ArgumentFailure failure : failures) {
             SecretConsole console = mock(SecretConsole.class);
             AdminBootstrapService service = mock(AdminBootstrapService.class);
-            AdminCliRunner runner = new AdminCliRunner(console, service);
+            AdminCliRunner runner = runner(console, service);
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> runner.run(arguments(failure.arguments())))
                     .withMessage(failure.message());
@@ -1272,7 +1307,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         }).when(console).println(
                 "Store these one-time recovery codes offline; they will not be shown again:");
 
-        new AdminCliRunner(console, service).run(
+        runner(console, service).run(
                 arguments("--portfolio.cli.command=admin-bootstrap"));
 
         assertWiped(password);
@@ -1299,6 +1334,258 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    void runnerRecoveryRequiresExactConfirmationAndHandsOffSecretsOnlyAfterCommit()
+            throws Exception {
+        SecretConsole refusedConsole = mock(SecretConsole.class);
+        AdminBootstrapService bootstrap = mock(AdminBootstrapService.class);
+        AdminRecoveryService recovery = mock(AdminRecoveryService.class);
+        TotpKeyReencryptionService reencrypt = mock(TotpKeyReencryptionService.class);
+        when(refusedConsole.readLine(RECOVERY_CONFIRM_PROMPT)).thenReturn(" RECOVER ADMIN ");
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new AdminCliRunner(
+                                refusedConsole, bootstrap, recovery, reencrypt)
+                        .run(arguments("--portfolio.cli.command=admin-recover")))
+                .withMessage("administrator recovery was not confirmed")
+                .withNoCause();
+        verifyNoInteractions(bootstrap, recovery, reencrypt);
+        verify(refusedConsole, never()).println(anyString());
+
+        SecretConsole console = mock(SecretConsole.class);
+        AdminRecoveryService.Enrollment enrollment =
+                mock(AdminRecoveryService.Enrollment.class);
+        char[] password = password();
+        char[] repeated = password();
+        char[] code = TOTP_CODE.toCharArray();
+        when(console.readLine(RECOVERY_CONFIRM_PROMPT)).thenReturn("RECOVER ADMIN");
+        when(console.readSecret("New password: ")).thenReturn(password);
+        when(console.readSecret("Repeat password: ")).thenReturn(repeated);
+        when(recovery.prepare(same(password))).thenAnswer(invocation -> {
+            assertWiped(repeated);
+            return enrollment;
+        });
+        when(enrollment.backupSha256()).thenReturn(RECOVERY_CHECKSUM);
+        when(enrollment.provisioningUri()).thenReturn(PROVISIONING_URI);
+        when(console.readSecret(RECOVERY_TOTP_PROMPT)).thenReturn(code);
+        when(enrollment.takePlaintextRecoveryCodes()).thenReturn(RECOVERY_CODES);
+
+        new AdminCliRunner(console, bootstrap, recovery, reencrypt)
+                .run(arguments("--portfolio.cli.command=admin-recover"));
+
+        assertWiped(password);
+        assertWiped(repeated);
+        assertWiped(code);
+        InOrder order = inOrder(console, recovery, enrollment);
+        order.verify(console).readLine(RECOVERY_CONFIRM_PROMPT);
+        order.verify(console).readSecret("New password: ");
+        order.verify(console).readSecret("Repeat password: ");
+        order.verify(recovery).prepare(same(password));
+        order.verify(enrollment).backupSha256();
+        order.verify(console).println(
+                "Database restore point SHA-256: " + RECOVERY_CHECKSUM);
+        order.verify(console).println(RECOVERY_URI_HEADING);
+        order.verify(enrollment).provisioningUri();
+        order.verify(console).println(PROVISIONING_URI);
+        order.verify(console).readSecret(RECOVERY_TOTP_PROMPT);
+        order.verify(recovery).complete(same(enrollment), same(code));
+        order.verify(console).println(RECOVERY_CODES_HEADING);
+        order.verify(enrollment).takePlaintextRecoveryCodes();
+        for (String recoveryCode : RECOVERY_CODES) {
+            order.verify(console).println(recoveryCode);
+        }
+        order.verify(enrollment).close();
+        order.verifyNoMoreInteractions();
+        verifyNoInteractions(bootstrap, reencrypt);
+    }
+
+    @Test
+    void runnerRecoveryCancellationAndPasswordFailuresWipeWithoutPreparingOrWriting()
+            throws Exception {
+        SecretConsole confirmationCancelled = mock(SecretConsole.class);
+        AdminBootstrapService bootstrap = mock(AdminBootstrapService.class);
+        AdminRecoveryService recovery = mock(AdminRecoveryService.class);
+        TotpKeyReencryptionService reencrypt = mock(TotpKeyReencryptionService.class);
+        when(confirmationCancelled.readLine(RECOVERY_CONFIRM_PROMPT)).thenReturn(null);
+
+        assertFixedCauseFree(
+                () -> recoveryRunner(
+                                confirmationCancelled, bootstrap, recovery, reencrypt)
+                        .run(arguments("--portfolio.cli.command=admin-recover")),
+                "administrator CLI input was cancelled");
+        verifyNoInteractions(bootstrap, recovery, reencrypt);
+        verify(confirmationCancelled, never()).println(anyString());
+
+        SecretConsole passwordCancelled = mock(SecretConsole.class);
+        when(passwordCancelled.readLine(RECOVERY_CONFIRM_PROMPT)).thenReturn("RECOVER ADMIN");
+        when(passwordCancelled.readSecret("New password: ")).thenReturn(null);
+
+        assertFixedCauseFree(
+                () -> recoveryRunner(passwordCancelled, bootstrap, recovery, reencrypt)
+                        .run(arguments("--portfolio.cli.command=admin-recover")),
+                "administrator CLI input was cancelled");
+        verifyNoInteractions(bootstrap, recovery, reencrypt);
+        verify(passwordCancelled, never()).println(anyString());
+
+        for (RecoveryPasswordFailure stage : RecoveryPasswordFailure.values()) {
+            SecretConsole console = mock(SecretConsole.class);
+            AdminRecoveryService stageRecovery = mock(AdminRecoveryService.class);
+            char[] first = password();
+            char[] second = stage == RecoveryPasswordFailure.MISMATCH
+                    ? "PortfolioDifferent!2026".toCharArray()
+                    : password();
+            RuntimeException inputFailure = new IllegalStateException(
+                    "synthetic repeated-password input failure");
+            when(console.readLine(RECOVERY_CONFIRM_PROMPT)).thenReturn("RECOVER ADMIN");
+            when(console.readSecret("New password: ")).thenReturn(first);
+            switch (stage) {
+                case CANCELLED -> when(console.readSecret("Repeat password: ")).thenReturn(null);
+                case PROVIDER_FAILURE -> when(console.readSecret("Repeat password: "))
+                        .thenThrow(inputFailure);
+                case MISMATCH -> when(console.readSecret("Repeat password: ")).thenReturn(second);
+            }
+
+            Throwable failure = catchThrowable(() -> recoveryRunner(
+                            console, bootstrap, stageRecovery, reencrypt)
+                    .run(arguments("--portfolio.cli.command=admin-recover")));
+
+            if (stage == RecoveryPasswordFailure.CANCELLED) {
+                assertThat(failure)
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage("administrator CLI input was cancelled")
+                        .hasNoCause();
+            } else if (stage == RecoveryPasswordFailure.PROVIDER_FAILURE) {
+                assertThat(failure).isSameAs(inputFailure);
+            } else {
+                assertThat(failure)
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasMessage("passwords differ")
+                        .hasNoCause();
+                assertWiped(second);
+            }
+            assertWiped(first);
+            verifyNoInteractions(stageRecovery);
+            verify(console, never()).println(anyString());
+        }
+        verifyNoInteractions(bootstrap, reencrypt);
+
+        RecoveryCliFixture prepareFailure = recoveryCliFixture();
+        RuntimeException providerFailure = new IllegalStateException(
+                "synthetic recovery prepare failure");
+        when(prepareFailure.recovery().prepare(same(prepareFailure.password())))
+                .thenThrow(providerFailure);
+
+        assertThatThrownBy(prepareFailure::run).isSameAs(providerFailure);
+        assertWiped(prepareFailure.password());
+        assertWiped(prepareFailure.repeated());
+        verifyNoInteractions(prepareFailure.enrollment());
+        verify(prepareFailure.console(), never()).println(anyString());
+        verifyNoInteractions(prepareFailure.bootstrap(), prepareFailure.reencrypt());
+    }
+
+    @Test
+    void runnerRecoveryPreCommitFailuresAlwaysCloseWithoutCodeAccess() {
+        for (RecoveryPreCommitFailure stage : RecoveryPreCommitFailure.values()) {
+            RecoveryCliFixture fixture = recoveryCliFixture();
+            RuntimeException failure = new IllegalStateException(
+                    "synthetic recovery pre-commit failure " + stage);
+            switch (stage) {
+                case CHECKSUM_OUTPUT -> doThrow(failure)
+                        .when(fixture.console())
+                        .println("Database restore point SHA-256: " + RECOVERY_CHECKSUM);
+                case URI_HEADING_OUTPUT -> doThrow(failure)
+                        .when(fixture.console())
+                        .println(RECOVERY_URI_HEADING);
+                case URI_OUTPUT -> doThrow(failure)
+                        .when(fixture.console())
+                        .println(PROVISIONING_URI);
+                case TOTP_CANCELLED -> when(fixture.console().readSecret(RECOVERY_TOTP_PROMPT))
+                        .thenReturn(null);
+                case TOTP_PROVIDER_FAILURE -> when(
+                                fixture.console().readSecret(RECOVERY_TOTP_PROMPT))
+                        .thenThrow(failure);
+                case COMPLETION -> doThrow(failure)
+                        .when(fixture.recovery())
+                        .complete(same(fixture.enrollment()), same(fixture.code()));
+            }
+
+            Throwable observed = catchThrowable(fixture::run);
+
+            if (stage == RecoveryPreCommitFailure.TOTP_CANCELLED) {
+                assertThat(observed)
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage("administrator CLI input was cancelled")
+                        .hasNoCause();
+            } else {
+                assertThat(observed).isSameAs(failure);
+            }
+            assertWiped(fixture.password());
+            assertWiped(fixture.repeated());
+            if (stage == RecoveryPreCommitFailure.COMPLETION) {
+                assertWiped(fixture.code());
+                verify(fixture.recovery())
+                        .complete(same(fixture.enrollment()), same(fixture.code()));
+            } else {
+                verify(fixture.recovery(), never()).complete(any(), any());
+            }
+            verify(fixture.enrollment()).close();
+            verify(fixture.enrollment(), never()).takePlaintextRecoveryCodes();
+            verifyNoInteractions(fixture.bootstrap(), fixture.reencrypt());
+        }
+    }
+
+    @Test
+    void runnerRecoveryPostCommitOutputFailuresCloseWithStrictNonReplayablePrefix() {
+        RecoveryCliFixture headingFailure = recoveryCliFixture();
+        RuntimeException headingOutput = new IllegalStateException(
+                "synthetic recovery-code heading output failure");
+        doThrow(headingOutput)
+                .when(headingFailure.console())
+                .println(RECOVERY_CODES_HEADING);
+
+        assertThatThrownBy(headingFailure::run).isSameAs(headingOutput);
+
+        assertWiped(headingFailure.password());
+        assertWiped(headingFailure.repeated());
+        assertWiped(headingFailure.code());
+        InOrder headingOrder = inOrder(
+                headingFailure.recovery(), headingFailure.console(), headingFailure.enrollment());
+        headingOrder.verify(headingFailure.recovery())
+                .complete(same(headingFailure.enrollment()), same(headingFailure.code()));
+        headingOrder.verify(headingFailure.console()).println(RECOVERY_CODES_HEADING);
+        headingOrder.verify(headingFailure.enrollment()).close();
+        verify(headingFailure.enrollment(), never()).takePlaintextRecoveryCodes();
+        verifyNoInteractions(headingFailure.bootstrap(), headingFailure.reencrypt());
+
+        RecoveryCliFixture codeFailure = recoveryCliFixture();
+        RuntimeException thirdCodeOutput = new IllegalStateException(
+                "synthetic third recovery-code output failure");
+        doThrow(thirdCodeOutput)
+                .when(codeFailure.console())
+                .println(RECOVERY_CODES.get(2));
+
+        assertThatThrownBy(codeFailure::run).isSameAs(thirdCodeOutput);
+
+        assertWiped(codeFailure.password());
+        assertWiped(codeFailure.repeated());
+        assertWiped(codeFailure.code());
+        InOrder codeOrder = inOrder(
+                codeFailure.recovery(), codeFailure.console(), codeFailure.enrollment());
+        codeOrder.verify(codeFailure.recovery())
+                .complete(same(codeFailure.enrollment()), same(codeFailure.code()));
+        codeOrder.verify(codeFailure.console()).println(RECOVERY_CODES_HEADING);
+        codeOrder.verify(codeFailure.enrollment()).takePlaintextRecoveryCodes();
+        codeOrder.verify(codeFailure.console()).println(RECOVERY_CODES.get(0));
+        codeOrder.verify(codeFailure.console()).println(RECOVERY_CODES.get(1));
+        codeOrder.verify(codeFailure.console()).println(RECOVERY_CODES.get(2));
+        codeOrder.verify(codeFailure.enrollment()).close();
+        verify(codeFailure.console(), never()).println(RECOVERY_CODES.get(3));
+        verify(codeFailure.enrollment()).backupSha256();
+        verify(codeFailure.enrollment()).provisioningUri();
+        verifyNoMoreInteractions(codeFailure.enrollment());
+        verifyNoInteractions(codeFailure.bootstrap(), codeFailure.reencrypt());
+    }
+
+    @Test
     void runnerWipesFirstSecretWhenConfirmationCancelsAndRejectsMismatchBeforeServiceOutput()
             throws Exception {
         SecretConsole cancellationConsole = mock(SecretConsole.class);
@@ -1309,7 +1596,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         when(cancellationConsole.readSecret("Repeat password: ")).thenReturn(null);
 
         assertFixedCauseFree(
-                () -> new AdminCliRunner(cancellationConsole, cancellationService).run(
+                () -> runner(cancellationConsole, cancellationService).run(
                         arguments("--portfolio.cli.command=admin-bootstrap")),
                 "administrator CLI input was cancelled");
         assertWiped(first);
@@ -1325,7 +1612,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         when(mismatchConsole.readSecret("Repeat password: ")).thenReturn(mismatchSecond);
 
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> new AdminCliRunner(mismatchConsole, mismatchService).run(
+                .isThrownBy(() -> runner(mismatchConsole, mismatchService).run(
                         arguments("--portfolio.cli.command=admin-bootstrap")))
                 .withMessage("passwords differ");
         assertWiped(mismatchFirst);
@@ -1358,7 +1645,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
                 doThrow(failure).when(service).complete(enrollment, code);
             }
 
-            assertThatThrownBy(() -> new AdminCliRunner(console, service).run(
+            assertThatThrownBy(() -> runner(console, service).run(
                             arguments("--portfolio.cli.command=admin-bootstrap")))
                     .isSameAs(failure);
             assertWiped(password);
@@ -1396,7 +1683,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
                 "administrator CLI output failed");
         doThrow(output).when(console).println(RECOVERY_CODES.get(2));
 
-        assertThatThrownBy(() -> new AdminCliRunner(console, service).run(
+        assertThatThrownBy(() -> runner(console, service).run(
                         arguments("--portfolio.cli.command=admin-bootstrap")))
                 .isSameAs(output);
 
@@ -1438,7 +1725,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
             }
 
             assertFixedCauseFree(
-                    () -> new AdminCliRunner(console, service).run(
+                    () -> runner(console, service).run(
                             arguments("--portfolio.cli.command=admin-bootstrap")),
                     "administrator CLI input was cancelled");
             if (nullRead != NullRead.USERNAME && nullRead != NullRead.PASSWORD) {
@@ -1527,6 +1814,52 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
 
     private static ApplicationArguments arguments(String... arguments) {
         return new DefaultApplicationArguments(arguments);
+    }
+
+    private static AdminCliRunner runner(
+            SecretConsole console, AdminBootstrapService bootstrap) {
+        return new AdminCliRunner(
+                console,
+                bootstrap,
+                mock(AdminRecoveryService.class),
+                mock(TotpKeyReencryptionService.class));
+    }
+
+    private static AdminCliRunner recoveryRunner(
+            SecretConsole console,
+            AdminBootstrapService bootstrap,
+            AdminRecoveryService recovery,
+            TotpKeyReencryptionService reencrypt) {
+        return new AdminCliRunner(console, bootstrap, recovery, reencrypt);
+    }
+
+    private static RecoveryCliFixture recoveryCliFixture() {
+        SecretConsole console = mock(SecretConsole.class);
+        AdminBootstrapService bootstrap = mock(AdminBootstrapService.class);
+        AdminRecoveryService recovery = mock(AdminRecoveryService.class);
+        TotpKeyReencryptionService reencrypt = mock(TotpKeyReencryptionService.class);
+        AdminRecoveryService.Enrollment enrollment =
+                mock(AdminRecoveryService.Enrollment.class);
+        char[] password = password();
+        char[] repeated = password();
+        char[] code = TOTP_CODE.toCharArray();
+        when(console.readLine(RECOVERY_CONFIRM_PROMPT)).thenReturn("RECOVER ADMIN");
+        when(console.readSecret("New password: ")).thenReturn(password);
+        when(console.readSecret("Repeat password: ")).thenReturn(repeated);
+        when(recovery.prepare(same(password))).thenReturn(enrollment);
+        when(enrollment.backupSha256()).thenReturn(RECOVERY_CHECKSUM);
+        when(enrollment.provisioningUri()).thenReturn(PROVISIONING_URI);
+        when(console.readSecret(RECOVERY_TOTP_PROMPT)).thenReturn(code);
+        when(enrollment.takePlaintextRecoveryCodes()).thenReturn(RECOVERY_CODES);
+        return new RecoveryCliFixture(
+                console,
+                bootstrap,
+                recovery,
+                reencrypt,
+                enrollment,
+                password,
+                repeated,
+                code);
     }
 
     private static char[] password() {
@@ -1718,6 +2051,21 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         COMPLETION
     }
 
+    private enum RecoveryPasswordFailure {
+        CANCELLED,
+        PROVIDER_FAILURE,
+        MISMATCH
+    }
+
+    private enum RecoveryPreCommitFailure {
+        CHECKSUM_OUTPUT,
+        URI_HEADING_OUTPUT,
+        URI_OUTPUT,
+        TOTP_CANCELLED,
+        TOTP_PROVIDER_FAILURE,
+        COMPLETION
+    }
+
     private enum NullRead {
         USERNAME,
         PASSWORD,
@@ -1733,6 +2081,21 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
     }
 
     private record ArgumentFailure(String[] arguments, String message) {}
+
+    private record RecoveryCliFixture(
+            SecretConsole console,
+            AdminBootstrapService bootstrap,
+            AdminRecoveryService recovery,
+            TotpKeyReencryptionService reencrypt,
+            AdminRecoveryService.Enrollment enrollment,
+            char[] password,
+            char[] repeated,
+            char[] code) {
+        private void run() {
+            recoveryRunner(console, bootstrap, recovery, reencrypt)
+                    .run(arguments("--portfolio.cli.command=admin-recover"));
+        }
+    }
 
     private record AdminDatabaseRow(
             String username,

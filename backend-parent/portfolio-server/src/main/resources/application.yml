@@ -93,8 +93,11 @@ portfolio:
     allow-development-cors: ${PORTFOLIO_ALLOW_DEVELOPMENT_CORS:false}
     development-origin: ${PORTFOLIO_ADMIN_DEV_ORIGIN:http://localhost:5174}
   recovery:
-    directory: ${PORTFOLIO_RECOVERY_DIRECTORY:runtime/recovery}
+    directory: ${PORTFOLIO_RECOVERY_DIRECTORY:${user.dir}/runtime/recovery}
     pg-dump-bin: ${PORTFOLIO_PG_DUMP_BIN:pg_dump}
+    username: ${PORTFOLIO_DB_MIGRATOR_USER}
+    password: ${PORTFOLIO_DB_MIGRATOR_PASSWORD}
+    timeout: ${PORTFOLIO_PG_DUMP_TIMEOUT:PT2M}
 
 ---
 spring:
