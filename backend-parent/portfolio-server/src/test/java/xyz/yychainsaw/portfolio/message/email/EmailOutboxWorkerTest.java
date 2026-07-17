@@ -497,7 +497,8 @@ class EmailOutboxWorkerTest {
                 Arguments.of(7, Duration.ofHours(24)),
                 Arguments.of(8, Duration.ofHours(24)),
                 Arguments.of(9, Duration.ofHours(24)),
-                Arguments.of(10, Duration.ZERO));
+                Arguments.of(10, Duration.ZERO),
+                Arguments.of(11, Duration.ZERO));
     }
 
     private EmailOutboxWorker worker(UUID... leaseTokens) {

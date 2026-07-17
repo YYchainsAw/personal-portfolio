@@ -24,6 +24,7 @@ public class EmailOutboxRepository {
     private static final int TRANSACTION_TIMEOUT_SECONDS = 5;
     private static final int MAXIMUM_BATCH_SIZE = 100;
     private static final int MAXIMUM_ATTEMPTS = 10;
+    private static final int MAXIMUM_PERSISTED_ATTEMPTS = Integer.MAX_VALUE;
     private static final Pattern LEASE_OWNER = Pattern.compile("[!-~]{1,120}");
     private static final Pattern SAFE_ERROR_SUMMARY =
             Pattern.compile("[A-Za-z0-9_$.-]{1,160}\\|[A-Z][A-Z0-9_]{0,79}");
@@ -202,8 +203,13 @@ public class EmailOutboxRepository {
                         with candidates as (
                             select outbox.id
                             from portfolio.email_outbox outbox
-                            where outbox.status in ('PENDING', 'FAILED')
-                              and outbox.attempts < :maximumAttempts
+                            where (
+                                  (outbox.status='PENDING'
+                                   and outbox.attempts < :maximumPersistedAttempts)
+                                  or
+                                  (outbox.status='FAILED'
+                                   and outbox.attempts < :maximumAttempts)
+                              )
                               and outbox.next_attempt_at <= :now
                               and (outbox.lease_until is null or outbox.lease_until < :now)
                             order by outbox.next_attempt_at, outbox.created_at, outbox.id
@@ -248,6 +254,10 @@ public class EmailOutboxRepository {
                         order by leased.next_attempt_at, leased.created_at, leased.id
                         """)
                 .param("maximumAttempts", MAXIMUM_ATTEMPTS, Types.INTEGER)
+                .param(
+                        "maximumPersistedAttempts",
+                        MAXIMUM_PERSISTED_ATTEMPTS,
+                        Types.INTEGER)
                 .param("now", toOffsetDateTime(now), Types.TIMESTAMP_WITH_TIMEZONE)
                 .param("limit", limit, Types.INTEGER)
                 .param("leaseOwner", leaseOwner, Types.VARCHAR)
@@ -289,7 +299,7 @@ public class EmailOutboxRepository {
             UUID outboxId, String leaseOwner, int attempts) {
         Objects.requireNonNull(outboxId, "email outbox id is required");
         requireLeaseOwner(leaseOwner);
-        if (attempts < 1 || attempts > MAXIMUM_ATTEMPTS) {
+        if (attempts < 1) {
             throw new IllegalArgumentException("email lease attempts are invalid");
         }
     }

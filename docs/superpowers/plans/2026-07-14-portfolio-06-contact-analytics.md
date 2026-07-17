@@ -488,21 +488,33 @@ git commit -m "feat(contact): deliver notifications from email outbox"
 
 **Files:**
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageInboxService.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageInboxRepository.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageCursor.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessagePage.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageSummary.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageDetail.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/EmailDeliveryView.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageStatus.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionJobHandler.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionRepository.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/JdbcMessageRetentionRepository.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionScheduler.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/AdminMessageController.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/AdminMessageStatusBodyReader.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/UpdateMessageStatusRequest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/web/AdminMessageControllerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionJobHandlerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageCursorTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageInboxServiceIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionIntegrationTest.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxRepository.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/audit/AuditMetadataRedactor.java`
 
 **Interfaces:**
 - Consumes: authenticated admin/CSRF rules, `CurrentAdminProvider`, `AuditService`, plan-02 `JobHandler`, and cursor pagination convention.
 - Produces: inbox list/detail/status/delete/retry APIs consumed by plan 04.
 
-- [ ] **Step 1: Write failing inbox and optimistic-lock tests**
+- [x] **Step 1: Write failing inbox and optimistic-lock tests**
 
 Cover the exact API:
 
@@ -522,7 +534,7 @@ The PATCH body is:
 
 Verify unauthenticated requests return `401`, missing CSRF returns `403`, a stale version returns `409`, and list responses never contain the message body.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AdminMessageControllerTest,MessageRetentionJobHandlerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -530,7 +542,7 @@ Verify unauthenticated requests return `401`, missing CSRF returns `403`, a stal
 
 Expected: FAIL because admin inbox use cases are absent.
 
-- [ ] **Step 3: Implement cursor pagination and status transitions**
+- [x] **Step 3: Implement cursor pagination and status transitions**
 
 Encode `(createdAt,id)` as an opaque base64url JSON cursor. Clamp limit to 1–100. Allow transitions among `UNREAD`, `READ`, `ARCHIVED`, and `SPAM`; execute `update contact_message set status = #{status}, version = version + 1, updated_at = #{now} where id = #{id} and version = #{expectedVersion}`, and throw `409 MESSAGE_VERSION_CONFLICT` when zero rows update.
 
@@ -560,15 +572,15 @@ public record EmailDeliveryView(
 
 `EmailDeliveryView.status` is one of the V9 outbox statuses. `errorCategory` is the existing sanitized category or `null`; it never contains an SMTP response, recipient, server hostname, exception message, or stack trace. These DTOs are admin-only. Every inbox response uses `Cache-Control: no-store`; escape content in the Vue renderer and never render message text as HTML.
 
-- [ ] **Step 4: Implement manual email retry and hard deletion**
+- [x] **Step 4: Implement manual email retry and hard deletion**
 
 Manual retry changes `FAILED` or `DEAD` to `PENDING`, clears the redacted error, resets `next_attempt_at` to now, and leaves attempt history intact. Reject retry for `SENT` or `SENDING` with `409`. Delete the message and its outbox rows in one transaction. Status changes, manual retry, and deletion each write an audit event containing only message UUID, previous/new state where applicable, creation date, and action—no visitor PII.
 
-- [ ] **Step 5: Add the one-year retention job**
+- [x] **Step 5: Add the one-year retention job**
 
 Implement `MessageRetentionJobHandler` with job type `CONTACT_RETENTION` and idempotency key `contact-retention:{siteDate}`. Delete in batches of 500 where `created_at < now - 1 year`; cascade outbox rows; report only counts to `maintenance_run`. Schedule one job per local day through `BackgroundJobService`.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Run the Step 2 command.
 

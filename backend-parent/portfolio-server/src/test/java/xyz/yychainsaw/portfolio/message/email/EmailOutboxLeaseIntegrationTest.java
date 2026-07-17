@@ -495,6 +495,181 @@ class EmailOutboxLeaseIntegrationTest extends PostgresIntegrationTestBase {
     }
 
     @Test
+    void manuallyRetriedDeadNotificationCanBeClaimedAtElevenAndSentWithItsStableFence() {
+        Seed seed = insertOutbox(
+                "DEAD",
+                10,
+                NOW.minusSeconds(1),
+                NOW.minusSeconds(10),
+                null,
+                null,
+                "MailSendException|SMTP_DELIVERY_FAILED",
+                null);
+        makePendingForManualRetry(seed.outboxId(), NOW);
+
+        LeasedEmail leased = repository.recoverExpiredAndClaim(
+                        "manual-retry-claim", NOW, LEASE_DURATION, 1)
+                .get(0);
+
+        assertThat(leased.attempts()).isEqualTo(11);
+        assertThat(leased.notification().stableMessageId()).isEqualTo(seed.stableMessageId());
+        assertThat(repository.markSent(
+                        seed.outboxId(), leased.leaseOwner(), 10, NOW.plusSeconds(1)))
+                .isFalse();
+        assertThat(repository.markSent(
+                        seed.outboxId(), "different-manual-claim", 11, NOW.plusSeconds(1)))
+                .isFalse();
+        assertThat(state(seed.outboxId()))
+                .extracting(
+                        OutboxState::status,
+                        OutboxState::attempts,
+                        OutboxState::leaseOwner,
+                        OutboxState::stableMessageId)
+                .containsExactly(
+                        "SENDING", 11, "manual-retry-claim", seed.stableMessageId());
+
+        assertThat(repository.markSent(
+                        seed.outboxId(), leased.leaseOwner(), 11, NOW.plusSeconds(1)))
+                .isTrue();
+        assertThat(state(seed.outboxId()))
+                .extracting(
+                        OutboxState::status,
+                        OutboxState::attempts,
+                        OutboxState::leaseOwner,
+                        OutboxState::sentAt,
+                        OutboxState::stableMessageId)
+                .containsExactly(
+                        "SENT", 11, null, NOW.plusSeconds(1), seed.stableMessageId());
+    }
+
+    @Test
+    void eleventhFailureReturnsAManuallyRetriedNotificationToDead() {
+        Seed seed = insertOutbox(
+                "DEAD",
+                10,
+                NOW.minusSeconds(1),
+                NOW.minusSeconds(10),
+                null,
+                null,
+                "MailSendException|SMTP_DELIVERY_FAILED",
+                null);
+        makePendingForManualRetry(seed.outboxId(), NOW);
+        LeasedEmail leased = repository.recoverExpiredAndClaim(
+                        "eleventh-failure-claim", NOW, LEASE_DURATION, 1)
+                .get(0);
+
+        assertThat(repository.markFailed(
+                        seed.outboxId(),
+                        leased.leaseOwner(),
+                        leased.attempts(),
+                        NOW.plus(Duration.ofDays(1)),
+                        "MailSendException|SMTP_DELIVERY_FAILED"))
+                .isTrue();
+
+        assertThat(state(seed.outboxId()))
+                .extracting(
+                        OutboxState::status,
+                        OutboxState::attempts,
+                        OutboxState::leaseOwner,
+                        OutboxState::leaseUntil,
+                        OutboxState::lastErrorSummary,
+                        OutboxState::stableMessageId)
+                .containsExactly(
+                        "DEAD",
+                        11,
+                        null,
+                        null,
+                        "MailSendException|SMTP_DELIVERY_FAILED",
+                        seed.stableMessageId());
+        assertThat(repository.recoverExpiredAndClaim(
+                        "do-not-auto-retry-eleven",
+                        NOW.plus(Duration.ofDays(2)),
+                        LEASE_DURATION,
+                        1))
+                .isEmpty();
+    }
+
+    @Test
+    void expiredEleventhLeaseIsRecoveredToDeadWithoutLosingItsStableIdentity() {
+        Seed seed = insertOutbox(
+                "DEAD",
+                10,
+                NOW.minusSeconds(1),
+                NOW.minusSeconds(10),
+                null,
+                null,
+                "MailSendException|SMTP_DELIVERY_FAILED",
+                null);
+        makePendingForManualRetry(seed.outboxId(), NOW);
+        LeasedEmail leased = repository.recoverExpiredAndClaim(
+                        "crashed-eleventh-claim", NOW, LEASE_DURATION, 1)
+                .get(0);
+        assertThat(leased.attempts()).isEqualTo(11);
+        setLeaseUntil(seed.outboxId(), NOW.minusNanos(1_000));
+
+        assertThat(repository.recoverExpiredAndClaim(
+                        "post-crash-claim", NOW, LEASE_DURATION, 1))
+                .isEmpty();
+
+        assertThat(state(seed.outboxId()))
+                .extracting(
+                        OutboxState::status,
+                        OutboxState::attempts,
+                        OutboxState::leaseOwner,
+                        OutboxState::leaseUntil,
+                        OutboxState::lastErrorSummary,
+                        OutboxState::stableMessageId)
+                .containsExactly(
+                        "DEAD",
+                        11,
+                        null,
+                        null,
+                        "LeaseExpired|DELIVERY_INTERRUPTED",
+                        seed.stableMessageId());
+    }
+
+    @Test
+    void pendingClaimCanReachButNeverOverflowTheLargestIntegerAttempt() {
+        Seed incrementable = insertOutbox(
+                "PENDING",
+                Integer.MAX_VALUE - 1,
+                NOW.minusSeconds(2),
+                NOW.minusSeconds(10),
+                null,
+                null,
+                null,
+                null);
+        Seed exhausted = insertOutbox(
+                "PENDING",
+                Integer.MAX_VALUE,
+                NOW.minusSeconds(1),
+                NOW.minusSeconds(9),
+                null,
+                null,
+                null,
+                null);
+
+        List<LeasedEmail> leased = repository.recoverExpiredAndClaim(
+                "largest-attempt-claim", NOW, LEASE_DURATION, 10);
+
+        assertThat(leased)
+                .singleElement()
+                .satisfies(email -> {
+                    assertThat(email.notification().outboxId()).isEqualTo(incrementable.outboxId());
+                    assertThat(email.attempts()).isEqualTo(Integer.MAX_VALUE);
+                    assertThat(repository.markSent(
+                                    incrementable.outboxId(),
+                                    email.leaseOwner(),
+                                    email.attempts(),
+                                    NOW.plusSeconds(1)))
+                            .isTrue();
+                });
+        assertThat(state(exhausted.outboxId()))
+                .extracting(OutboxState::status, OutboxState::attempts)
+                .containsExactly("PENDING", Integer.MAX_VALUE);
+    }
+
+    @Test
     void deletingTheContactCascadesItsOutboxRow() {
         Seed seed = insertOutbox(
                 "PENDING", 0, NOW.minusSeconds(1), NOW.minusSeconds(10),
@@ -587,6 +762,25 @@ class EmailOutboxLeaseIntegrationTest extends PostgresIntegrationTestBase {
                 .param(
                         "leaseUntil",
                         OffsetDateTime.ofInstant(leaseUntil, ZoneOffset.UTC),
+                        Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("id", outboxId, Types.OTHER)
+                .update()).isOne();
+    }
+
+    private void makePendingForManualRetry(UUID outboxId, Instant nextAttemptAt) {
+        assertThat(migratorJdbc().sql("""
+                        update portfolio.email_outbox
+                        set status='PENDING',
+                            next_attempt_at=:nextAttemptAt,
+                            lease_owner=null,
+                            lease_until=null,
+                            last_error_summary=null,
+                            sent_at=null
+                        where id=:id
+                        """)
+                .param(
+                        "nextAttemptAt",
+                        OffsetDateTime.ofInstant(nextAttemptAt, ZoneOffset.UTC),
                         Types.TIMESTAMP_WITH_TIMEZONE)
                 .param("id", outboxId, Types.OTHER)
                 .update()).isOne();

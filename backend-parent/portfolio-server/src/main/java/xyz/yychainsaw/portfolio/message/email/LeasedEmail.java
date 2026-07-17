@@ -16,7 +16,7 @@ public record LeasedEmail(
         if (leaseOwner == null || !LEASE_OWNER.matcher(leaseOwner).matches()) {
             throw new IllegalArgumentException("email lease owner is invalid");
         }
-        if (attempts < 1 || attempts > 10) {
+        if (attempts < 1) {
             throw new IllegalArgumentException("email lease attempts are invalid");
         }
         if (templateName == null || !TEMPLATE_NAME.matcher(templateName).matches()) {
