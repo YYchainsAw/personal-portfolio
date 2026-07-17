@@ -85,7 +85,8 @@ class MediaImportCliConfiguration {
             MediaVariantRepository variants,
             MediaTranslationRepository translations,
             BackgroundJobService jobs,
-            LocalMediaIngestCoordinator localIngest) {
+            LocalMediaIngestCoordinator localIngest,
+            PlatformTransactionManager transactionManager) {
         return new DefaultMediaImportService(
                 inspector,
                 storageRouter,
@@ -93,6 +94,7 @@ class MediaImportCliConfiguration {
                 variants,
                 translations,
                 jobs,
-                localIngest);
+                localIngest,
+                transactionManager);
     }
 }

@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.context.WebApplicationContext;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportCli;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportService;
 import xyz.yychainsaw.portfolio.media.domain.MediaStatus;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRecord;
@@ -48,6 +52,7 @@ import xyz.yychainsaw.portfolio.media.persistence.MediaVariantRepository;
 import xyz.yychainsaw.portfolio.media.staging.LocalStagingKnownRollbackCleanup;
 import xyz.yychainsaw.portfolio.media.staging.LocalStagingReservationService;
 import xyz.yychainsaw.portfolio.media.storage.LocalPublicationFence;
+import xyz.yychainsaw.portfolio.media.storage.LocalStorageService;
 import xyz.yychainsaw.portfolio.media.storage.StorageLocation;
 import xyz.yychainsaw.portfolio.media.storage.StorageRouter;
 import xyz.yychainsaw.portfolio.media.storage.StorageService;
@@ -73,6 +78,7 @@ class MediaImportCliConfigurationIntegrationTest extends PostgresIntegrationTest
     @Autowired MediaTranslationRepository translations;
     @Autowired TransactionTemplate transactions;
 
+    @MockitoBean(enforceOverride = true) PortfolioImportCli importCli;
     @MockitoBean StorageRouter storageRouter;
 
     private Path assetRoot;
@@ -91,11 +97,19 @@ class MediaImportCliConfigurationIntegrationTest extends PostgresIntegrationTest
 
     @Test
     void importCommandWiresTheProviderNeutralImporterInANonWebContext() {
+        assertThat(context).isNotInstanceOf(WebApplicationContext.class);
+        assertThat(context.getBeansOfType(Flyway.class)).hasSize(1);
+        assertThat(context.getBeansOfType(PortfolioImportCli.class)).hasSize(1);
+        assertThat(context.getBeansOfType(PortfolioImportService.class)).hasSize(1);
         assertThat(context.getBeansOfType(MediaImportService.class)).hasSize(1);
+        assertThat(context.getBeansOfType(MediaFinalizationService.class)).hasSize(1);
+        assertThat(context.getBeansOfType(MediaQueryService.class)).hasSize(1);
         assertThat(context.getBeansOfType(LocalMediaIngestCoordinator.class)).hasSize(1);
         assertThat(context.getBeansOfType(LocalPublicationFence.class)).hasSize(1);
         assertThat(context.getBeansOfType(LocalStagingReservationService.class)).hasSize(1);
         assertThat(context.getBeansOfType(LocalStagingKnownRollbackCleanup.class)).hasSize(1);
+        assertThat(context.getBeansOfType(LocalStorageService.class)).hasSize(1);
+        assertThat(context.getBeansOfType(StorageRouter.class)).hasSize(1);
     }
 
     @Test
@@ -272,6 +286,9 @@ class MediaImportCliConfigurationIntegrationTest extends PostgresIntegrationTest
 
     private static void clearFixtures() {
         JdbcClient owner = migratorJdbc();
+        owner.sql("delete from portfolio.project").update();
+        owner.sql("delete from portfolio.resume_document").update();
+        owner.sql("delete from portfolio.hero_section").update();
         owner.sql("delete from portfolio.media_translation").update();
         owner.sql("delete from portfolio.media_variant").update();
         owner.sql("delete from portfolio.local_staging_reservation").update();

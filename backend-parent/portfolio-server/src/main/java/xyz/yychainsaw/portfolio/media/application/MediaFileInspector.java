@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
@@ -26,6 +27,7 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageReadParam;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
+import javax.imageio.stream.MemoryCacheImageInputStream;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
@@ -91,36 +93,17 @@ public final class MediaFileInspector {
 
             temporaryFile = createTemporaryFile();
             CopyResult copied = copyBounded(input, temporaryFile, declaredLimit);
-            if (copied.byteSize() <= 0 || copied.byteSize() != command.declaredSize()) {
-                throw sizeMismatch();
-            }
-
-            DetectedType detected = detect(temporaryFile);
-            if (!detected.mimeType().equals(declaredMime)) {
-                throw mimeMismatch();
-            }
-            if (copied.byteSize() > byteLimit(detected.mimeType())) {
-                throw tooLarge();
-            }
-
-            Dimensions dimensions = switch (detected) {
-                case PDF -> {
-                    validatePdf(temporaryFile, copied.byteSize());
-                    yield Dimensions.NONE;
-                }
-                case PNG -> validateImage(
-                        temporaryFile, detected, validatePng(temporaryFile));
-                case JPEG -> validateImage(
-                        temporaryFile, detected, validateJpeg(temporaryFile));
-            };
-            String filename = normalizeFilename(command.filename(), detected.extension());
+            ValidatedMedia validated = validateStoredMedia(
+                    temporaryFile, declaredMime, command.declaredSize(), declaredLimit);
+            String filename = normalizeFilename(
+                    command.filename(), validated.detected().extension());
             inspected = new InspectedMedia(
-                    detected.mimeType(),
-                    detected.extension(),
-                    copied.byteSize(),
+                    validated.detected().mimeType(),
+                    validated.detected().extension(),
+                    validated.byteSize(),
                     copied.sha256(),
-                    dimensions.width(),
-                    dimensions.height(),
+                    validated.dimensions().width(),
+                    validated.dimensions().height(),
                     filename,
                     temporaryFile);
         } catch (InspectionFailure validationFailure) {
@@ -143,6 +126,20 @@ public final class MediaFileInspector {
             throw uploadFailed().toDomainException();
         }
         return inspected;
+    }
+
+    public void validateExisting(
+            Path path, String declaredContentType, long declaredSize) {
+        try {
+            String declaredMime = requireDeclaredMime(declaredContentType);
+            long declaredLimit = byteLimit(declaredMime);
+            requireDeclaredSize(declaredSize, declaredLimit);
+            validateStoredMedia(path, declaredMime, declaredSize, declaredLimit);
+        } catch (InspectionFailure validationFailure) {
+            throw validationFailure.toDomainException();
+        } catch (IOException | RuntimeException dependencyFailure) {
+            throw uploadFailed().toDomainException();
+        }
     }
 
     static void validateDimensions(long width, long height) {
@@ -219,6 +216,71 @@ public final class MediaFileInspector {
         if (declaredSize > limit) {
             throw tooLarge();
         }
+    }
+
+    private ValidatedMedia validateStoredMedia(
+            Path path, String declaredMime, long declaredSize, long declaredLimit)
+            throws IOException {
+        long actualSize = readExistingBytes(path, declaredLimit);
+        if (actualSize <= 0 || actualSize != declaredSize) {
+            throw sizeMismatch();
+        }
+        if (actualSize > declaredLimit) {
+            throw tooLarge();
+        }
+
+        DetectedType detected = detect(path);
+        if (!detected.mimeType().equals(declaredMime)) {
+            throw mimeMismatch();
+        }
+        if (actualSize > byteLimit(detected.mimeType())) {
+            throw tooLarge();
+        }
+
+        Dimensions dimensions = switch (detected) {
+            case PDF -> {
+                validatePdf(path, actualSize);
+                yield Dimensions.NONE;
+            }
+            case PNG -> validateImage(path, detected, validatePng(path));
+            case JPEG -> validateImage(path, detected, validateJpeg(path));
+        };
+        return new ValidatedMedia(detected, actualSize, dimensions);
+    }
+
+    private static long readExistingBytes(Path path, long limit) throws IOException {
+        if (path == null) {
+            throw requestInvalid();
+        }
+        BasicFileAttributes attributes = Files.readAttributes(
+                path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (attributes.isSymbolicLink() || !attributes.isRegularFile()) {
+            throw requestInvalid();
+        }
+
+        byte[] buffer = new byte[8192];
+        long read = 0;
+        try (InputStream input = Files.newInputStream(
+                path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            long budget = limit + 1;
+            while (read < budget) {
+                int requested = (int) Math.min(buffer.length, budget - read);
+                int count = input.read(buffer, 0, requested);
+                if (count < 0) {
+                    break;
+                }
+                if (count == 0) {
+                    int single = input.read();
+                    if (single < 0) {
+                        break;
+                    }
+                    read++;
+                    continue;
+                }
+                read += count;
+            }
+        }
+        return read;
     }
 
     private Path createTemporaryFile() throws IOException {
@@ -404,7 +466,11 @@ public final class MediaFileInspector {
     }
 
     private static Dimensions validateJpeg(Path path) throws IOException {
-        byte[] bytes = Files.readAllBytes(path);
+        byte[] bytes;
+        try (InputStream input = Files.newInputStream(
+                path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            bytes = input.readAllBytes();
+        }
         if (bytes.length < 4
                 || (bytes[0] & 0xff) != 0xff
                 || (bytes[1] & 0xff) != 0xd8) {
@@ -534,10 +600,9 @@ public final class MediaFileInspector {
         try {
             imageGate.acquire();
             acquired = true;
-            try (ImageInputStream imageInput = ImageIO.createImageInputStream(path.toFile())) {
-                if (imageInput == null) {
-                    throw corrupt();
-                }
+            try (InputStream mediaInput = Files.newInputStream(
+                            path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+                    ImageInputStream imageInput = new MemoryCacheImageInputStream(mediaInput)) {
                 Iterator<ImageReader> readers = ImageIO.getImageReaders(imageInput);
                 if (!readers.hasNext()) {
                     throw corrupt();
@@ -888,6 +953,9 @@ public final class MediaFileInspector {
     }
 
     private record CopyResult(long byteSize, String sha256) {}
+
+    private record ValidatedMedia(
+            DetectedType detected, long byteSize, Dimensions dimensions) {}
 
     private static final class PngInput {
         private final SeekableByteChannel channel;

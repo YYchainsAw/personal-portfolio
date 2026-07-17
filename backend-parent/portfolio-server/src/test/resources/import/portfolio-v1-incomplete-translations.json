@@ -1,0 +1,465 @@
+{
+  "heroAsset": {
+    "alt": {
+      "en": "",
+      "zh-CN": "蓝白色超现实 3D 创作工作室与电脑工作台"
+    },
+    "credit": "Zulian Firmansyah",
+    "image": "/images/game-dev-hero.jpg",
+    "objectPosition": "center",
+    "sourceUrl": "https://unsplash.com/photos/a-minimalist-room-with-a-surreal-background-zFLn5fDZYw0"
+  },
+  "identity": {
+    "email": "jiaxuan.yi@example.com",
+    "monogram": "YJX",
+    "nameEn": "Jiaxuan Yi",
+    "nameZh": "易嘉轩"
+  },
+  "portfolioContent": {
+    "en": {
+      "a11y": {
+        "backToTop": "Back to top",
+        "closeMenu": "Close navigation menu",
+        "language": "Choose site language",
+        "mobileNav": "Mobile navigation",
+        "openMenu": "Open navigation menu",
+        "primaryNav": "Primary navigation",
+        "projectTags": "Project tags",
+        "skip": "Skip to main content"
+      },
+      "about": {
+        "facts": [
+          {
+            "label": "University",
+            "value": "Jiangxi Normal University"
+          },
+          {
+            "label": "Stage",
+            "value": "Soon-to-be junior"
+          },
+          {
+            "label": "Current focus",
+            "value": "Unreal Engine 5"
+          },
+          {
+            "label": "Target roles",
+            "value": "Gameplay Programmer / Technical Designer"
+          }
+        ],
+        "focusIntro": "Every topic should end in a running demo, a clear note, or an honest postmortem.",
+        "focusLabel": "CURRENT FOCUS",
+        "focusTitle": "From Blueprint prototypes to maintainable gameplay systems",
+        "label": "01 / ABOUT",
+        "skills": [
+          {
+            "name": "UE5 & Blueprint",
+            "status": "Practicing"
+          },
+          {
+            "name": "C++",
+            "status": "Going deeper"
+          },
+          {
+            "name": "Gameplay Framework",
+            "status": "Current focus"
+          },
+          {
+            "name": "AI & Animation",
+            "status": "Next phase"
+          },
+          {
+            "name": "Performance Profiling",
+            "status": "Next phase"
+          },
+          {
+            "name": "Git + LFS",
+            "status": "Project foundation"
+          }
+        ],
+        "statement": "At this stage I am not collecting projects for volume. I am building focused, reproducible work that clearly explains the design and technical trade-offs behind it.",
+        "title": "Make it playable first. Then make it better."
+      },
+      "contact": {
+        "email": "jiaxuan.yi@example.com",
+        "emailLabel": "Email",
+        "footerNote": "Studying in Jiangxi, exploring through game worlds.",
+        "introduction": "I would love to talk about Unreal Engine, game jams, student projects, and game development internships.",
+        "label": "04 / CONTACT",
+        "roadmapCta": "View the roadmap",
+        "title": "Let us build something playable.",
+        "workCta": "View project slots"
+      },
+      "hero": {
+        "availability": "Open to game jams, collaboration, and internships",
+        "displayName": "Jiaxuan Yi",
+        "eyebrow": "Jiangxi Normal University / Game Development",
+        "headline": "",
+        "introduction": "I am a soon-to-be junior focused on game development. I prototype quickly with Blueprints while progressing into C++, Gameplay Framework, AI, animation, and optimization.",
+        "primaryCta": "Explore my work",
+        "role": "Game Developer / Learning Unreal Engine 5",
+        "secondaryCta": "See my roadmap",
+        "secondaryName": "易嘉轩",
+        "stageLabel": "Soon-to-be junior",
+        "visualLabel": "Unreal Engine environment study"
+      },
+      "nav": {
+        "about": "About",
+        "contact": "Contact",
+        "roadmap": "Roadmap",
+        "work": "Work"
+      },
+      "projects": [
+        {
+          "eyebrow": "UE5 Environment / Interaction",
+          "id": "ue-environment-study",
+          "number": "01",
+          "status": "In progress",
+          "summary": "Practicing level assembly, materials, lighting, character movement, and basic interactions while documenting visual and performance trade-offs.",
+          "tags": [
+            "UE5",
+            "Blueprint",
+            "Level Design"
+          ],
+          "title": "UE5 Environment & Interaction Study"
+        },
+        {
+          "eyebrow": "Gameplay / Systems",
+          "id": "gameplay-prototype",
+          "number": "02",
+          "status": "Planned",
+          "summary": "A focused 5-10 minute prototype built around one core mechanic, covering input, state, UI, and the Gameplay Framework.",
+          "tags": [
+            "C++",
+            "Blueprint",
+            "Gameplay"
+          ],
+          "title": "Gameplay Mechanic Prototype"
+        },
+        {
+          "eyebrow": "Devlog / Breakdown",
+          "id": "development-log",
+          "number": "03",
+          "status": "Ongoing",
+          "summary": "Bilingual notes on problems, implementations, profiling data, and postmortems so every study leaves reproducible evidence.",
+          "tags": [
+            "Devlog",
+            "Git + LFS",
+            "Profiling"
+          ],
+          "title": "Development Logs & Technical Breakdowns"
+        }
+      ],
+      "roadmap": {
+        "introduction": "Progress is measured by playable outcomes, public documentation, and real feedback - not by the number of tutorials completed.",
+        "label": "03 / ROADMAP",
+        "stages": [
+          {
+            "id": "now",
+            "number": "01",
+            "outcomes": [
+              "A 5-10 minute playable demo",
+              "Rebuild one Blueprint feature in C++",
+              "Git + LFS, README, and four devlogs"
+            ],
+            "period": "Now",
+            "summary": "Finish a small prototype that can be played from beginning to end.",
+            "title": "Build the UE5 foundation"
+          },
+          {
+            "id": "six-months",
+            "number": "02",
+            "outcomes": [
+              "A 10-20 minute vertical slice",
+              "AI, animation state, and feedback systems",
+              "Two game jams with postmortems"
+            ],
+            "period": "Next 6 months",
+            "summary": "Bring systems, presentation, and performance into one playable experience.",
+            "title": "Complete a vertical slice"
+          },
+          {
+            "id": "junior-year",
+            "number": "03",
+            "outcomes": [
+              "One public team demo",
+              "Flagship project, video, and breakdown",
+              "Bilingual resume, mock interviews, and targeted applications"
+            ],
+            "period": "Junior year",
+            "summary": "Show that I can collaborate, ship, and explain my own contribution.",
+            "title": "Team delivery & internship prep"
+          },
+          {
+            "id": "graduation",
+            "number": "04",
+            "outcomes": [
+              "Two to three curated projects",
+              "Ten playtesters and two feedback iterations",
+              "Aligned portfolio, GitHub, resume, and demo reel"
+            ],
+            "period": "Senior year / Before graduation",
+            "summary": "Use a few strong projects to show complete development ability and growth.",
+            "title": "Create a job-ready portfolio"
+          }
+        ],
+        "title": "A practical path from now to graduation."
+      },
+      "seo": {
+        "description": "Jiaxuan Yi bilingual game development portfolio, documenting Unreal Engine 5 studies, gameplay prototypes, devlogs, and a practical growth roadmap.",
+        "title": "Jiaxuan Yi - Game Development & Unreal Engine Portfolio"
+      },
+      "work": {
+        "imageNotice": "Selected development work",
+        "introduction": "Nothing here pretends to be a finished commercial project. Every slot maps to a real learning goal and can expand into a full case study later.",
+        "label": "02 / LEARNING & WORK",
+        "openSlotLabel": "04 / OPEN SLOT",
+        "openSlotMeta": "Ready for a game jam, team project, or focused technical demo",
+        "openSlotText": "The data structure is ready. Add a title, status, summary, tags, and screenshots to publish another case study.",
+        "openSlotTitle": "Space for the next project",
+        "title": "The portfolio will grow with the skills."
+      }
+    },
+    "zh-CN": {
+      "a11y": {
+        "backToTop": "返回顶部",
+        "closeMenu": "关闭导航菜单",
+        "language": "选择网站语言",
+        "mobileNav": "移动端导航",
+        "openMenu": "打开导航菜单",
+        "primaryNav": "主要导航",
+        "projectTags": "项目标签",
+        "skip": "跳到主要内容"
+      },
+      "about": {
+        "facts": [
+          {
+            "label": "学校",
+            "value": "江西师范大学"
+          },
+          {
+            "label": "阶段",
+            "value": "即将进入大三"
+          },
+          {
+            "label": "当前重点",
+            "value": "Unreal Engine 5"
+          },
+          {
+            "label": "目标方向",
+            "value": "Gameplay Programmer / Technical Designer"
+          }
+        ],
+        "focusIntro": "每一个学习主题都要落到一个可运行的 Demo、一次记录或一次复盘。",
+        "focusLabel": "当前学习重点",
+        "focusTitle": "从 Blueprint 原型到可维护的 Gameplay 系统",
+        "label": "01 / 关于我",
+        "skills": [
+          {
+            "name": "UE5 & Blueprint",
+            "status": "持续练习"
+          },
+          {
+            "name": "C++",
+            "status": "正在深入"
+          },
+          {
+            "name": "Gameplay Framework",
+            "status": "当前重点"
+          },
+          {
+            "name": "AI & Animation",
+            "status": "下一阶段"
+          },
+          {
+            "name": "Performance Profiling",
+            "status": "下一阶段"
+          },
+          {
+            "name": "Git + LFS",
+            "status": "项目基础"
+          }
+        ],
+        "statement": "现阶段我不追求堆砌项目，而是持续完成可玩、可复现、能清楚说明设计与技术取舍的小型作品。",
+        "title": "先做出可玩的东西，再让它变得更好。"
+      },
+      "contact": {
+        "email": "jiaxuan.yi@example.com",
+        "emailLabel": "联系邮箱",
+        "footerNote": "在江西学习，在游戏世界里持续探索。",
+        "introduction": "欢迎交流 Unreal Engine、Game Jam、学生项目与游戏开发实习机会。",
+        "label": "04 / 保持联系",
+        "roadmapCta": "查看发展路线",
+        "title": "一起做点好玩的。",
+        "workCta": "查看作品位置"
+      },
+      "hero": {
+        "availability": "期待 Game Jam、协作与实习机会",
+        "displayName": "易嘉轩",
+        "eyebrow": "江西师范大学 / 游戏开发",
+        "headline": "正在把想法做成可以玩的世界。",
+        "introduction": "即将进入大三，专注游戏开发。我用 Blueprint 快速验证玩法，并逐步深入 C++、Gameplay Framework、AI、动画与性能优化。",
+        "primaryCta": "查看学习与作品",
+        "role": "游戏开发者 / Unreal Engine 5 学习中",
+        "secondaryCta": "我的发展路线",
+        "secondaryName": "Jiaxuan Yi",
+        "stageLabel": "即将进入大三",
+        "visualLabel": "虚幻引擎环境练习"
+      },
+      "nav": {
+        "about": "关于",
+        "contact": "联系",
+        "roadmap": "路线",
+        "work": "作品"
+      },
+      "projects": [
+        {
+          "eyebrow": "UE5 场景 / 交互",
+          "id": "ue-environment-study",
+          "number": "01",
+          "status": "学习中",
+          "summary": "",
+          "tags": [
+            "UE5",
+            "Blueprint",
+            "Level Design"
+          ],
+          "title": "UE5 场景与交互习作"
+        },
+        {
+          "eyebrow": "Gameplay / Systems",
+          "id": "gameplay-prototype",
+          "number": "02",
+          "status": "计划中",
+          "summary": "围绕一个核心机制制作 5-10 分钟可玩原型，覆盖输入、状态、UI 与 Gameplay Framework。",
+          "tags": [
+            "C++",
+            "Blueprint",
+            "Gameplay"
+          ],
+          "title": "游戏机制原型"
+        },
+        {
+          "eyebrow": "Devlog / Breakdown",
+          "id": "development-log",
+          "number": "03",
+          "status": "持续更新",
+          "summary": "用中英文记录问题、实现方案、性能数据与复盘，让每次学习都留下可复现的证据。",
+          "tags": [
+            "Devlog",
+            "Git + LFS",
+            "Profiling"
+          ],
+          "title": "开发日志与技术拆解"
+        }
+      ],
+      "roadmap": {
+        "introduction": "路线以可玩成果、公开记录和真实反馈为衡量标准，而不是只统计学过多少教程。",
+        "label": "03 / 发展路线",
+        "stages": [
+          {
+            "id": "now",
+            "number": "01",
+            "outcomes": [
+              "5-10 分钟可玩 Demo",
+              "用 C++ 重构一个 Blueprint 功能",
+              "Git + LFS、README 与 4 篇开发记录"
+            ],
+            "period": "现在",
+            "summary": "完成第一个可以从头到尾运行的小型原型。",
+            "title": "打牢 UE5 基础"
+          },
+          {
+            "id": "six-months",
+            "number": "02",
+            "outcomes": [
+              "10-20 分钟 Vertical Slice",
+              "AI、动画状态机与反馈系统",
+              "2 次 Game Jam 与项目复盘"
+            ],
+            "period": "未来 6 个月",
+            "summary": "把系统、表现和性能放进同一个可玩的体验里。",
+            "title": "完成玩法切片"
+          },
+          {
+            "id": "junior-year",
+            "number": "03",
+            "outcomes": [
+              "1 个公开团队 Demo",
+              "代表作、演示视频与技术拆解",
+              "双语简历、模拟面试与定向投递"
+            ],
+            "period": "大三",
+            "summary": "证明自己能协作、交付，并清楚解释个人贡献。",
+            "title": "团队项目与实习准备"
+          },
+          {
+            "id": "graduation",
+            "number": "04",
+            "outcomes": [
+              "2-3 个精选项目",
+              "至少 10 名玩家测试与两轮迭代",
+              "统一作品集、GitHub、简历与 Demo Reel"
+            ],
+            "period": "大四 / 毕业前",
+            "summary": "用少而强的项目展现完整的开发能力与成长轨迹。",
+            "title": "形成求职作品集"
+          }
+        ],
+        "title": "从现在到毕业，我会这样推进。"
+      },
+      "seo": {
+        "description": "易嘉轩的中英双语游戏开发作品集，记录 Unreal Engine 5 学习、玩法原型、开发日志与成长路线。",
+        "title": "易嘉轩 - 游戏开发与 Unreal Engine 学习作品集"
+      },
+      "work": {
+        "imageNotice": "精选开发作品",
+        "introduction": "这里不包装不存在的成品。每个位置都对应一个明确的学习目标，并能在未来直接扩展为完整案例页。",
+        "label": "02 / 学习与作品",
+        "openSlotLabel": "04 / OPEN SLOT",
+        "openSlotMeta": "可扩展为 Game Jam、团队项目或技术专项 Demo",
+        "openSlotText": "数据结构已经预留。新增项目时只需补充标题、状态、说明、标签与截图。",
+        "openSlotTitle": "下一个项目的位置",
+        "title": "作品会随着能力一起长大。"
+      }
+    }
+  },
+  "projectAssets": [
+    {
+      "alt": {
+        "en": "A minimalist 3D tropical island with palm trees reflected in calm water",
+        "zh-CN": "平静水面上的极简 3D 热带小岛与棕榈树"
+      },
+      "credit": "BROTHERHOOD STUDIO",
+      "id": "ue-environment-study",
+      "image": "/images/ue-environment-study.jpg",
+      "layout": "wide",
+      "objectPosition": "center",
+      "sourceUrl": "https://unsplash.com/photos/a-small-island-with-palm-trees-in-calm-water-VU7z8SQsBTo"
+    },
+    {
+      "alt": {
+        "en": "A hand reaching for a beige game controller in a bright white studio",
+        "zh-CN": "手在明亮白色空间中伸向米黄色游戏手柄"
+      },
+      "credit": "Tima Miroshnichenko",
+      "id": "gameplay-prototype",
+      "image": "/images/gameplay-prototype.jpg",
+      "layout": "standard",
+      "objectPosition": "center 62%",
+      "sourceUrl": "https://www.pexels.com/photo/a-person-reaching-for-a-game-controller-7047667/"
+    },
+    {
+      "alt": {
+        "en": "An open laptop displaying code in a bright, modern office workspace",
+        "zh-CN": "明亮现代办公室中打开代码编辑器的笔记本电脑"
+      },
+      "credit": "Daniil Komov",
+      "id": "development-log",
+      "image": "/images/development-log.jpg",
+      "layout": "standard",
+      "objectPosition": "35% 55%",
+      "sourceUrl": "https://www.pexels.com/photo/modern-workspace-with-laptop-and-code-display-34804001/"
+    }
+  ],
+  "schemaVersion": 1
+}

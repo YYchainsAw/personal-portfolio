@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -27,9 +29,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.media.domain.MediaStatus;
@@ -84,6 +92,9 @@ class DefaultMediaImportServiceTest {
 
     @Mock
     private LocalMediaIngestSession localSession;
+
+    @Mock
+    private PlatformTransactionManager transactionManager;
 
     private Path assetRoot;
     private Path source;
@@ -182,7 +193,8 @@ class DefaultMediaImportServiceTest {
     void reusesOnlyAnExactReadyBilingualAssetAndReturnsReadyVariants() {
         MediaAssetRecord existing = asset(
                 EXISTING_ID, StorageProvider.TENCENT_COS, MediaStatus.READY);
-        when(assets.findReadyBySha256ForShare(SHA256)).thenReturn(List.of(existing));
+        when(assets.findImportCandidatesBySha256ForShare(SHA256))
+                .thenReturn(List.of(existing));
         when(translations.findByAssetId(EXISTING_ID)).thenReturn(expectedTranslations(
                 EXISTING_ID, "Gameplay screenshot"));
         when(variants.findByAssetId(EXISTING_ID)).thenReturn(List.of(
@@ -194,6 +206,78 @@ class DefaultMediaImportServiceTest {
         assertThat(imported.assetId()).isEqualTo(EXISTING_ID);
         assertThat(imported.originalSha256()).isEqualTo(SHA256);
         assertThat(imported.readyVariants()).containsExactly("document");
+        InOrder reuseOrder = inOrder(assets);
+        reuseOrder.verify(assets).lockImportSha256(SHA256);
+        reuseOrder.verify(assets).findImportCandidatesBySha256ForShare(SHA256);
+        verifyNoInteractions(storageRouter, storage, jobs, localIngest);
+        verify(assets, never()).insertProcessing(any());
+    }
+
+    @Test
+    void reusesOldestExactProcessingCandidateWithoutReadingVariantsOrPublishing() {
+        MediaAssetRecord processing = asset(
+                EXISTING_ID, StorageProvider.LOCAL, MediaStatus.PROCESSING);
+        MediaAssetRecord laterReady = asset(
+                NEW_ID, StorageProvider.TENCENT_COS, MediaStatus.READY);
+        when(assets.findImportCandidatesBySha256ForShare(SHA256))
+                .thenReturn(List.of(processing, laterReady));
+        when(translations.findByAssetId(EXISTING_ID)).thenReturn(expectedTranslations(
+                EXISTING_ID, "Gameplay screenshot"));
+
+        ImportedMedia imported = inTransaction(
+                () -> service.importLocal(command("/work.pdf")));
+
+        assertThat(imported).isEqualTo(new ImportedMedia(EXISTING_ID, SHA256, List.of()));
+        InOrder reuseOrder = inOrder(assets);
+        reuseOrder.verify(assets).lockImportSha256(SHA256);
+        reuseOrder.verify(assets).findImportCandidatesBySha256ForShare(SHA256);
+        verifyNoInteractions(variants, storageRouter, storage, jobs, localIngest);
+        verify(assets, never()).insertProcessing(any());
+    }
+
+    @Test
+    void processingMetadataMismatchContinuesToALaterExactReadyCandidate() {
+        MediaAssetRecord processing = asset(
+                EXISTING_ID, StorageProvider.LOCAL, MediaStatus.PROCESSING);
+        MediaAssetRecord ready = asset(
+                NEW_ID, StorageProvider.TENCENT_COS, MediaStatus.READY);
+        when(assets.findImportCandidatesBySha256ForShare(SHA256))
+                .thenReturn(List.of(processing, ready));
+        when(translations.findByAssetId(EXISTING_ID)).thenReturn(expectedTranslations(
+                EXISTING_ID, "Different alt"));
+        when(translations.findByAssetId(NEW_ID)).thenReturn(expectedTranslations(
+                NEW_ID, "Gameplay screenshot"));
+        when(variants.findByAssetId(NEW_ID)).thenReturn(List.of(
+                documentVariant(NEW_ID, "READY")));
+
+        ImportedMedia imported = inTransaction(
+                () -> service.importLocal(command("/work.pdf")));
+
+        assertThat(imported)
+                .isEqualTo(new ImportedMedia(NEW_ID, SHA256, List.of("document")));
+        verify(variants, never()).findByAssetId(EXISTING_ID);
+        verifyNoInteractions(storageRouter, storage, jobs, localIngest);
+        verify(assets, never()).insertProcessing(any());
+    }
+
+    @Test
+    void explicitStatusAllowlistSkipsFailedCandidateEvenWhenMetadataMatches() {
+        MediaAssetRecord failed = asset(
+                EXISTING_ID, StorageProvider.LOCAL, MediaStatus.FAILED);
+        MediaAssetRecord ready = asset(
+                NEW_ID, StorageProvider.TENCENT_COS, MediaStatus.READY);
+        when(assets.findImportCandidatesBySha256ForShare(SHA256))
+                .thenReturn(List.of(failed, ready));
+        when(translations.findByAssetId(NEW_ID)).thenReturn(expectedTranslations(
+                NEW_ID, "Gameplay screenshot"));
+        when(variants.findByAssetId(NEW_ID)).thenReturn(List.of(
+                documentVariant(NEW_ID, "READY")));
+
+        ImportedMedia imported = inTransaction(
+                () -> service.importLocal(command("/work.pdf")));
+
+        assertThat(imported.assetId()).isEqualTo(NEW_ID);
+        verify(translations, never()).findByAssetId(EXISTING_ID);
         verifyNoInteractions(storageRouter, storage, jobs, localIngest);
         verify(assets, never()).insertProcessing(any());
     }
@@ -203,7 +287,8 @@ class DefaultMediaImportServiceTest {
             throws Exception {
         MediaAssetRecord existing = asset(
                 EXISTING_ID, StorageProvider.TENCENT_COS, MediaStatus.READY);
-        when(assets.findReadyBySha256ForShare(SHA256)).thenReturn(List.of(existing));
+        when(assets.findImportCandidatesBySha256ForShare(SHA256))
+                .thenReturn(List.of(existing));
         when(translations.findByAssetId(EXISTING_ID)).thenReturn(expectedTranslations(
                 EXISTING_ID, "Different alt"));
 
@@ -259,7 +344,7 @@ class DefaultMediaImportServiceTest {
     @Test
     void localImportLeavesPublishedStagingForDurableRollbackCleanup()
             throws Exception {
-        when(assets.findReadyBySha256ForShare(SHA256)).thenReturn(List.of());
+        when(assets.findImportCandidatesBySha256ForShare(SHA256)).thenReturn(List.of());
         StorageLocation location = new StorageLocation(
                 StorageProvider.LOCAL, null, null);
         when(storageRouter.defaultWriter()).thenReturn(storage);
@@ -294,6 +379,123 @@ class DefaultMediaImportServiceTest {
         verify(localSession).prepareOuterTransaction();
         verify(localSession).close();
         verify(localSession, never()).cleanupKnownRollback();
+    }
+
+    @Test
+    void localImportSuspendsOnlySessionOpenAndDefersCloseUntilTransactionCompletion()
+            throws Exception {
+        service = new DefaultMediaImportService(
+                new MediaFileInspector(Files.createDirectory(
+                        temporaryDirectory.resolve("managed-inspection"))),
+                storageRouter,
+                assets,
+                variants,
+                translations,
+                jobs,
+                localIngest,
+                () -> NEW_ID,
+                transactionManager);
+        when(assets.findImportCandidatesBySha256ForShare(SHA256)).thenReturn(List.of());
+        StorageLocation location = new StorageLocation(StorageProvider.LOCAL, null, null);
+        when(storageRouter.defaultWriter()).thenReturn(storage);
+        when(storage.provider()).thenReturn(StorageProvider.LOCAL);
+        when(storage.location()).thenReturn(location);
+        String stagingKey = MediaObjectKeys.stagingKey(
+                NEW_ID, SHA256, "application/pdf");
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenAnswer(invocation -> {
+                    TransactionDefinition definition = invocation.getArgument(0);
+                    assertThat(definition.getPropagationBehavior())
+                            .isEqualTo(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
+                    assertTransactionState(true);
+                    TransactionSynchronizationManager.setActualTransactionActive(false);
+                    return new SimpleTransactionStatus();
+                });
+        doAnswer(invocation -> {
+                    assertThat(TransactionSynchronizationManager
+                                    .isActualTransactionActive())
+                            .isFalse();
+                    assertThat(TransactionSynchronizationManager
+                                    .isSynchronizationActive())
+                            .isTrue();
+                    TransactionSynchronizationManager.clearSynchronization();
+                    TransactionSynchronizationManager.setActualTransactionActive(true);
+                    TransactionSynchronizationManager.initSynchronization();
+                    return null;
+                })
+                .when(transactionManager)
+                .commit(any(TransactionStatus.class));
+        when(localIngest.open(
+                        storage, location, NEW_ID, stagingKey, SHA256, "application/pdf"))
+                .thenAnswer(invocation -> {
+                    assertTransactionState(false);
+                    return localSession;
+                });
+        doAnswer(invocation -> {
+                    assertTransactionState(true);
+                    return null;
+                })
+                .when(localSession)
+                .prepareOuterTransaction();
+        when(localSession.publish(any(InputStream.class), eq((long) PDF.length)))
+                .thenAnswer(invocation -> {
+                    assertTransactionState(true);
+                    return new StoredObject(
+                            StorageProvider.LOCAL,
+                            null,
+                            null,
+                            stagingKey,
+                            PDF.length,
+                            "application/pdf",
+                            SHA256);
+                });
+        when(assets.insertProcessing(any())).thenAnswer(invocation -> {
+            assertTransactionState(true);
+            verify(localSession, never()).close();
+            return asset(NEW_ID, StorageProvider.LOCAL, MediaStatus.PROCESSING);
+        });
+
+        ImportedMedia imported = inTransaction(
+                () -> service.importLocal(command("work.pdf")));
+
+        assertThat(imported.assetId()).isEqualTo(NEW_ID);
+        verify(localSession).close();
+        verify(localSession, never()).cleanupKnownRollback();
+    }
+
+    @Test
+    void localPersistFailureCleansPublishedStagingAfterKnownOuterRollback()
+            throws Exception {
+        when(assets.findImportCandidatesBySha256ForShare(SHA256)).thenReturn(List.of());
+        StorageLocation location = new StorageLocation(StorageProvider.LOCAL, null, null);
+        when(storageRouter.defaultWriter()).thenReturn(storage);
+        when(storage.provider()).thenReturn(StorageProvider.LOCAL);
+        when(storage.location()).thenReturn(location);
+        String stagingKey = MediaObjectKeys.stagingKey(
+                NEW_ID, SHA256, "application/pdf");
+        when(localIngest.open(
+                        storage, location, NEW_ID, stagingKey, SHA256, "application/pdf"))
+                .thenReturn(localSession);
+        when(localSession.publish(any(InputStream.class), eq((long) PDF.length)))
+                .thenReturn(new StoredObject(
+                        StorageProvider.LOCAL,
+                        null,
+                        null,
+                        stagingKey,
+                        PDF.length,
+                        "application/pdf",
+                        SHA256));
+        when(assets.insertProcessing(any()))
+                .thenThrow(new IllegalStateException("forced persistence failure"));
+
+        assertDomainFailure(
+                () -> inTransaction(() -> service.importLocal(command("work.pdf"))),
+                "MEDIA_IMPORT_FAILED",
+                HttpStatus.INTERNAL_SERVER_ERROR);
+
+        InOrder rollbackOrder = inOrder(localSession);
+        rollbackOrder.verify(localSession).cleanupKnownRollback();
+        rollbackOrder.verify(localSession).close();
     }
 
     private ImportMediaCommand command(String publicPath) {
@@ -374,12 +576,31 @@ class DefaultMediaImportServiceTest {
     private static <T> T inTransaction(Supplier<T> callback) {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         TransactionSynchronizationManager.initSynchronization();
+        boolean committed = false;
         try {
-            return callback.get();
+            T result = callback.get();
+            committed = true;
+            return result;
         } finally {
+            int completion = committed
+                    ? TransactionSynchronization.STATUS_COMMITTED
+                    : TransactionSynchronization.STATUS_ROLLED_BACK;
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                for (TransactionSynchronization synchronization
+                        : TransactionSynchronizationManager.getSynchronizations()) {
+                    synchronization.afterCompletion(completion);
+                }
+            }
             TransactionSynchronizationManager.clearSynchronization();
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
+    }
+
+    private static void assertTransactionState(boolean expected) {
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive())
+                .isEqualTo(expected);
+        assertThat(TransactionSynchronizationManager.isSynchronizationActive())
+                .isEqualTo(expected);
     }
 
     private static void assertDomainFailure(
