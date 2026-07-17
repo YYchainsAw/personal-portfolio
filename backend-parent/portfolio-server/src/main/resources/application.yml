@@ -68,6 +68,9 @@ mybatis-plus:
     banner: false
 
 portfolio:
+  preview:
+    hmac-key: ${PORTFOLIO_PREVIEW_HMAC_KEY:}
+    ttl: PT10M
   jobs:
     retention:
       enabled: ${PORTFOLIO_JOBS_RETENTION_ENABLED:false}

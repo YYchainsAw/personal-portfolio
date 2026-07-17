@@ -1282,6 +1282,8 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
     private Map<String, Object> secondaryContextProperties(boolean corsEnabled) {
         String separator = POSTGRES.getJdbcUrl().contains("?") ? "&" : "?";
         String databaseUrl = POSTGRES.getJdbcUrl() + separator + "currentSchema=portfolio";
+        String previewHmacKey =
+                environment.getRequiredProperty("portfolio.preview.hmac-key");
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("PORTFOLIO_DB_URL", databaseUrl);
         properties.put("PORTFOLIO_DB_MIGRATOR_URL", databaseUrl);
@@ -1293,6 +1295,7 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
         properties.put(
                 "PORTFOLIO_TOTP_KEY_RING",
                 "1=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+        properties.put("PORTFOLIO_PREVIEW_HMAC_KEY", previewHmacKey);
         properties.put("PORTFOLIO_SESSION_COOKIE_SECURE", "false");
         properties.put("PORTFOLIO_ALLOW_DEVELOPMENT_CORS", Boolean.toString(corsEnabled));
         properties.put("PORTFOLIO_ADMIN_DEV_ORIGIN", DEVELOPMENT_ORIGIN);
@@ -1310,6 +1313,7 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
         properties.put(
                 "portfolio.security.totp.key-ring",
                 "1=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+        properties.put("portfolio.preview.hmac-key", previewHmacKey);
         properties.put("server.servlet.session.cookie.secure", "false");
         properties.put("portfolio.web.allow-development-cors", Boolean.toString(corsEnabled));
         properties.put("portfolio.web.development-origin", DEVELOPMENT_ORIGIN);
