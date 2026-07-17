@@ -92,6 +92,16 @@ class WorkspaceValidatorTest {
     }
 
     @Test
+    void fixtureRepresentsAbsentHeroMediaAsAnEmptyPersistedTuple() {
+        SiteWorkspaceDto.Hero hero = WorkspaceFixtures.site(0L).hero();
+
+        assertThat(hero.mediaAssetId()).isNull();
+        assertThat(hero.objectPosition()).isNull();
+        assertThat(hero.credit()).isNull();
+        assertThat(hero.sourceUrl()).isNull();
+    }
+
+    @Test
     void validatorIsAProductionComponent() {
         assertThat(WorkspaceValidator.class).hasAnnotation(Component.class);
     }

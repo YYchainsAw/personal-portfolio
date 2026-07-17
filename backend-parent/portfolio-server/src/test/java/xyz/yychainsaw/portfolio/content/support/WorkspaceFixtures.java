@@ -49,7 +49,7 @@ public final class WorkspaceFixtures {
                 HERO_ID,
                 3L,
                 null,
-                "50% 50%",
+                null,
                 null,
                 null,
                 localized(
