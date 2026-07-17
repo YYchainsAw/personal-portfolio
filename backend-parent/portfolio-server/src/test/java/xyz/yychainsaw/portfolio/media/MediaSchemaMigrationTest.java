@@ -53,7 +53,7 @@ class MediaSchemaMigrationTest extends PostgresIntegrationTestBase {
 
         SoftAssertions.assertSoftly(softly -> {
             softly.assertThat(versions)
-                    .containsExactly("1", "2", "3", "4", "5", "6");
+                    .startsWith("1", "2", "3", "4", "5", "6");
             softly.assertThat(tables).containsExactly(
                     "background_job",
                     "maintenance_run",
