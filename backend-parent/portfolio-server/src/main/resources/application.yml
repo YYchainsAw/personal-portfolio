@@ -68,6 +68,11 @@ mybatis-plus:
     banner: false
 
 portfolio:
+  render:
+    release-id: ${PORTFOLIO_RELEASE_ID}
+    vite-manifest: ${PORTFOLIO_VITE_MANIFEST:classpath:/public-assets/.vite/manifest.json}
+    template-schema-version: 1
+    public-base-url: ${PORTFOLIO_PUBLIC_BASE_URL:https://yychainsaw.xyz}
   preview:
     hmac-key: ${PORTFOLIO_PREVIEW_HMAC_KEY:}
     ttl: PT10M

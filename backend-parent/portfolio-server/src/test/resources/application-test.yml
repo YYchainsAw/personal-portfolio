@@ -1,5 +1,8 @@
 portfolio:
   release-id: test
+  render:
+    release-id: ${PORTFOLIO_RELEASE_ID:test-release}
+    vite-manifest: ${PORTFOLIO_VITE_MANIFEST:classpath:/vite/manifest.json}
   preview:
     hmac-key: ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=
     ttl: PT10M

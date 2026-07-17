@@ -1,5 +1,6 @@
 package xyz.yychainsaw.portfolio.publicapi;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import java.math.BigDecimal;
@@ -46,7 +47,7 @@ public record PublicBlockDto(
     public record Video(
             String provider,
             String embedUrl,
-            PublicMediaDto cover,
+            @JsonInclude(JsonInclude.Include.ALWAYS) PublicMediaDto cover,
             String title,
             String description) implements Payload {
     }
@@ -80,8 +81,8 @@ public record PublicBlockDto(
             String href,
             String label,
             String description,
-            String mimeType,
-            Long byteSize) implements Payload {
+            @JsonInclude(JsonInclude.Include.ALWAYS) String mimeType,
+            @JsonInclude(JsonInclude.Include.ALWAYS) Long byteSize) implements Payload {
     }
 
     public record Link(

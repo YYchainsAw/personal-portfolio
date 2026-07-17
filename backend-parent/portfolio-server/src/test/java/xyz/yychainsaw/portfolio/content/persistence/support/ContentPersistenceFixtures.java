@@ -72,6 +72,17 @@ public final class ContentPersistenceFixtures {
         return copySite(source, source.version(), source.monogram(), hero, source.resumes());
     }
 
+    public static SiteWorkspaceDto withResumes(
+            SiteWorkspaceDto source,
+            List<SiteWorkspaceDto.ResumeDocument> resumes) {
+        return copySite(
+                source,
+                source.version(),
+                source.monogram(),
+                source.hero(),
+                resumes);
+    }
+
     public static ProjectWorkspaceDto projectWithAllPayloads() {
         return project(PROJECT_ID, "complete-project", "complete-project", 0, 0L, true, true);
     }

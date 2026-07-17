@@ -1292,6 +1292,8 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
         properties.put("PORTFOLIO_DB_MIGRATOR_USER", "test_migrator");
         properties.put("PORTFOLIO_DB_MIGRATOR_PASSWORD", "migrator_test_password");
         properties.put("PORTFOLIO_TOTP_ACTIVE_KEY_VERSION", "1");
+        properties.put("PORTFOLIO_RELEASE_ID", "test-release");
+        properties.put("PORTFOLIO_VITE_MANIFEST", "classpath:/vite/manifest.json");
         properties.put(
                 "PORTFOLIO_TOTP_KEY_RING",
                 "1=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");

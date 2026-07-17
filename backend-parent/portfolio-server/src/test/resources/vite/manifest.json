@@ -1,0 +1,8 @@
+{
+  "src/main.ts": {
+    "file": "assets/index-test123.js",
+    "src": "src/main.ts",
+    "isEntry": true,
+    "css": ["assets/index-test123.css"]
+  }
+}

@@ -198,6 +198,52 @@ public class PublishingTestFixture {
         return projects.require(Objects.requireNonNull(projectId, "project id is required"));
     }
 
+    /** Creates one READY LOCAL PDF with its canonical document variant. */
+    @Transactional
+    public UUID persistReadyDocument() {
+        UUID assetId = UUID.randomUUID();
+        String mimeType = "application/pdf";
+        String assetSha256 = sha256("document:" + assetId);
+        String objectKey = MediaObjectKeys.originalKey(assetId, assetSha256, mimeType);
+        long byteSize = 4_096L;
+        mediaAssets.insertProcessing(new MediaAssetRecord.Insert(
+                assetId,
+                StorageProvider.LOCAL,
+                null,
+                null,
+                objectKey,
+                "resume-" + compact(assetId) + ".pdf",
+                mimeType,
+                byteSize,
+                null,
+                null,
+                assetSha256));
+        boolean inserted = mediaVariants.insertReadyIfAbsent(
+                new MediaVariantRecord.Insert(
+                        UUID.randomUUID(),
+                        assetId,
+                        "document",
+                        "PDF",
+                        objectKey,
+                        mimeType,
+                        byteSize,
+                        null,
+                        null,
+                        assetSha256));
+        if (!inserted) {
+            throw new IllegalStateException("READY document variant was not inserted");
+        }
+        mediaTranslations.replaceAll(assetId, List.of(
+                new MediaTranslationRecord(
+                        assetId, "zh-CN", "简历", "", "", null),
+                new MediaTranslationRecord(
+                        assetId, "en", "Resume", "", "", null)));
+        if (mediaAssets.markReadyIfProcessing(assetId) != 1) {
+            throw new IllegalStateException("document asset did not become READY");
+        }
+        return assetId;
+    }
+
     private void persistReadyImage(UUID assetId) {
         String assetSha256 = sha256("asset:" + assetId);
         mediaAssets.insertProcessing(new MediaAssetRecord.Insert(
