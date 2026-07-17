@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yychainsaw.xyz/schema/portfolio-import-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "identity", "heroAsset", "projectAssets", "portfolioContent"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "identity": { "$ref": "#/$defs/identity" },
+    "heroAsset": { "$ref": "#/$defs/heroAsset" },
+    "projectAssets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/projectAsset" }
+    },
+    "portfolioContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zh-CN", "en"],
+      "properties": {
+        "zh-CN": { "$ref": "#/$defs/portfolioCopy" },
+        "en": { "$ref": "#/$defs/portfolioCopy" }
+      }
+    }
+  },
+  "$defs": {
+    "translationString": {
+      "type": "string"
+    },
+    "localizedString": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zh-CN", "en"],
+      "properties": {
+        "zh-CN": { "$ref": "#/$defs/translationString" },
+        "en": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["monogram", "nameZh", "nameEn", "email"],
+      "properties": {
+        "monogram": { "type": "string", "minLength": 1 },
+        "nameZh": { "$ref": "#/$defs/translationString" },
+        "nameEn": { "$ref": "#/$defs/translationString" },
+        "email": { "type": "string", "format": "email" }
+      }
+    },
+    "heroAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "objectPosition", "credit", "sourceUrl", "alt"],
+      "properties": {
+        "image": { "type": "string", "pattern": "^/images/[^/]+$" },
+        "objectPosition": { "type": "string", "minLength": 1 },
+        "credit": { "type": "string", "minLength": 1 },
+        "sourceUrl": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "pattern": "^https://(?![^/?#]*@)[^#\\s]+$"
+        },
+        "alt": { "$ref": "#/$defs/localizedString" }
+      }
+    },
+    "projectAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "image", "layout", "objectPosition", "credit", "sourceUrl", "alt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "image": { "type": "string", "pattern": "^/images/[^/]+$" },
+        "layout": { "enum": ["wide", "standard"] },
+        "objectPosition": { "type": "string", "minLength": 1 },
+        "credit": { "type": "string", "minLength": 1 },
+        "sourceUrl": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "pattern": "^https://(?![^/?#]*@)[^#\\s]+$"
+        },
+        "alt": { "$ref": "#/$defs/localizedString" }
+      }
+    },
+    "portfolioCopy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seo", "a11y", "nav", "hero", "about", "work", "projects", "roadmap", "contact"],
+      "properties": {
+        "seo": { "$ref": "#/$defs/seo" },
+        "a11y": { "$ref": "#/$defs/a11y" },
+        "nav": { "$ref": "#/$defs/nav" },
+        "hero": { "$ref": "#/$defs/hero" },
+        "about": { "$ref": "#/$defs/about" },
+        "work": { "$ref": "#/$defs/work" },
+        "projects": { "type": "array", "items": { "$ref": "#/$defs/projectCopy" } },
+        "roadmap": { "$ref": "#/$defs/roadmap" },
+        "contact": { "$ref": "#/$defs/contact" }
+      }
+    },
+    "seo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "description"],
+      "properties": {
+        "title": { "$ref": "#/$defs/translationString" },
+        "description": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "a11y": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skip",
+        "primaryNav",
+        "mobileNav",
+        "openMenu",
+        "closeMenu",
+        "language",
+        "backToTop",
+        "projectTags"
+      ],
+      "properties": {
+        "skip": { "$ref": "#/$defs/translationString" },
+        "primaryNav": { "$ref": "#/$defs/translationString" },
+        "mobileNav": { "$ref": "#/$defs/translationString" },
+        "openMenu": { "$ref": "#/$defs/translationString" },
+        "closeMenu": { "$ref": "#/$defs/translationString" },
+        "language": { "$ref": "#/$defs/translationString" },
+        "backToTop": { "$ref": "#/$defs/translationString" },
+        "projectTags": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "nav": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["about", "work", "roadmap", "contact"],
+      "properties": {
+        "about": { "$ref": "#/$defs/translationString" },
+        "work": { "$ref": "#/$defs/translationString" },
+        "roadmap": { "$ref": "#/$defs/translationString" },
+        "contact": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "hero": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eyebrow",
+        "displayName",
+        "secondaryName",
+        "role",
+        "headline",
+        "introduction",
+        "availability",
+        "primaryCta",
+        "secondaryCta",
+        "visualLabel",
+        "stageLabel"
+      ],
+      "properties": {
+        "eyebrow": { "$ref": "#/$defs/translationString" },
+        "displayName": { "$ref": "#/$defs/translationString" },
+        "secondaryName": { "$ref": "#/$defs/translationString" },
+        "role": { "$ref": "#/$defs/translationString" },
+        "headline": { "$ref": "#/$defs/translationString" },
+        "introduction": { "$ref": "#/$defs/translationString" },
+        "availability": { "$ref": "#/$defs/translationString" },
+        "primaryCta": { "$ref": "#/$defs/translationString" },
+        "secondaryCta": { "$ref": "#/$defs/translationString" },
+        "visualLabel": { "$ref": "#/$defs/translationString" },
+        "stageLabel": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "about": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "title",
+        "statement",
+        "focusLabel",
+        "focusTitle",
+        "focusIntro",
+        "facts",
+        "skills"
+      ],
+      "properties": {
+        "label": { "$ref": "#/$defs/translationString" },
+        "title": { "$ref": "#/$defs/translationString" },
+        "statement": { "$ref": "#/$defs/translationString" },
+        "focusLabel": { "$ref": "#/$defs/translationString" },
+        "focusTitle": { "$ref": "#/$defs/translationString" },
+        "focusIntro": { "$ref": "#/$defs/translationString" },
+        "facts": { "type": "array", "items": { "$ref": "#/$defs/fact" } },
+        "skills": { "type": "array", "items": { "$ref": "#/$defs/profileSkill" } }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value"],
+      "properties": {
+        "label": { "$ref": "#/$defs/translationString" },
+        "value": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "profileSkill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "$ref": "#/$defs/translationString" },
+        "status": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "title",
+        "introduction",
+        "imageNotice",
+        "openSlotLabel",
+        "openSlotTitle",
+        "openSlotText",
+        "openSlotMeta"
+      ],
+      "properties": {
+        "label": { "$ref": "#/$defs/translationString" },
+        "title": { "$ref": "#/$defs/translationString" },
+        "introduction": { "$ref": "#/$defs/translationString" },
+        "imageNotice": { "$ref": "#/$defs/translationString" },
+        "openSlotLabel": { "$ref": "#/$defs/translationString" },
+        "openSlotTitle": { "$ref": "#/$defs/translationString" },
+        "openSlotText": { "$ref": "#/$defs/translationString" },
+        "openSlotMeta": { "$ref": "#/$defs/translationString" }
+      }
+    },
+    "projectCopy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "number", "status", "eyebrow", "title", "summary", "tags"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "number": { "$ref": "#/$defs/translationString" },
+        "status": { "$ref": "#/$defs/translationString" },
+        "eyebrow": { "$ref": "#/$defs/translationString" },
+        "title": { "$ref": "#/$defs/translationString" },
+        "summary": { "$ref": "#/$defs/translationString" },
+        "tags": { "type": "array", "items": { "$ref": "#/$defs/translationString" } }
+      }
+    },
+    "roadmap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "title", "introduction", "stages"],
+      "properties": {
+        "label": { "$ref": "#/$defs/translationString" },
+        "title": { "$ref": "#/$defs/translationString" },
+        "introduction": { "$ref": "#/$defs/translationString" },
+        "stages": { "type": "array", "items": { "$ref": "#/$defs/roadmapStage" } }
+      }
+    },
+    "roadmapStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "number", "period", "title", "summary", "outcomes"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "number": { "$ref": "#/$defs/translationString" },
+        "period": { "$ref": "#/$defs/translationString" },
+        "title": { "$ref": "#/$defs/translationString" },
+        "summary": { "$ref": "#/$defs/translationString" },
+        "outcomes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/translationString" }
+        }
+      }
+    },
+    "contact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "title",
+        "introduction",
+        "emailLabel",
+        "email",
+        "workCta",
+        "roadmapCta",
+        "footerNote"
+      ],
+      "properties": {
+        "label": { "$ref": "#/$defs/translationString" },
+        "title": { "$ref": "#/$defs/translationString" },
+        "introduction": { "$ref": "#/$defs/translationString" },
+        "emailLabel": { "$ref": "#/$defs/translationString" },
+        "email": { "type": "string", "format": "email" },
+        "workCta": { "$ref": "#/$defs/translationString" },
+        "roadmapCta": { "$ref": "#/$defs/translationString" },
+        "footerNote": { "$ref": "#/$defs/translationString" }
+      }
+    }
+  }
+}

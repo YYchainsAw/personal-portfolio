@@ -31,3 +31,4 @@ Thumbs.db
 
 #Recovery CLI output (database dumps remain outside Git)
 /runtime/recovery/
+/runtime/import/
