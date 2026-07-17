@@ -97,11 +97,33 @@ public class MediaAssetRepository {
         return findReadyBySha256(sha256, true);
     }
 
+    public void lockImportSha256(String sha256) {
+        requireSha256(sha256);
+        long lockKey = Long.parseUnsignedLong(sha256.substring(0, 16), 16);
+        jdbc.sql("select 1 from (select pg_advisory_xact_lock(:lockKey)) locked")
+                .param("lockKey", lockKey, Types.BIGINT)
+                .query(Integer.class)
+                .single();
+    }
+
+    public List<MediaAssetRecord> findImportCandidatesBySha256ForShare(
+            String sha256) {
+        requireSha256(sha256);
+        return jdbc.sql("select " + COLUMNS + """
+                        from portfolio.media_asset
+                        where sha256=:sha256
+                          and status in ('READY', 'PROCESSING')
+                        order by created_at, id
+                        for share
+                        """)
+                .param("sha256", sha256, Types.VARCHAR)
+                .query(ROW_MAPPER)
+                .list();
+    }
+
     private List<MediaAssetRecord> findReadyBySha256(
             String sha256, boolean lockForShare) {
-        if (sha256 == null || !SHA256.matcher(sha256).matches()) {
-            throw new IllegalArgumentException("media SHA-256 is invalid");
-        }
+        requireSha256(sha256);
         String lockClause = lockForShare ? " for share" : "";
         return jdbc.sql("select " + COLUMNS + """
                         from portfolio.media_asset
@@ -111,6 +133,12 @@ public class MediaAssetRepository {
                 .param("sha256", sha256, Types.VARCHAR)
                 .query(ROW_MAPPER)
                 .list();
+    }
+
+    private static void requireSha256(String sha256) {
+        if (sha256 == null || !SHA256.matcher(sha256).matches()) {
+            throw new IllegalArgumentException("media SHA-256 is invalid");
+        }
     }
 
     public MediaAssetPage findPage(

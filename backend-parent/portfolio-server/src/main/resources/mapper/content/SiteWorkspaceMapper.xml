@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="xyz.yychainsaw.portfolio.content.persistence.mybatis.SiteWorkspaceMapper">
+  <select id="selectProfile" resultType="map">
+    select id, monogram, email, version
+    from portfolio.site_profile
+    where id = #{siteId}
+  </select>
+
+  <select id="selectProfileForUpdate" resultType="map">
+    select id, monogram, email, version
+    from portfolio.site_profile
+    where id = #{siteId}
+    for update
+  </select>
+
+  <select id="selectRows" resultType="map">
+    <choose>
+      <when test="tableKey == 'PROFILE_TRANSLATION'">
+        select locale, display_name, secondary_name
+        from portfolio.site_profile_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'SEO_TRANSLATION'">
+        select locale, title, description
+        from portfolio.site_seo_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'ACCESSIBILITY_TRANSLATION'">
+        select locale, skip_text, primary_nav, mobile_nav, open_menu, close_menu,
+               language_text, back_to_top, project_tags
+        from portfolio.site_accessibility_copy_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'NAVIGATION'">
+        select id, target, sort_order, visible
+        from portfolio.site_navigation_item where site_id=#{siteId}
+        order by sort_order, id
+      </when>
+      <when test="tableKey == 'NAVIGATION_TRANSLATION'">
+        select t.navigation_item_id, t.locale, t.label
+        from portfolio.site_navigation_item_translation t
+        join portfolio.site_navigation_item n on n.id=t.navigation_item_id
+        where n.site_id=#{siteId}
+        order by n.sort_order, t.locale
+      </when>
+      <when test="tableKey == 'HERO'">
+        select id, version from portfolio.hero_section where site_id=#{siteId}
+      </when>
+      <when test="tableKey == 'HERO_TRANSLATION'">
+        select t.hero_id, t.locale, t.eyebrow, t.display_name, t.secondary_name,
+               t.role_text, t.headline, t.introduction, t.availability,
+               t.primary_cta, t.secondary_cta, t.visual_label, t.stage_label
+        from portfolio.hero_section_translation t
+        join portfolio.hero_section h on h.id=t.hero_id
+        where h.site_id=#{siteId}
+        order by t.locale
+      </when>
+      <when test="tableKey == 'HERO_MEDIA'">
+        select m.hero_id, m.media_asset_id, m.object_position, m.credit, m.source_url
+        from portfolio.hero_media m
+        join portfolio.hero_section h on h.id=m.hero_id
+        where h.site_id=#{siteId}
+      </when>
+      <when test="tableKey == 'ABOUT_TRANSLATION'">
+        select locale, label, title, statement, focus_label, focus_title, focus_intro
+        from portfolio.about_section_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'WORK_TRANSLATION'">
+        select locale, label, title, introduction, image_notice, open_slot_label,
+               open_slot_title, open_slot_text, open_slot_meta
+        from portfolio.work_section_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'CONTACT_TRANSLATION'">
+        select locale, label, title, introduction, email_label, work_cta,
+               roadmap_cta, footer_note
+        from portfolio.contact_section_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'PRIVACY_TRANSLATION'">
+        select locale, title, body_markdown
+        from portfolio.privacy_notice_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'SOCIAL_LINK'">
+        select id, platform, url, sort_order, visible
+        from portfolio.social_link where site_id=#{siteId}
+        order by sort_order, id
+      </when>
+      <when test="tableKey == 'PROFILE_FACT'">
+        select id, external_key, sort_order
+        from portfolio.profile_fact where site_id=#{siteId}
+        order by sort_order, id
+      </when>
+      <when test="tableKey == 'PROFILE_FACT_TRANSLATION'">
+        select t.fact_id, t.locale, t.label, t.value_text
+        from portfolio.profile_fact_translation t
+        join portfolio.profile_fact f on f.id=t.fact_id
+        where f.site_id=#{siteId}
+        order by f.sort_order, t.locale
+      </when>
+      <when test="tableKey == 'PROFILE_SKILL'">
+        select id, external_key, sort_order
+        from portfolio.profile_skill where site_id=#{siteId}
+        order by sort_order, id
+      </when>
+      <when test="tableKey == 'PROFILE_SKILL_TRANSLATION'">
+        select t.profile_skill_id, t.locale, t.name, t.status_text
+        from portfolio.profile_skill_translation t
+        join portfolio.profile_skill s on s.id=t.profile_skill_id
+        where s.site_id=#{siteId}
+        order by s.sort_order, t.locale
+      </when>
+      <when test="tableKey == 'ROADMAP_HEADER_TRANSLATION'">
+        select locale, label, title, introduction
+        from portfolio.roadmap_header_translation where site_id=#{siteId}
+        order by locale
+      </when>
+      <when test="tableKey == 'ROADMAP_STAGE'">
+        select id, external_key, number_label, sort_order, visible
+        from portfolio.roadmap_stage where site_id=#{siteId}
+        order by sort_order, id
+      </when>
+      <when test="tableKey == 'ROADMAP_STAGE_TRANSLATION'">
+        select t.stage_id, t.locale, t.period, t.title, t.summary
+        from portfolio.roadmap_stage_translation t
+        join portfolio.roadmap_stage s on s.id=t.stage_id
+        where s.site_id=#{siteId}
+        order by s.sort_order, t.locale
+      </when>
+      <when test="tableKey == 'ROADMAP_OUTCOME'">
+        select o.id, o.stage_id, o.sort_order
+        from portfolio.roadmap_outcome o
+        join portfolio.roadmap_stage s on s.id=o.stage_id
+        where s.site_id=#{siteId}
+        order by s.sort_order, o.sort_order, o.id
+      </when>
+      <when test="tableKey == 'ROADMAP_OUTCOME_TRANSLATION'">
+        select t.outcome_id, t.locale, t.outcome_text
+        from portfolio.roadmap_outcome_translation t
+        join portfolio.roadmap_outcome o on o.id=t.outcome_id
+        join portfolio.roadmap_stage s on s.id=o.stage_id
+        where s.site_id=#{siteId}
+        order by s.sort_order, o.sort_order, t.locale
+      </when>
+      <when test="tableKey == 'RESUME_DOCUMENT'">
+        select id, locale, media_asset_id, version_label, is_current, document_date
+        from portfolio.resume_document where site_id=#{siteId}
+        order by locale, document_date desc, id
+      </when>
+      <otherwise>select 1 where false</otherwise>
+    </choose>
+  </select>
+
+  <update id="updateRoot">
+    update portfolio.site_profile
+    set monogram=#{monogram}, email=#{email}, version=version+1, updated_at=#{updatedAt}
+    where id=#{siteId} and version=#{expectedVersion}
+  </update>
+
+  <delete id="deleteOwnedRows">
+    <choose>
+      <when test="tableKey == 'PROFILE_TRANSLATION'">delete from portfolio.site_profile_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'SEO_TRANSLATION'">delete from portfolio.site_seo_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'ACCESSIBILITY_TRANSLATION'">delete from portfolio.site_accessibility_copy_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'NAVIGATION'">delete from portfolio.site_navigation_item where site_id=#{siteId}</when>
+      <when test="tableKey == 'NAVIGATION_TRANSLATION'">delete from portfolio.site_navigation_item_translation where navigation_item_id in (select id from portfolio.site_navigation_item where site_id=#{siteId})</when>
+      <when test="tableKey == 'HERO'">delete from portfolio.hero_section where site_id=#{siteId}</when>
+      <when test="tableKey == 'HERO_TRANSLATION'">delete from portfolio.hero_section_translation where hero_id in (select id from portfolio.hero_section where site_id=#{siteId})</when>
+      <when test="tableKey == 'HERO_MEDIA'">delete from portfolio.hero_media where hero_id in (select id from portfolio.hero_section where site_id=#{siteId})</when>
+      <when test="tableKey == 'ABOUT_TRANSLATION'">delete from portfolio.about_section_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'WORK_TRANSLATION'">delete from portfolio.work_section_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'CONTACT_TRANSLATION'">delete from portfolio.contact_section_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'PRIVACY_TRANSLATION'">delete from portfolio.privacy_notice_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'SOCIAL_LINK'">delete from portfolio.social_link where site_id=#{siteId}</when>
+      <when test="tableKey == 'PROFILE_FACT'">delete from portfolio.profile_fact where site_id=#{siteId}</when>
+      <when test="tableKey == 'PROFILE_FACT_TRANSLATION'">delete from portfolio.profile_fact_translation where fact_id in (select id from portfolio.profile_fact where site_id=#{siteId})</when>
+      <when test="tableKey == 'PROFILE_SKILL'">delete from portfolio.profile_skill where site_id=#{siteId}</when>
+      <when test="tableKey == 'PROFILE_SKILL_TRANSLATION'">delete from portfolio.profile_skill_translation where profile_skill_id in (select id from portfolio.profile_skill where site_id=#{siteId})</when>
+      <when test="tableKey == 'ROADMAP_HEADER_TRANSLATION'">delete from portfolio.roadmap_header_translation where site_id=#{siteId}</when>
+      <when test="tableKey == 'ROADMAP_STAGE'">delete from portfolio.roadmap_stage where site_id=#{siteId}</when>
+      <when test="tableKey == 'ROADMAP_STAGE_TRANSLATION'">delete from portfolio.roadmap_stage_translation where stage_id in (select id from portfolio.roadmap_stage where site_id=#{siteId})</when>
+      <when test="tableKey == 'ROADMAP_OUTCOME'">delete from portfolio.roadmap_outcome where stage_id in (select id from portfolio.roadmap_stage where site_id=#{siteId})</when>
+      <when test="tableKey == 'ROADMAP_OUTCOME_TRANSLATION'">delete from portfolio.roadmap_outcome_translation where outcome_id in (select o.id from portfolio.roadmap_outcome o join portfolio.roadmap_stage s on s.id=o.stage_id where s.site_id=#{siteId})</when>
+      <when test="tableKey == 'RESUME_DOCUMENT'">delete from portfolio.resume_document where site_id=#{siteId}</when>
+      <otherwise>select 0</otherwise>
+    </choose>
+  </delete>
+
+  <insert id="insertRows">
+    <choose>
+      <when test="tableKey == 'PROFILE_TRANSLATION'">
+        insert into portfolio.site_profile_translation(site_id, locale, display_name, secondary_name) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.displayName},#{r.secondaryName})</foreach>
+      </when>
+      <when test="tableKey == 'SEO_TRANSLATION'">
+        insert into portfolio.site_seo_translation(site_id, locale, title, description) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.title},#{r.description})</foreach>
+      </when>
+      <when test="tableKey == 'ACCESSIBILITY_TRANSLATION'">
+        insert into portfolio.site_accessibility_copy_translation(site_id,locale,skip_text,primary_nav,mobile_nav,open_menu,close_menu,language_text,back_to_top,project_tags) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.skipText},#{r.primaryNav},#{r.mobileNav},#{r.openMenu},#{r.closeMenu},#{r.languageText},#{r.backToTop},#{r.projectTags})</foreach>
+      </when>
+      <when test="tableKey == 'NAVIGATION'">
+        insert into portfolio.site_navigation_item(id,site_id,target,sort_order,visible) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.target},#{r.sortOrder},#{r.visible})</foreach>
+      </when>
+      <when test="tableKey == 'NAVIGATION_TRANSLATION'">
+        insert into portfolio.site_navigation_item_translation(navigation_item_id,locale,label) values
+        <foreach collection="rows" item="r" separator=",">(#{r.navigationItemId},#{r.locale},#{r.label})</foreach>
+      </when>
+      <when test="tableKey == 'HERO'">
+        insert into portfolio.hero_section(id,site_id,version) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.version})</foreach>
+      </when>
+      <when test="tableKey == 'HERO_TRANSLATION'">
+        insert into portfolio.hero_section_translation(hero_id,locale,eyebrow,display_name,secondary_name,role_text,headline,introduction,availability,primary_cta,secondary_cta,visual_label,stage_label) values
+        <foreach collection="rows" item="r" separator=",">(#{r.heroId},#{r.locale},#{r.eyebrow},#{r.displayName},#{r.secondaryName},#{r.roleText},#{r.headline},#{r.introduction},#{r.availability},#{r.primaryCta},#{r.secondaryCta},#{r.visualLabel},#{r.stageLabel})</foreach>
+      </when>
+      <when test="tableKey == 'HERO_MEDIA'">
+        insert into portfolio.hero_media(hero_id,media_asset_id,object_position,credit,source_url) values
+        <foreach collection="rows" item="r" separator=",">(#{r.heroId},#{r.mediaAssetId},#{r.objectPosition},#{r.credit},#{r.sourceUrl})</foreach>
+      </when>
+      <when test="tableKey == 'ABOUT_TRANSLATION'">
+        insert into portfolio.about_section_translation(site_id,locale,label,title,statement,focus_label,focus_title,focus_intro) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.label},#{r.title},#{r.statement},#{r.focusLabel},#{r.focusTitle},#{r.focusIntro})</foreach>
+      </when>
+      <when test="tableKey == 'WORK_TRANSLATION'">
+        insert into portfolio.work_section_translation(site_id,locale,label,title,introduction,image_notice,open_slot_label,open_slot_title,open_slot_text,open_slot_meta) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.label},#{r.title},#{r.introduction},#{r.imageNotice},#{r.openSlotLabel},#{r.openSlotTitle},#{r.openSlotText},#{r.openSlotMeta})</foreach>
+      </when>
+      <when test="tableKey == 'CONTACT_TRANSLATION'">
+        insert into portfolio.contact_section_translation(site_id,locale,label,title,introduction,email_label,work_cta,roadmap_cta,footer_note) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.label},#{r.title},#{r.introduction},#{r.emailLabel},#{r.workCta},#{r.roadmapCta},#{r.footerNote})</foreach>
+      </when>
+      <when test="tableKey == 'PRIVACY_TRANSLATION'">
+        insert into portfolio.privacy_notice_translation(site_id,locale,title,body_markdown) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.title},#{r.bodyMarkdown})</foreach>
+      </when>
+      <when test="tableKey == 'SOCIAL_LINK'">
+        insert into portfolio.social_link(id,site_id,platform,url,sort_order,visible) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.platform},#{r.url},#{r.sortOrder},#{r.visible})</foreach>
+      </when>
+      <when test="tableKey == 'PROFILE_FACT'">
+        insert into portfolio.profile_fact(id,site_id,external_key,sort_order) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.externalKey},#{r.sortOrder})</foreach>
+      </when>
+      <when test="tableKey == 'PROFILE_FACT_TRANSLATION'">
+        insert into portfolio.profile_fact_translation(fact_id,locale,label,value_text) values
+        <foreach collection="rows" item="r" separator=",">(#{r.factId},#{r.locale},#{r.label},#{r.valueText})</foreach>
+      </when>
+      <when test="tableKey == 'PROFILE_SKILL'">
+        insert into portfolio.profile_skill(id,site_id,external_key,sort_order) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.externalKey},#{r.sortOrder})</foreach>
+      </when>
+      <when test="tableKey == 'PROFILE_SKILL_TRANSLATION'">
+        insert into portfolio.profile_skill_translation(profile_skill_id,locale,name,status_text) values
+        <foreach collection="rows" item="r" separator=",">(#{r.profileSkillId},#{r.locale},#{r.name},#{r.statusText})</foreach>
+      </when>
+      <when test="tableKey == 'ROADMAP_HEADER_TRANSLATION'">
+        insert into portfolio.roadmap_header_translation(site_id,locale,label,title,introduction) values
+        <foreach collection="rows" item="r" separator=",">(#{r.siteId},#{r.locale},#{r.label},#{r.title},#{r.introduction})</foreach>
+      </when>
+      <when test="tableKey == 'ROADMAP_STAGE'">
+        insert into portfolio.roadmap_stage(id,site_id,external_key,number_label,sort_order,visible) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.externalKey},#{r.numberLabel},#{r.sortOrder},#{r.visible})</foreach>
+      </when>
+      <when test="tableKey == 'ROADMAP_STAGE_TRANSLATION'">
+        insert into portfolio.roadmap_stage_translation(stage_id,locale,period,title,summary) values
+        <foreach collection="rows" item="r" separator=",">(#{r.stageId},#{r.locale},#{r.period},#{r.title},#{r.summary})</foreach>
+      </when>
+      <when test="tableKey == 'ROADMAP_OUTCOME'">
+        insert into portfolio.roadmap_outcome(id,stage_id,sort_order) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.stageId},#{r.sortOrder})</foreach>
+      </when>
+      <when test="tableKey == 'ROADMAP_OUTCOME_TRANSLATION'">
+        insert into portfolio.roadmap_outcome_translation(outcome_id,locale,outcome_text) values
+        <foreach collection="rows" item="r" separator=",">(#{r.outcomeId},#{r.locale},#{r.outcomeText})</foreach>
+      </when>
+      <when test="tableKey == 'RESUME_DOCUMENT'">
+        insert into portfolio.resume_document(id,site_id,locale,media_asset_id,version_label,is_current,document_date) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.siteId},#{r.locale},#{r.mediaAssetId},#{r.versionLabel},#{r.current},#{r.documentDate})</foreach>
+      </when>
+      <otherwise>select 0</otherwise>
+    </choose>
+  </insert>
+</mapper>

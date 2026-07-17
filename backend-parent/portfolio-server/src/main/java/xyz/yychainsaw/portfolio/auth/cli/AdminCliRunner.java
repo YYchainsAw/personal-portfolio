@@ -16,6 +16,7 @@ public final class AdminCliRunner implements ApplicationRunner {
     private static final String BOOTSTRAP_COMMAND = "admin-bootstrap";
     private static final String RECOVERY_COMMAND = "admin-recover";
     private static final String REENCRYPT_COMMAND = "totp-reencrypt";
+    private static final String IMPORT_COMMAND = "import";
     private static final String INPUT_CANCELLED = "administrator CLI input was cancelled";
     private static final String RECOVERY_CONFIRMATION = "RECOVER ADMIN";
     private static final String REENCRYPT_CONFIRMATION = "REENCRYPT TOTP KEY";
@@ -65,6 +66,9 @@ public final class AdminCliRunner implements ApplicationRunner {
                 || values.get(0).isBlank()) {
             throw new IllegalArgumentException(
                     "portfolio CLI command must be supplied exactly once");
+        }
+        if (IMPORT_COMMAND.equals(values.get(0))) {
+            return;
         }
         if (!arguments.getOptionNames().equals(Set.of(COMMAND_OPTION))
                 || !arguments.getNonOptionArgs().isEmpty()) {

@@ -1,8 +1,10 @@
 package xyz.yychainsaw.portfolio.auth.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.parallel.Isolated;
@@ -34,6 +36,11 @@ import xyz.yychainsaw.portfolio.auth.session.AdminSessionCleanupJob;
 import xyz.yychainsaw.portfolio.auth.session.AdminSessionRepository;
 import xyz.yychainsaw.portfolio.auth.session.AdminSessionService;
 import xyz.yychainsaw.portfolio.config.SecurityConfiguration;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportCli;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportMapper;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportReader;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportService;
+import xyz.yychainsaw.portfolio.content.importer.PortfolioImportValidator;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 @Isolated
@@ -69,6 +76,11 @@ class AdminAuthenticationNonWebTest extends PostgresIntegrationTestBase {
             assertThat(context.getBeansOfType(SecurityConfiguration.class)).isEmpty();
             assertThat(context.getBeansOfType(SessionRepository.class)).isEmpty();
             assertThat(context.getBeansOfType(AdminSessionCleanupJob.class)).isEmpty();
+            assertThat(context.getBeansOfType(PortfolioImportCli.class)).isEmpty();
+            assertThat(context.getBeansOfType(PortfolioImportMapper.class)).isEmpty();
+            assertThat(context.getBeansOfType(PortfolioImportReader.class)).isEmpty();
+            assertThat(context.getBeansOfType(PortfolioImportService.class)).isEmpty();
+            assertThat(context.getBeansOfType(PortfolioImportValidator.class)).isEmpty();
 
             assertThat(context.getBean(AdminCliRunner.class)).isNotNull();
             assertThat(context.getBean(AdminBootstrapService.class)).isNotNull();
@@ -86,6 +98,28 @@ class AdminAuthenticationNonWebTest extends PostgresIntegrationTestBase {
             assertThat(context.getBean(JdbcTemplate.class)).isNotNull();
 
             assertThat(console.interactions()).isZero();
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void everyMaintenanceCommandReachesItsRunnerWithoutLoadingImporter() {
+        for (String command : List.of(
+                "admin-bootstrap", "admin-recover", "totp-reencrypt")) {
+            MaintenanceCommandProbeConfiguration.reset();
+            SpringApplication application = new SpringApplication(
+                    PortfolioApplication.class, MaintenanceCommandProbeConfiguration.class);
+            application.setWebApplicationType(WebApplicationType.NONE);
+            application.setRegisterShutdownHook(false);
+            application.setDefaultProperties(contextProperties());
+
+            assertThatThrownBy(() -> application.run(
+                            "--portfolio.cli.command=" + command))
+                    .as(command)
+                    .isInstanceOf(MaintenanceCommandProbeReached.class)
+                    .hasMessage("maintenance command reached its dedicated runner");
+            assertThat(MaintenanceCommandProbeConfiguration.interactions())
+                    .as(command)
+                    .isOne();
         }
     }
 
@@ -127,6 +161,49 @@ class AdminAuthenticationNonWebTest extends PostgresIntegrationTestBase {
         @Primary
         CountingSecretConsole countingSecretConsole() {
             return new CountingSecretConsole();
+        }
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class MaintenanceCommandProbeConfiguration {
+        private static final AtomicInteger INTERACTIONS = new AtomicInteger();
+
+        @Bean
+        @Primary
+        SecretConsole maintenanceCommandProbeConsole() {
+            return new SecretConsole() {
+                @Override
+                public String readLine(String prompt) {
+                    INTERACTIONS.incrementAndGet();
+                    throw new MaintenanceCommandProbeReached();
+                }
+
+                @Override
+                public char[] readSecret(String prompt) {
+                    throw new AssertionError("maintenance probe unexpectedly requested a secret");
+                }
+
+                @Override
+                public void println(String value) {
+                    throw new AssertionError("maintenance probe unexpectedly wrote output");
+                }
+            };
+        }
+
+        static void reset() {
+            INTERACTIONS.set(0);
+        }
+
+        static int interactions() {
+            return INTERACTIONS.get();
+        }
+    }
+
+    static final class MaintenanceCommandProbeReached extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        MaintenanceCommandProbeReached() {
+            super("maintenance command reached its dedicated runner");
         }
     }
 

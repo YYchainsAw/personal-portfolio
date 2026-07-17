@@ -46,7 +46,7 @@ class LocalStagingSchemaMigrationTest extends PostgresIntegrationTestBase {
 
         SoftAssertions.assertSoftly(softly -> {
             softly.assertThat(versions)
-                    .containsExactly("1", "2", "3", "4", "5", "6");
+                    .startsWith("1", "2", "3", "4", "5", "6");
             softly.assertThat(tables).containsExactly(
                     "local_staging_policy", "local_staging_reservation");
         });

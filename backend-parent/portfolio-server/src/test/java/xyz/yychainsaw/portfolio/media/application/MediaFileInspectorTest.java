@@ -47,6 +47,45 @@ class MediaFileInspectorTest {
     @TempDir
     Path temporaryDirectory;
 
+    @TempDir
+    Path existingMediaDirectory;
+
+    @Test
+    void validatesExistingMediaWithoutCreatingATemporaryArtifact() throws Exception {
+        byte[] png = image("png", false, true);
+        Path source = Files.write(existingMediaDirectory.resolve("portfolio.png"), png);
+
+        assertThatCode(() -> new MediaFileInspector(temporaryDirectory)
+                        .validateExisting(source, "image/png", png.length))
+                .doesNotThrowAnyException();
+
+        assertDirectoryEmpty();
+    }
+
+    @Test
+    void rejectsCorruptExistingMediaWithoutCreatingATemporaryArtifact() throws Exception {
+        byte[] valid = image("jpeg", false, false);
+        byte[] corrupt = Arrays.copyOf(valid, valid.length - 1);
+        Path source = Files.write(existingMediaDirectory.resolve("portfolio.jpg"), corrupt);
+
+        DomainException failure = failureOf(() -> new MediaFileInspector(temporaryDirectory)
+                .validateExisting(source, "image/jpeg", corrupt.length));
+
+        assertFrozen(failure, "MEDIA_CORRUPT", HttpStatus.UNPROCESSABLE_ENTITY);
+        assertDirectoryEmpty();
+    }
+
+    @Test
+    void rejectsExistingMediaWhoseActualBytesDoNotMatchTheDeclaredSize() throws Exception {
+        Path source = Files.write(existingMediaDirectory.resolve("portfolio.pdf"), PDF);
+
+        DomainException failure = failureOf(() -> new MediaFileInspector(temporaryDirectory)
+                .validateExisting(source, "application/pdf", PDF.length + 1L));
+
+        assertFrozen(failure, "MEDIA_SIZE_MISMATCH", HttpStatus.UNPROCESSABLE_ENTITY);
+        assertDirectoryEmpty();
+    }
+
     @ParameterizedTest
     @MethodSource("validImages")
     void acceptsBaselineProgressiveAlphaAndInterlacedImages(

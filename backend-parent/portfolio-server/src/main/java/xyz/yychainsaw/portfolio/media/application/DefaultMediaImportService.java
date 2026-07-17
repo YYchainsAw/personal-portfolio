@@ -16,17 +16,23 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.api.admin.media.StrictHttpsSourceUrl;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
+import xyz.yychainsaw.portfolio.media.domain.MediaStatus;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRecord;
 import xyz.yychainsaw.portfolio.media.persistence.MediaAssetRepository;
@@ -57,6 +63,7 @@ public class DefaultMediaImportService implements MediaImportService {
     private final BackgroundJobService jobs;
     private final LocalMediaIngestCoordinator localIngest;
     private final Supplier<UUID> uuidGenerator;
+    private final TransactionTemplate transactionSuspension;
 
     @Autowired
     public DefaultMediaImportService(
@@ -66,7 +73,8 @@ public class DefaultMediaImportService implements MediaImportService {
             MediaVariantRepository variants,
             MediaTranslationRepository translations,
             BackgroundJobService jobs,
-            LocalMediaIngestCoordinator localIngest) {
+            LocalMediaIngestCoordinator localIngest,
+            PlatformTransactionManager transactionManager) {
         this(
                 inspector,
                 storageRouter,
@@ -75,7 +83,8 @@ public class DefaultMediaImportService implements MediaImportService {
                 translations,
                 jobs,
                 localIngest,
-                UUID::randomUUID);
+                UUID::randomUUID,
+                newTransactionSuspension(transactionManager));
     }
 
     DefaultMediaImportService(
@@ -87,6 +96,50 @@ public class DefaultMediaImportService implements MediaImportService {
             BackgroundJobService jobs,
             LocalMediaIngestCoordinator localIngest,
             Supplier<UUID> uuidGenerator) {
+        this(
+                inspector,
+                storageRouter,
+                assets,
+                variants,
+                translations,
+                jobs,
+                localIngest,
+                uuidGenerator,
+                (TransactionTemplate) null);
+    }
+
+    DefaultMediaImportService(
+            MediaFileInspector inspector,
+            StorageRouter storageRouter,
+            MediaAssetRepository assets,
+            MediaVariantRepository variants,
+            MediaTranslationRepository translations,
+            BackgroundJobService jobs,
+            LocalMediaIngestCoordinator localIngest,
+            Supplier<UUID> uuidGenerator,
+            PlatformTransactionManager transactionManager) {
+        this(
+                inspector,
+                storageRouter,
+                assets,
+                variants,
+                translations,
+                jobs,
+                localIngest,
+                uuidGenerator,
+                newTransactionSuspension(transactionManager));
+    }
+
+    private DefaultMediaImportService(
+            MediaFileInspector inspector,
+            StorageRouter storageRouter,
+            MediaAssetRepository assets,
+            MediaVariantRepository variants,
+            MediaTranslationRepository translations,
+            BackgroundJobService jobs,
+            LocalMediaIngestCoordinator localIngest,
+            Supplier<UUID> uuidGenerator,
+            TransactionTemplate transactionSuspension) {
         this.inspector = Objects.requireNonNull(inspector, "media inspector is required");
         this.storageRouter = Objects.requireNonNull(
                 storageRouter, "storage router is required");
@@ -100,6 +153,7 @@ public class DefaultMediaImportService implements MediaImportService {
                 localIngest, "local media ingest is required");
         this.uuidGenerator = Objects.requireNonNull(
                 uuidGenerator, "UUID generator is required");
+        this.transactionSuspension = transactionSuspension;
     }
 
     @Override
@@ -138,11 +192,19 @@ public class DefaultMediaImportService implements MediaImportService {
 
     private ImportedMedia findReusable(
             InspectedMedia inspected, ImportMetadata metadata) {
-        List<MediaAssetRecord> candidates = assets.findReadyBySha256ForShare(
+        assets.lockImportSha256(inspected.sha256());
+        List<MediaAssetRecord> candidates = assets.findImportCandidatesBySha256ForShare(
                 inspected.sha256());
         for (MediaAssetRecord candidate : candidates) {
+            if (candidate.status() != MediaStatus.READY
+                    && candidate.status() != MediaStatus.PROCESSING) {
+                continue;
+            }
             if (!exactTranslations(candidate.id(), metadata)) {
                 continue;
+            }
+            if (candidate.status() == MediaStatus.PROCESSING) {
+                return new ImportedMedia(candidate.id(), candidate.sha256(), List.of());
             }
             List<MediaVariantRecord> ready = new ArrayList<>(
                     variants.findByAssetId(candidate.id()).stream()
@@ -200,20 +262,131 @@ public class DefaultMediaImportService implements MediaImportService {
             String originalKey,
             InspectedMedia inspected,
             ImportMetadata metadata) throws IOException {
-        try (LocalMediaIngestSession session = localIngest.open(
+        LocalMediaIngestSession session = openLocalSession(
                 writer.storage(),
                 writer.location(),
                 assetId,
                 stagingKey,
                 inspected.sha256(),
-                inspected.mimeType())) {
-            session.prepareOuterTransaction();
-            StoredObject staged = session.publish(
-                    inspected.openStream(), inspected.byteSize());
-            requirePublished(staged, writer.location(), stagingKey, inspected);
-            inspected.close();
-            return persistNew(
-                    staged, assetId, originalKey, inspected, metadata);
+                inspected.mimeType());
+        LocalImportCompletion completion = registerLocalCompletion(session);
+        session.prepareOuterTransaction();
+        completion.publishingStarted();
+        StoredObject staged = session.publish(
+                inspected.openStream(), inspected.byteSize());
+        requirePublished(staged, writer.location(), stagingKey, inspected);
+        completion.published();
+        inspected.close();
+        return persistNew(
+                staged, assetId, originalKey, inspected, metadata);
+    }
+
+    private LocalMediaIngestSession openLocalSession(
+            StorageService storage,
+            StorageLocation location,
+            UUID assetId,
+            String stagingKey,
+            String sha256,
+            String mimeType) {
+        if (transactionSuspension == null) {
+            return requireLocalSession(localIngest.open(
+                    storage, location, assetId, stagingKey, sha256, mimeType));
+        }
+        return requireLocalSession(transactionSuspension.execute(status ->
+                openWithoutTransactionSynchronization(
+                        storage, location, assetId, stagingKey, sha256, mimeType)));
+    }
+
+    private LocalMediaIngestSession openWithoutTransactionSynchronization(
+            StorageService storage,
+            StorageLocation location,
+            UUID assetId,
+            String stagingKey,
+            String sha256,
+            String mimeType) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw invalidSuspension();
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()
+                || !TransactionSynchronizationManager.getSynchronizations().isEmpty()) {
+            throw invalidSuspension();
+        }
+        TransactionSynchronizationManager.clearSynchronization();
+        LocalMediaIngestSession session = null;
+        RuntimeException failure = null;
+        try {
+            requireNoTransactionState();
+            session = requireLocalSession(localIngest.open(
+                    storage, location, assetId, stagingKey, sha256, mimeType));
+            requireNoTransactionState();
+        } catch (RuntimeException openFailure) {
+            failure = openFailure;
+        }
+
+        if (failure != null) {
+            if (session != null) {
+                cleanupUnregisteredSession(session, failure);
+            }
+            restoreSyntheticSynchronization(failure);
+            throw failure;
+        }
+
+        try {
+            restoreSyntheticSynchronization(null);
+            return session;
+        } catch (RuntimeException restorationFailure) {
+            cleanupUnregisteredSession(session, restorationFailure);
+            throw restorationFailure;
+        }
+    }
+
+    private static void requireNoTransactionState() {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                || TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw invalidSuspension();
+        }
+    }
+
+    private static void restoreSyntheticSynchronization(RuntimeException primary) {
+        try {
+            requireNoTransactionState();
+            TransactionSynchronizationManager.initSynchronization();
+        } catch (RuntimeException restorationFailure) {
+            if (primary == null) {
+                throw restorationFailure;
+            }
+            primary.addSuppressed(restorationFailure);
+        }
+    }
+
+    private static void cleanupUnregisteredSession(
+            LocalMediaIngestSession session, RuntimeException primary) {
+        try {
+            session.cleanupKnownRollback();
+        } catch (RuntimeException cleanupFailure) {
+            primary.addSuppressed(cleanupFailure);
+        }
+        try {
+            session.close();
+        } catch (RuntimeException closeFailure) {
+            primary.addSuppressed(closeFailure);
+        }
+    }
+
+    private static LocalMediaIngestSession requireLocalSession(
+            LocalMediaIngestSession session) {
+        return Objects.requireNonNull(session, "local media ingest session is required");
+    }
+
+    private static LocalImportCompletion registerLocalCompletion(
+            LocalMediaIngestSession session) {
+        LocalImportCompletion completion = new LocalImportCompletion(session);
+        try {
+            TransactionSynchronizationManager.registerSynchronization(completion);
+            return completion;
+        } catch (RuntimeException registrationFailure) {
+            completion.cleanupBeforeRegistration();
+            throw registrationFailure;
         }
     }
 
@@ -420,6 +593,19 @@ public class DefaultMediaImportService implements MediaImportService {
         }
     }
 
+    private static TransactionTemplate newTransactionSuspension(
+            PlatformTransactionManager transactionManager) {
+        TransactionTemplate template = new TransactionTemplate(Objects.requireNonNull(
+                transactionManager, "transaction manager is required"));
+        template.setPropagationBehavior(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
+        template.setName("media-import-local-open");
+        return template;
+    }
+
+    private static IllegalStateException invalidSuspension() {
+        return new IllegalStateException("MEDIA_IMPORT_SUSPENSION_INVALID");
+    }
+
     private static DomainException invalid() {
         return new DomainException(
                 "MEDIA_IMPORT_INVALID", HttpStatus.UNPROCESSABLE_ENTITY, Map.of());
@@ -442,4 +628,60 @@ public class DefaultMediaImportService implements MediaImportService {
             long byteSize) {}
 
     private record Writer(StorageService storage, StorageLocation location) {}
+
+    private enum PublicationConfidence {
+        ABSENT,
+        UNKNOWN,
+        OWNED
+    }
+
+    private static final class LocalImportCompletion implements TransactionSynchronization {
+        private final LocalMediaIngestSession session;
+        private final AtomicReference<PublicationConfidence> publication =
+                new AtomicReference<>(PublicationConfidence.ABSENT);
+
+        private LocalImportCompletion(LocalMediaIngestSession session) {
+            this.session = session;
+        }
+
+        private void publishingStarted() {
+            publication.set(PublicationConfidence.UNKNOWN);
+        }
+
+        private void published() {
+            publication.set(PublicationConfidence.OWNED);
+        }
+
+        private void cleanupBeforeRegistration() {
+            cleanupKnownRollback();
+            close();
+        }
+
+        @Override
+        public void afterCompletion(int status) {
+            if (status == STATUS_ROLLED_BACK) {
+                cleanupKnownRollback();
+            }
+            close();
+        }
+
+        private void cleanupKnownRollback() {
+            if (publication.get() == PublicationConfidence.UNKNOWN) {
+                return;
+            }
+            try {
+                session.cleanupKnownRollback();
+            } catch (RuntimeException ignored) {
+                // Unknown cleanup outcome deliberately retains the durable reservation.
+            }
+        }
+
+        private void close() {
+            try {
+                session.close();
+            } catch (RuntimeException ignored) {
+                // Transaction outcome is already fixed; durable cleanup can recover later.
+            }
+        }
+    }
 }

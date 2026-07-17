@@ -2,11 +2,13 @@ package xyz.yychainsaw.portfolio.media.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -150,6 +152,27 @@ class DefaultMediaQueryServiceTest {
                 () -> service.requireReadyVariant(ASSET_ID, "w960"),
                 "MEDIA_NOT_FOUND",
                 HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void publicationGuardRejectsUnplannedQueriesBeforeAnyRepositoryRead() {
+        UUID outsidePlan = UUID.fromString(
+                "f0000000-0000-4000-8000-000000000001");
+        MediaQueryAccessGuard guard = new MediaQueryAccessGuard();
+        DefaultMediaQueryService guarded = new DefaultMediaQueryService(
+                assets, variants, translations, guard);
+
+        try (MediaQueryAccessGuard.Scope ignored =
+                guard.openScope(Set.of(ASSET_ID), Set.of())) {
+            assertThatThrownBy(() -> guarded.requireReadyAsset(outsidePlan))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("media query is outside the active publication plan");
+            assertThatThrownBy(() -> guarded.requireReadyVariant(ASSET_ID, "w640"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("media query is outside the active publication plan");
+        }
+
+        verifyNoInteractions(assets, variants, translations);
     }
 
     private static MediaAssetRecord imageAsset(MediaStatus status) {

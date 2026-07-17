@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="xyz.yychainsaw.portfolio.content.persistence.mybatis.TaxonomyMapper">
+  <select id="selectTags" resultType="map">
+    select t.id,t.normalized_key,t.version,tt.locale,tt.name
+    from portfolio.tag t
+    left join portfolio.tag_translation tt on tt.tag_id=t.id
+    order by t.normalized_key,t.id,tt.locale
+  </select>
+
+  <select id="selectSkills" resultType="map">
+    select s.id,s.normalized_key,s.version,st.locale,st.name
+    from portfolio.skill s
+    left join portfolio.skill_translation st on st.skill_id=s.id
+    order by s.normalized_key,s.id,st.locale
+  </select>
+
+  <select id="selectTagForUpdate" resultType="map">
+    select id,normalized_key,version
+    from portfolio.tag where id=#{id} for no key update
+  </select>
+
+  <select id="selectSkillForUpdate" resultType="map">
+    select id,normalized_key,version
+    from portfolio.skill where id=#{id} for no key update
+  </select>
+
+  <select id="lockProjectsLinkedToTag" resultType="java.util.UUID">
+    select p.id
+    from portfolio.project_tag pt
+    join portfolio.project p on p.id=pt.project_id
+    where pt.tag_id=#{id}
+    order by p.id
+    for update of p
+  </select>
+
+  <select id="lockProjectsLinkedToSkill" resultType="java.util.UUID">
+    select p.id
+    from portfolio.project_skill ps
+    join portfolio.project p on p.id=ps.project_id
+    where ps.skill_id=#{id}
+    order by p.id
+    for update of p
+  </select>
+
+  <insert id="insertTag">
+    insert into portfolio.tag(id,normalized_key,version,created_at,updated_at)
+    values (#{id},#{normalizedKey},0,#{updatedAt},#{updatedAt})
+  </insert>
+
+  <update id="updateTag">
+    update portfolio.tag
+    set version=version+1,updated_at=#{updatedAt}
+    where id=#{id} and version=#{expectedVersion}
+  </update>
+
+  <update id="updateSkill">
+    update portfolio.skill
+    set version=version+1,updated_at=#{updatedAt}
+    where id=#{id} and version=#{expectedVersion}
+  </update>
+
+  <delete id="deleteTagTranslations">
+    delete from portfolio.tag_translation where tag_id=#{id}
+  </delete>
+
+  <delete id="deleteSkillTranslations">
+    delete from portfolio.skill_translation where skill_id=#{id}
+  </delete>
+
+  <insert id="insertTagTranslations">
+    insert into portfolio.tag_translation(tag_id,locale,name) values
+    <foreach collection="rows" item="r" separator=",">
+      (#{r.id},#{r.locale},#{r.name})
+    </foreach>
+  </insert>
+
+  <insert id="insertSkillTranslations">
+    insert into portfolio.skill_translation(skill_id,locale,name) values
+    <foreach collection="rows" item="r" separator=",">
+      (#{r.id},#{r.locale},#{r.name})
+    </foreach>
+  </insert>
+
+  <update id="markProjectsDirty">
+    update portfolio.project
+    set publication_dirty=true,version=version+1,updated_at=#{updatedAt}
+    where id in
+    <foreach collection="projectIds" item="id" open="(" separator="," close=")">
+      #{id}
+    </foreach>
+  </update>
+</mapper>

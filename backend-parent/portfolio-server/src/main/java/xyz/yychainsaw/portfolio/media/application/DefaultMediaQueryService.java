@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
@@ -27,20 +28,37 @@ public final class DefaultMediaQueryService implements MediaQueryService {
     private final MediaAssetRepository assets;
     private final MediaVariantRepository variants;
     private final MediaTranslationRepository translations;
+    private final MediaQueryAccessGuard accessGuard;
 
     public DefaultMediaQueryService(
             MediaAssetRepository assets,
             MediaVariantRepository variants,
             MediaTranslationRepository translations) {
+        this(
+                assets,
+                variants,
+                translations,
+                MediaQueryAccessGuard.unrestricted());
+    }
+
+    @Autowired
+    public DefaultMediaQueryService(
+            MediaAssetRepository assets,
+            MediaVariantRepository variants,
+            MediaTranslationRepository translations,
+            MediaQueryAccessGuard accessGuard) {
         this.assets = Objects.requireNonNull(assets, "media repository is required");
         this.variants = Objects.requireNonNull(
                 variants, "media variant repository is required");
         this.translations = Objects.requireNonNull(
                 translations, "media translation repository is required");
+        this.accessGuard = Objects.requireNonNull(
+                accessGuard, "media query access guard is required");
     }
 
     @Override
     public MediaAssetDescriptor requireReadyAsset(UUID assetId) {
+        accessGuard.checkAsset(assetId);
         MediaAssetRecord asset = requireReadyRecord(assetId);
         Map<String, MediaCopyDescriptor> copyByLocale = new LinkedHashMap<>();
         for (MediaTranslationRecord translation : translations.findByAssetId(assetId)) {
@@ -73,6 +91,7 @@ public final class DefaultMediaQueryService implements MediaQueryService {
     @Override
     public MediaVariantDescriptor requireReadyVariant(
             UUID assetId, String variantName) {
+        accessGuard.checkVariant(assetId, variantName);
         MediaAssetRecord asset = requireReadyRecord(assetId);
         if (variantName == null || variantName.isBlank()) {
             throw notFound();

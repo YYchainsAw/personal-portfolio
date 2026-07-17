@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="xyz.yychainsaw.portfolio.content.persistence.mybatis.ProjectWorkspaceMapper">
+  <sql id="projectColumns">
+    id, external_key, slug, number_label, sort_order, featured, visible,
+    publication_dirty, version
+  </sql>
+
+  <select id="selectProject" resultType="map">
+    select <include refid="projectColumns"/>
+    from portfolio.project where id=#{projectId}
+  </select>
+
+  <select id="selectProjectForUpdate" resultType="map">
+    select <include refid="projectColumns"/>
+    from portfolio.project where id=#{projectId} for update
+  </select>
+
+  <select id="selectAllProjects" resultType="map">
+    select <include refid="projectColumns"/>
+    from portfolio.project order by sort_order, id
+  </select>
+
+  <select id="selectRows" resultType="map">
+    <choose>
+      <when test="tableKey == 'PROJECT_TRANSLATION'">
+        select locale,status_label,eyebrow,title,summary,seo_title,seo_description
+        from portfolio.project_translation where project_id=#{projectId}
+        order by locale
+      </when>
+      <when test="tableKey == 'PROJECT_TAG'">
+        select pt.tag_id,pt.sort_order,t.normalized_key,tt.locale,tt.name
+        from portfolio.project_tag pt
+        join portfolio.tag t on t.id=pt.tag_id
+        left join portfolio.tag_translation tt on tt.tag_id=t.id
+        where pt.project_id=#{projectId}
+        order by pt.sort_order,pt.tag_id,tt.locale
+      </when>
+      <when test="tableKey == 'PROJECT_SKILL'">
+        select ps.skill_id,ps.sort_order,s.normalized_key,st.locale,st.name
+        from portfolio.project_skill ps
+        join portfolio.skill s on s.id=ps.skill_id
+        left join portfolio.skill_translation st on st.skill_id=s.id
+        where ps.project_id=#{projectId}
+        order by ps.sort_order,ps.skill_id,st.locale
+      </when>
+      <when test="tableKey == 'PROJECT_MEDIA'">
+        select media_asset_id,usage,sort_order,layout,object_position,credit,source_url
+        from portfolio.project_media where project_id=#{projectId}
+        order by sort_order,usage,media_asset_id
+      </when>
+      <when test="tableKey == 'CONTENT_BLOCK'">
+        select id,block_type,sort_order,visible,width,alignment,emphasis,columns,version
+        from portfolio.project_content_block where project_id=#{projectId}
+        order by sort_order,id
+      </when>
+      <when test="tableKey == 'CONTENT_BLOCK_TRANSLATION'">
+        select t.block_id,t.locale,t.title,t.description
+        from portfolio.project_content_block_translation t
+        join portfolio.project_content_block b on b.id=t.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order,t.locale
+      </when>
+      <when test="tableKey == 'BLOCK_MEDIA'">
+        select m.block_id,m.media_asset_id,m.role,m.sort_order
+        from portfolio.content_block_media m
+        join portfolio.project_content_block b on b.id=m.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order,m.role,m.sort_order,m.media_asset_id
+      </when>
+      <when test="tableKey == 'BLOCK_MARKDOWN_TRANSLATION'">
+        select t.block_id,t.locale,t.markdown
+        from portfolio.content_block_markdown_translation t
+        join portfolio.project_content_block b on b.id=t.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order,t.locale
+      </when>
+      <when test="tableKey == 'BLOCK_VIDEO'">
+        select v.block_id,v.provider,v.url,v.cover_asset_id
+        from portfolio.content_block_video v
+        join portfolio.project_content_block b on b.id=v.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order
+      </when>
+      <when test="tableKey == 'BLOCK_CODE'">
+        select c.block_id,c.code_text,c.language,c.show_line_numbers
+        from portfolio.content_block_code c
+        join portfolio.project_content_block b on b.id=c.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order
+      </when>
+      <when test="tableKey == 'BLOCK_QUOTE_TRANSLATION'">
+        select q.block_id,q.locale,q.quote_text,q.source_text
+        from portfolio.content_block_quote_translation q
+        join portfolio.project_content_block b on b.id=q.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order,q.locale
+      </when>
+      <when test="tableKey == 'BLOCK_ACTION'">
+        select a.block_id,a.action_type,a.target_type,a.media_asset_id,a.url,a.open_new_tab
+        from portfolio.content_block_action a
+        join portfolio.project_content_block b on b.id=a.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order
+      </when>
+      <when test="tableKey == 'BLOCK_METRIC'">
+        select m.id,m.block_id,m.sort_order,m.numeric_value
+        from portfolio.content_block_metric m
+        join portfolio.project_content_block b on b.id=m.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order,m.sort_order,m.id
+      </when>
+      <when test="tableKey == 'BLOCK_METRIC_TRANSLATION'">
+        select t.metric_id,t.locale,t.label,t.value_text,t.suffix
+        from portfolio.content_block_metric_translation t
+        join portfolio.content_block_metric m on m.id=t.metric_id
+        join portfolio.project_content_block b on b.id=m.block_id
+        where b.project_id=#{projectId}
+        order by b.sort_order,m.sort_order,t.locale
+      </when>
+      <otherwise>select 1 where false</otherwise>
+    </choose>
+  </select>
+
+  <select id="selectExistingTagIds" resultType="java.util.UUID">
+    select id from portfolio.tag
+    where id in
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    order by id
+  </select>
+
+  <select id="selectExistingSkillIds" resultType="java.util.UUID">
+    select id from portfolio.skill
+    where id in
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    order by id
+  </select>
+
+  <select id="selectBlockOwners" resultType="map">
+    select id,project_id
+    from portfolio.project_content_block
+    where id in
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    order by id
+  </select>
+
+  <select id="selectMetricOwners" resultType="map">
+    select m.id,b.project_id
+    from portfolio.content_block_metric m
+    join portfolio.project_content_block b on b.id=m.block_id
+    where m.id in
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    order by m.id
+  </select>
+
+  <insert id="insertRoot">
+    insert into portfolio.project(
+      id,external_key,slug,number_label,sort_order,featured,visible,
+      publication_dirty,version,created_at,updated_at
+    ) values (
+      #{workspace.id},#{workspace.externalKey},#{workspace.slug},#{workspace.numberLabel},
+      #{workspace.sortOrder},#{workspace.featured},#{workspace.visible},true,0,#{updatedAt},#{updatedAt}
+    )
+  </insert>
+
+  <update id="updateRoot">
+    update portfolio.project
+    set slug=#{workspace.slug},number_label=#{workspace.numberLabel},sort_order=#{workspace.sortOrder},
+        featured=#{workspace.featured},visible=#{workspace.visible},publication_dirty=true,
+        version=version+1,updated_at=#{updatedAt}
+    where id=#{workspace.id} and version=#{expectedVersion}
+  </update>
+
+  <delete id="deleteOwnedRows">
+    <choose>
+      <when test="tableKey == 'PROJECT_TRANSLATION'">delete from portfolio.project_translation where project_id=#{projectId}</when>
+      <when test="tableKey == 'PROJECT_TAG'">delete from portfolio.project_tag where project_id=#{projectId}</when>
+      <when test="tableKey == 'PROJECT_SKILL'">delete from portfolio.project_skill where project_id=#{projectId}</when>
+      <when test="tableKey == 'PROJECT_MEDIA'">delete from portfolio.project_media where project_id=#{projectId}</when>
+      <when test="tableKey == 'CONTENT_BLOCK'">delete from portfolio.project_content_block where project_id=#{projectId}</when>
+      <when test="tableKey == 'CONTENT_BLOCK_TRANSLATION'">delete from portfolio.project_content_block_translation where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_MEDIA'">delete from portfolio.content_block_media where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_MARKDOWN_TRANSLATION'">delete from portfolio.content_block_markdown_translation where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_VIDEO'">delete from portfolio.content_block_video where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_CODE'">delete from portfolio.content_block_code where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_QUOTE_TRANSLATION'">delete from portfolio.content_block_quote_translation where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_ACTION'">delete from portfolio.content_block_action where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_METRIC'">delete from portfolio.content_block_metric where block_id in (select id from portfolio.project_content_block where project_id=#{projectId})</when>
+      <when test="tableKey == 'BLOCK_METRIC_TRANSLATION'">delete from portfolio.content_block_metric_translation where metric_id in (select m.id from portfolio.content_block_metric m join portfolio.project_content_block b on b.id=m.block_id where b.project_id=#{projectId})</when>
+      <otherwise>select 0</otherwise>
+    </choose>
+  </delete>
+
+  <insert id="insertRows">
+    <choose>
+      <when test="tableKey == 'PROJECT_TRANSLATION'">
+        insert into portfolio.project_translation(project_id,locale,status_label,eyebrow,title,summary,seo_title,seo_description) values
+        <foreach collection="rows" item="r" separator=",">(#{r.projectId},#{r.locale},#{r.statusLabel},#{r.eyebrow},#{r.title},#{r.summary},#{r.seoTitle},#{r.seoDescription})</foreach>
+      </when>
+      <when test="tableKey == 'PROJECT_TAG'">
+        insert into portfolio.project_tag(project_id,tag_id,sort_order) values
+        <foreach collection="rows" item="r" separator=",">(#{r.projectId},#{r.taxonomyId},#{r.sortOrder})</foreach>
+      </when>
+      <when test="tableKey == 'PROJECT_SKILL'">
+        insert into portfolio.project_skill(project_id,skill_id,sort_order) values
+        <foreach collection="rows" item="r" separator=",">(#{r.projectId},#{r.taxonomyId},#{r.sortOrder})</foreach>
+      </when>
+      <when test="tableKey == 'PROJECT_MEDIA'">
+        insert into portfolio.project_media(project_id,media_asset_id,usage,sort_order,layout,object_position,credit,source_url) values
+        <foreach collection="rows" item="r" separator=",">(#{r.projectId},#{r.mediaAssetId},#{r.usage},#{r.sortOrder},#{r.layout},#{r.objectPosition},#{r.credit},#{r.sourceUrl})</foreach>
+      </when>
+      <when test="tableKey == 'CONTENT_BLOCK'">
+        insert into portfolio.project_content_block(id,project_id,block_type,sort_order,visible,width,alignment,emphasis,columns,version) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.projectId},#{r.blockType},#{r.sortOrder},#{r.visible},#{r.width},#{r.alignment},#{r.emphasis},#{r.columns},0)</foreach>
+      </when>
+      <when test="tableKey == 'CONTENT_BLOCK_TRANSLATION'">
+        insert into portfolio.project_content_block_translation(block_id,locale,title,description) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.locale},#{r.title},#{r.description})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_MEDIA'">
+        insert into portfolio.content_block_media(block_id,media_asset_id,role,sort_order) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.mediaAssetId},#{r.role},#{r.sortOrder})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_MARKDOWN_TRANSLATION'">
+        insert into portfolio.content_block_markdown_translation(block_id,locale,markdown) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.locale},#{r.markdown})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_VIDEO'">
+        insert into portfolio.content_block_video(block_id,provider,url,cover_asset_id) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.provider},#{r.url},#{r.coverAssetId})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_CODE'">
+        insert into portfolio.content_block_code(block_id,code_text,language,show_line_numbers) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.codeText},#{r.language},#{r.showLineNumbers})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_QUOTE_TRANSLATION'">
+        insert into portfolio.content_block_quote_translation(block_id,locale,quote_text,source_text) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.locale},#{r.quoteText},#{r.sourceText})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_ACTION'">
+        insert into portfolio.content_block_action(block_id,action_type,target_type,media_asset_id,url,open_new_tab) values
+        <foreach collection="rows" item="r" separator=",">(#{r.blockId},#{r.actionType},#{r.targetType},#{r.mediaAssetId},#{r.url},#{r.openNewTab})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_METRIC'">
+        insert into portfolio.content_block_metric(id,block_id,sort_order,numeric_value) values
+        <foreach collection="rows" item="r" separator=",">(#{r.id},#{r.blockId},#{r.sortOrder},#{r.numericValue})</foreach>
+      </when>
+      <when test="tableKey == 'BLOCK_METRIC_TRANSLATION'">
+        insert into portfolio.content_block_metric_translation(metric_id,locale,label,value_text,suffix) values
+        <foreach collection="rows" item="r" separator=",">(#{r.metricId},#{r.locale},#{r.label},#{r.valueText},#{r.suffix})</foreach>
+      </when>
+      <otherwise>select 0</otherwise>
+    </choose>
+  </insert>
+
+  <update id="markPublicationDirty">
+    update portfolio.project
+    set publication_dirty=true,version=version+1,updated_at=#{updatedAt}
+    where id in
+    <foreach collection="projectIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+  </update>
+
+  <update id="markPublished">
+    update portfolio.project
+    set publication_dirty=false,version=version+1,updated_at=#{updatedAt}
+    where id=#{projectId} and version=#{expectedVersion}
+  </update>
+
+  <select id="lockCatalog" resultType="map">
+    select id,sort_order from portfolio.project order by id for update
+  </select>
+
+  <update id="moveCatalogToTemporary">
+    with ranked as (
+      select id,row_number() over(order by sort_order,id)-1 as position
+      from portfolio.project
+    )
+    update portfolio.project p
+    set sort_order=#{temporaryBase}+ranked.position::integer
+    from ranked where p.id=ranked.id
+  </update>
+
+  <update id="assignCatalogOrder">
+    update portfolio.project p
+    set sort_order=v.sort_order,publication_dirty=true,version=p.version+1,updated_at=#{updatedAt}
+    from (values
+      <foreach collection="rows" item="r" separator=",">(#{r.id}::uuid,#{r.sortOrder}::integer)</foreach>
+    ) as v(id,sort_order)
+    where p.id=v.id
+  </update>
+</mapper>

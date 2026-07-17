@@ -107,6 +107,7 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
     private static final String PASSWORD_HASH = "sha256$password-hash";
     private static final String TOTP_SECRET = "JBSWY3DPEHPK3PXP";
     private static final String TOTP_CODE = "123456";
+    private static final String IMPORT_SHA256 = "a".repeat(64);
     private static final String RECOVERY_CONFIRM_PROMPT =
             "Type RECOVER ADMIN to create a dump and replace administrator credentials: ";
     private static final String RECOVERY_TOTP_PROMPT = "Current six-digit TOTP: ";
@@ -1214,6 +1215,24 @@ class AdminBootstrapServiceTest extends PostgresIntegrationTestBase {
         runner.run(arguments("--spring.datasource.password=must-not-activate", "positional"));
 
         verifyNoInteractions(console, service);
+    }
+
+    @Test
+    void runnerHandsThePreflightApprovedImportCommandToItsDedicatedOwner()
+            throws Exception {
+        SecretConsole console = mock(SecretConsole.class);
+        AdminBootstrapService bootstrap = mock(AdminBootstrapService.class);
+        AdminRecoveryService recovery = mock(AdminRecoveryService.class);
+        TotpKeyReencryptionService reencrypt = mock(TotpKeyReencryptionService.class);
+
+        new AdminCliRunner(console, bootstrap, recovery, reencrypt).run(arguments(
+                "--portfolio.cli.command=import",
+                "--portfolio.import.input=runtime/import/portfolio-v1.json",
+                "--portfolio.import.asset-root=frontend/public",
+                "--portfolio.import.sha256=" + IMPORT_SHA256,
+                "--portfolio.import.commit=false"));
+
+        verifyNoInteractions(console, bootstrap, recovery, reencrypt);
     }
 
     @Test
