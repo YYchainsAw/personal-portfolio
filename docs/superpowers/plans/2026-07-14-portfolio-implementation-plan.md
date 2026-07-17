@@ -45,11 +45,11 @@
 | Plan | Primary ownership | Migration ownership | Required before full integration |
 |---|---|---|---|
 | [01 Foundation and Auth](2026-07-14-portfolio-01-foundation-auth.md) | repository baseline, Maven, PostgreSQL, common API, security, audit, CLI | V1–V2 | none |
-| [02 Media and Storage](2026-07-14-portfolio-02-media-storage.md) | Local/COS, upload validation, variants, durable jobs, media admin API | V3 | 01 |
-| [03 Content and Publishing](2026-07-14-portfolio-03-content-publishing.md) | normalized workspace, import, revisions, preview, public API/HTML/SEO contracts | V4–V5 | 01–02 |
+| [02 Media and Storage](2026-07-14-portfolio-02-media-storage.md) | Local/COS, upload validation, variants, durable jobs, media admin API | V3–V6 | 01 |
+| [03 Content and Publishing](2026-07-14-portfolio-03-content-publishing.md) | normalized workspace, import, revisions, preview, public API/HTML/SEO contracts | V7–V8 | 01–02 |
 | [04 Admin Web](2026-07-14-portfolio-04-admin-web.md) | auth UI, CMS editors, media, publishing, inbox, analytics, operations | none | 01–03 and 06 APIs |
 | [05 Public Site and SEO](2026-07-14-portfolio-05-public-site-seo.md) | existing-site data integration, detail/privacy/404, contact, consent, accessibility | none | 03 and 06 APIs |
-| [06 Contact and Analytics](2026-07-14-portfolio-06-contact-analytics.md) | contact/outbox/inbox, privacy analytics, aggregation/report APIs | V6–V7 | 01–03 |
+| [06 Contact and Analytics](2026-07-14-portfolio-06-contact-analytics.md) | contact/outbox/inbox, privacy analytics, aggregation/report APIs | V9–V10 | 01–03 |
 | [07 Deployment and Recovery](2026-07-14-portfolio-07-deployment-recovery.md) | reproducible release, Compose/Nginx, ICP gate, rollback, backup, restore | none | all product phases |
 
 Plan numbers group artifacts by product surface. Recommended execution follows the dependency graph below: 01 → 02 → 03 → 06; then 04 and 05 may run in parallel; 07 follows both. This order prevents the admin/public applications from inventing backend contracts.
@@ -163,10 +163,13 @@ GET    /api/admin/system/operations
 | V1 | 01 | `portfolio` schema, shared timestamp trigger/function, grants and core prerequisites |
 | V2 | 01 | official Spring Session tables, admin identity, TOTP/recovery, durable session metadata, immutable audit |
 | V3 | 02 | media assets/translations/variants, background jobs, maintenance runs |
-| V4 | 03 | normalized site/project workspace, translations, typed blocks, redirects/import state |
-| V5 | 03 | publications, immutable revisions, catalog, revision media references, constraints/triggers |
-| V6 | 06 | contact messages and dedicated email outbox |
-| V7 | 06 | raw privacy analytics and daily aggregates |
+| V4 | 02 | local staging reservations and bounded capacity |
+| V5 | 02 | background-job retention and terminal cleanup indexes |
+| V6 | 02 | local staging volume identity binding |
+| V7 | 03 | normalized site/project workspace, translations, typed blocks, redirects/import state |
+| V8 | 03 | publications, immutable revisions, catalog, revision media references, constraints/triggers |
+| V9 | 06 | contact messages and dedicated email outbox |
+| V10 | 06 | raw privacy analytics and daily aggregates |
 
 No other phase creates a migration in this implementation set. If implementation discovers a schema correction after its owner migration has been merged or applied outside a disposable database, add the next forward migration; never edit applied history.
 
@@ -200,7 +203,7 @@ Expected: a runnable backend foundation with no business-content or media tables
 - [ ] Run the optional real-COS disposable-prefix smoke only with short-lived credentials, then verify cleanup.
 - [ ] Freeze `StorageService`, `BackgroundJobService`, `JobHandler`, and media-reference contracts before Plan 03.
 
-Expected: V3 and media endpoints are complete; no public UUID can bypass publication visibility.
+Expected: V3-V6 and media endpoints are complete; no public UUID can bypass publication visibility.
 
 ---
 
@@ -217,7 +220,7 @@ Expected: V3 and media endpoints are complete; no public UUID can bypass publica
 - [ ] Confirm localized HTML/API, bootstrap envelope, ETags, sitemap, canonical/hreflang/OG/JSON-LD, old-slug redirect, and public media authorization.
 - [ ] Generate or validate the shared TypeScript DTOs used by Plans 04–05 and freeze the registry contracts.
 
-Expected: V4/V5, admin content APIs, preview, publish/history/restore, and source-backed public DTO/HTML contracts all pass.
+Expected: V7/V8, admin content APIs, preview, publish/history/restore, and source-backed public DTO/HTML contracts all pass.
 
 ---
 
@@ -233,7 +236,7 @@ Expected: V4/V5, admin content APIs, preview, publish/history/restore, and sourc
 - [ ] Freeze message, analytics, and operations API DTOs before Plans 04–05 consume them.
 - [ ] Defer only browser Playwright assertions to the owning UI plans; all server integration tests must already pass.
 
-Expected: V6/V7 and every public/admin contact/analytics API are stable and privacy-tested.
+Expected: V9/V10 and every public/admin contact/analytics API are stable and privacy-tested.
 
 ---
 

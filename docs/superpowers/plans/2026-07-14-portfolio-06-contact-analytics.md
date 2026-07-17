@@ -26,8 +26,8 @@
 
 ## File Map
 
-- `backend-parent/portfolio-server/src/main/resources/db/migration/V6__contact_and_email.sql`: messages and dedicated email outbox.
-- `backend-parent/portfolio-server/src/main/resources/db/migration/V7__privacy_analytics.sql`: raw events and daily aggregates.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql`: messages and dedicated email outbox.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql`: raw events and daily aggregates.
 - `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/*`: contact intake, inbox, outbox worker, SMTP adapter, and retention.
 - `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/*`: event validation, privacy transforms, aggregation, retention, and reports.
 - `backend-parent/portfolio-server/src/main/resources/analytics/analytics-rules-v1.yml`: versioned event, page, and crawler rules.
@@ -40,12 +40,12 @@
 ### Task 1: Add contact and analytics migrations
 
 **Files:**
-- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V6__contact_and_email.sql`
-- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V7__privacy_analytics.sql`
+- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql`
+- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java`
 
 **Interfaces:**
-- Consumes: Plan 01 `xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase`; plan 02 already owns V3 and plan 03 owns V4/V5.
+- Consumes: Plan 01 `xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase`; plan 02 already owns V3-V6 and plan 03 owns V7/V8.
 - Produces: `contact_message`, `email_outbox`, `analytics_event`, and `analytics_daily`.
 
 - [ ] **Step 1: Write the failing migration test**
@@ -120,9 +120,9 @@ Run from `backend-parent`:
 .\mvnw.cmd -pl portfolio-server -am -Dtest=ContactAnalyticsSchemaMigrationTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
-Expected: FAIL because the V6 and V7 tables do not exist.
+Expected: FAIL because the V9 and V10 tables do not exist.
 
-- [ ] **Step 3: Create V6 with message and outbox constraints**
+- [ ] **Step 3: Create V9 with message and outbox constraints**
 
 ```sql
 create table contact_message (
@@ -165,13 +165,13 @@ create index email_outbox_ready_idx
     on email_outbox (next_attempt_at, created_at)
     where status in ('PENDING','FAILED');
 
-grant select, insert, update, delete on contact_message to portfolio_runtime;
-grant select, insert, update, delete on email_outbox to portfolio_runtime;
+grant select, insert, update, delete on contact_message to portfolio_runtime_access;
+grant select, insert, update, delete on email_outbox to portfolio_runtime_access;
 ```
 
 The configured site-owner address is the only `to_address`. Do not send an automatic reply to the visitor in this phase.
 
-- [ ] **Step 4: Create V7 with analytics privacy and reporting constraints**
+- [ ] **Step 4: Create V10 with analytics privacy and reporting constraints**
 
 ```sql
 create table analytics_event (
@@ -212,8 +212,8 @@ create table analytics_daily (
 create index analytics_daily_report_idx
     on analytics_daily (site_date, dimension, metric, metric_count desc);
 
-grant select, insert, update, delete on analytics_event to portfolio_runtime;
-grant select, insert, update, delete on analytics_daily to portfolio_runtime;
+grant select, insert, update, delete on analytics_event to portfolio_runtime_access;
+grant select, insert, update, delete on analytics_daily to portfolio_runtime_access;
 ```
 
 Do not add IP, IP hash, browser identifier, session identifier, full URL query, or full User-Agent columns.
@@ -222,12 +222,12 @@ Do not add IP, IP hash, browser identifier, session identifier, full URL query, 
 
 Run the Step 2 command.
 
-Expected: PASS; Flyway applies V1 through V7 in order, all four tables exist, runtime has their required DML but no TRUNCATE/schema-CREATE privilege, and both public limiter policies match plan 01 exactly.
+Expected: PASS; Flyway applies V1 through V10 in order, all four tables exist, runtime has their required DML but no TRUNCATE/schema-CREATE privilege, and both public limiter policies match plan 01 exactly.
 
 - [ ] **Step 6: Commit the schema slice**
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/resources/db/migration/V6__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V7__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java
+git add backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java
 git commit -m "feat(contact): add message and analytics schema"
 ```
 
@@ -426,7 +426,7 @@ git commit -m "feat(contact): accept private contact submissions"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxLeaseIntegrationTest.java`
 
 **Interfaces:**
-- Consumes: `JavaMailSender`, V6 tables, `Clock`, and contact message reads.
+- Consumes: `JavaMailSender`, V9 tables, `Clock`, and contact message reads.
 - Produces: `EmailSenderPort#send(ContactNotification)` and an independently scheduled outbox worker.
 
 - [ ] **Step 1: Write failing retry and lease tests**
@@ -645,7 +645,7 @@ public record EmailDeliveryView(
 ) {}
 ```
 
-`EmailDeliveryView.status` is one of the V6 outbox statuses. `errorCategory` is the existing sanitized category or `null`; it never contains an SMTP response, recipient, server hostname, exception message, or stack trace. These DTOs are admin-only. Every inbox response uses `Cache-Control: no-store`; escape content in the Vue renderer and never render message text as HTML.
+`EmailDeliveryView.status` is one of the V9 outbox statuses. `errorCategory` is the existing sanitized category or `null`; it never contains an SMTP response, recipient, server hostname, exception message, or stack trace. These DTOs are admin-only. Every inbox response uses `Cache-Control: no-store`; escape content in the Vue renderer and never render message text as HTML.
 
 - [ ] **Step 4: Implement manual email retry and hard deletion**
 
@@ -821,7 +821,7 @@ git commit -m "feat(analytics): collect opt-in private events"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsRetentionJobHandlerTest.java`
 
 **Interfaces:**
-- Consumes: plan-02 `BackgroundJobService`, `JobHandler`, `maintenance_run`, and V7 events.
+- Consumes: plan-02 `BackgroundJobService`, `JobHandler`, `maintenance_run`, and V10 events.
 - Produces: reproducible `analytics_daily` rows and daily job types `ANALYTICS_AGGREGATE` and `ANALYTICS_RETENTION`.
 
 - [ ] **Step 1: Write a fixed-fixture aggregation test**
@@ -891,7 +891,7 @@ git commit -m "feat(analytics): aggregate and retain private metrics"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/AdminAnalyticsControllerTest.java`
 
 **Interfaces:**
-- Consumes: current admin authentication and V7 aggregate rows.
+- Consumes: current admin authentication and V10 aggregate rows.
 - Produces: summary, time-series, and ranked breakdown APIs consumed by plan 04.
 
 - [ ] **Step 1: Write failing report API tests**
