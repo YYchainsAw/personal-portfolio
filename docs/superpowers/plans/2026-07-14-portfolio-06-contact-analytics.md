@@ -50,67 +50,26 @@
 
 - [ ] **Step 1: Write the failing migration test**
 
-```java
-package xyz.yychainsaw.portfolio.message;
+Create a `@SpringBootTest`, `@Isolated` PostgreSQL integration test extending
+`PostgresIntegrationTestBase`. It must inspect the catalog and exercise real inserts/updates,
+not merely check that the four relation names exist. Assert the exact column whitelist,
+bounded sensitive text, named keys/checks/indexes/triggers, Flyway V1-V10 order, database
+rejection behavior, and the two exact plan-01 rate policies.
 
-import static org.assertj.core.api.Assertions.assertThat;
+Inspect direct table and column ACLs rather than granting full table CRUD to every component.
+The shared capability role has this exact matrix:
 
-import java.time.Duration;
-import java.util.List;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.jdbc.core.JdbcTemplate;
-import xyz.yychainsaw.portfolio.common.ratelimit.RateLimitProperties;
-import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
+- `contact_message`: table `SELECT/INSERT/DELETE`; column `UPDATE` only for `status`,
+  `version`, and `updated_at`;
+- `email_outbox`: table `SELECT/INSERT`; column `UPDATE` only for delivery state,
+  attempts, retry time, lease fields, sanitized error summary, `sent_at`, and `updated_at`;
+- `analytics_event`: table `SELECT/INSERT/DELETE`, with no update capability;
+- `analytics_daily`: table `SELECT/INSERT/DELETE`; column `UPDATE` only for
+  `metric_count`, `aggregation_version`, and `updated_at`.
 
-@SpringBootTest
-class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
-    @Autowired JdbcTemplate jdbc;
-    @Autowired RateLimitProperties rateLimits;
-
-    @Test
-    void flywayCreatesContactAndAnalyticsTables() {
-        List<String> tables = jdbc.queryForList("""
-            select table_name from information_schema.tables
-            where table_schema = 'portfolio'
-              and table_name in ('contact_message','email_outbox','analytics_event','analytics_daily')
-            order by table_name
-            """, String.class);
-
-        assertThat(tables).containsExactly(
-            "analytics_daily", "analytics_event", "contact_message", "email_outbox");
-    }
-
-    @Test
-    void runtimeHasRequiredDmlWithoutSchemaOrTruncatePrivileges() {
-        for (String table : List.of(
-                "contact_message", "email_outbox", "analytics_event", "analytics_daily")) {
-            for (String privilege : List.of("SELECT", "INSERT", "UPDATE", "DELETE")) {
-                assertThat(jdbc.queryForObject(
-                        "select has_table_privilege(?::text, ?::text)",
-                        Boolean.class, "portfolio." + table, privilege))
-                        .as(table + " " + privilege).isTrue();
-            }
-            assertThat(jdbc.queryForObject(
-                    "select has_table_privilege(?::text, 'TRUNCATE')",
-                    Boolean.class, "portfolio." + table))
-                    .as(table + " TRUNCATE").isFalse();
-        }
-        assertThat(jdbc.queryForObject(
-                "select has_schema_privilege(current_user, 'portfolio', 'CREATE')",
-                Boolean.class)).isFalse();
-    }
-
-    @Test
-    void plan01RegistersTheExactPublicRateLimitPolicies() {
-        assertThat(rateLimits.policies().get("public-contact"))
-                .isEqualTo(new RateLimitProperties.Policy(5, Duration.ofMinutes(15)));
-        assertThat(rateLimits.policies().get("public-events"))
-                .isEqualTo(new RateLimitProperties.Policy(60, Duration.ofMinutes(1)));
-    }
-}
-```
+Assert that `PUBLIC` and the runtime login have no direct grants, all objects remain
+owned by the migrator, no grant is grantable, and the runtime has no schema `CREATE`,
+`TRUNCATE`, `REFERENCES`, `TRIGGER`, or `MAINTAIN` capability.
 
 - [ ] **Step 2: Run the migration test and verify it fails**
 
@@ -124,99 +83,39 @@ Expected: FAIL because the V9 and V10 tables do not exist.
 
 - [ ] **Step 3: Create V9 with message and outbox constraints**
 
-```sql
-create table contact_message (
-    id uuid primary key,
-    visitor_name varchar(100) not null,
-    visitor_email varchar(320) not null,
-    subject varchar(160) not null,
-    body varchar(5000) not null,
-    status varchar(24) not null
-        check (status in ('UNREAD','READ','ARCHIVED','SPAM')),
-    dedupe_key char(64) not null,
-    privacy_accepted_at timestamptz not null,
-    version integer not null default 0,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
-);
-create index contact_message_inbox_idx
-    on contact_message (status, created_at desc, id desc);
-create index contact_message_dedupe_idx
-    on contact_message (dedupe_key, created_at desc);
+Implement the canonical, schema-qualified V9 migration in the file named above. In addition to
+the declared columns, it must include:
 
-create table email_outbox (
-    id uuid primary key,
-    contact_message_id uuid not null references contact_message(id) on delete cascade,
-    template_name varchar(80) not null,
-    to_address varchar(320) not null,
-    stable_message_id varchar(255) not null unique,
-    status varchar(24) not null
-        check (status in ('PENDING','SENDING','SENT','FAILED','DEAD','CANCELED')),
-    attempts integer not null default 0 check (attempts >= 0),
-    next_attempt_at timestamptz not null,
-    lease_owner varchar(120),
-    lease_until timestamptz,
-    last_error_summary varchar(500),
-    created_at timestamptz not null default now(),
-    sent_at timestamptz,
-    updated_at timestamptz not null default now()
-);
-create index email_outbox_ready_idx
-    on email_outbox (next_attempt_at, created_at)
-    where status in ('PENDING','FAILED');
-
-grant select, insert, update, delete on contact_message to portfolio_runtime_access;
-grant select, insert, update, delete on email_outbox to portfolio_runtime_access;
-```
+- named checks for message status, lowercase 64-hex dedupe keys, non-negative version, and
+  privacy acceptance no later than creation;
+- a one-to-one outbox foreign key (`contact_message_id UNIQUE`) with `ON DELETE CASCADE`, plus
+  a unique stable message ID;
+- fenced outbox state: `SENDING` requires a trimmed, non-blank lease owner and lease expiry;
+  every other state has neither, and only `SENT` has `sent_at`;
+- stable inbox, dedupe, message-retention, ready-outbox, and expired-lease indexes;
+- the existing `portfolio.set_updated_at()` trigger on both mutable tables;
+- explicit `REVOKE ALL` from `PUBLIC` and `portfolio_runtime_access` before granting only the
+  ACL matrix above.
 
 The configured site-owner address is the only `to_address`. Do not send an automatic reply to the visitor in this phase.
 
 - [ ] **Step 4: Create V10 with analytics privacy and reporting constraints**
 
-```sql
-create table analytics_event (
-    id uuid primary key,
-    client_event_id uuid not null unique,
-    site_date date not null,
-    received_at timestamptz not null,
-    visitor_day_key char(64) not null,
-    session_day_key char(64) not null,
-    event_type varchar(32) not null
-        check (event_type in ('PAGE_VIEW','PROJECT_VIEW','RESUME_DOWNLOAD','DEMO_DOWNLOAD','OUTBOUND_CLICK')),
-    page_key varchar(200) not null,
-    project_id uuid,
-    referrer_domain varchar(253),
-    device_class varchar(16) not null
-        check (device_class in ('DESKTOP','MOBILE','TABLET','OTHER')),
-    locale varchar(10) not null check (locale in ('zh-CN','en')),
-    rules_version varchar(32) not null,
-    created_at timestamptz not null default now()
-);
-create index analytics_event_date_idx on analytics_event (site_date, event_type);
-create index analytics_event_dedupe_idx
-    on analytics_event (session_day_key, event_type, page_key, project_id, received_at desc);
-create index analytics_event_retention_idx on analytics_event (received_at);
+Implement the canonical, schema-qualified V10 migration in the file named above. Preserve the
+exact column whitelist and add named constraints that enforce:
 
-create table analytics_daily (
-    site_date date not null,
-    metric varchar(24) not null check (metric in ('PV','DAILY_UV','EVENT_COUNT')),
-    event_type varchar(32) not null,
-    dimension varchar(24) not null
-        check (dimension in ('ALL','PAGE','PROJECT','REFERRER','DEVICE','LOCALE')),
-    dimension_value varchar(253) not null,
-    metric_count bigint not null check (metric_count >= 0),
-    aggregation_version varchar(32) not null,
-    updated_at timestamptz not null default now(),
-    primary key (site_date, metric, event_type, dimension, dimension_value)
-);
-create index analytics_daily_report_idx
-    on analytics_daily (site_date, dimension, metric, metric_count desc);
+- lowercase 64-hex daily visitor/session keys and the exact event/device/locale enums;
+- `site_date = (received_at AT TIME ZONE 'Asia/Hong_Kong')::date`;
+- the version-1 page allowlist (`HOME`, `ABOUT`, `WORK`, `ROADMAP`, `CONTACT`, `PRIVACY`,
+  `PROJECT_DETAIL`) for raw events and PAGE aggregates;
+- referrers are null, `(direct)`/`(none)`, or normalized lowercase ASCII hostnames—never a URL,
+  userinfo, query, IP literal, or embedded daily key;
+- PV and DAILY_UV pair only with PAGE_VIEW; EVENT_COUNT may pair with every allowed event;
+- dimension-specific values, a separate daily-key leak guard, and non-negative metric counts;
+- stable event-date/dedupe/retention and daily-report indexes, the aggregate update trigger,
+  explicit revocation, and only the ACL matrix above.
 
-grant select, insert, update, delete on analytics_event to portfolio_runtime_access;
-grant select, insert, update, delete on analytics_daily to portfolio_runtime_access;
-```
-
-Do not add IP, IP hash, browser identifier, session identifier, full URL query, or full User-Agent columns.
+Do not add IP, IP hash, browser identifier, session identifier, full URL query, or full User-Agent columns. Constrain aggregate dimension values by dimension: `ALL` uses `(all)`, `PAGE` uses an allowlisted uppercase key, `PROJECT` uses a canonical lowercase UUID, `REFERRER` uses a normalized lowercase hostname or `(direct)`/`(none)`, `DEVICE` uses the device enum, and `LOCALE` uses `zh-CN`/`en`. The durable aggregate table must reject any raw visitor/session day HMAC, including one embedded in another value.
 
 - [ ] **Step 5: Re-run the migration test and inspect Flyway order**
 
@@ -227,7 +126,7 @@ Expected: PASS; Flyway applies V1 through V10 in order, all four tables exist, r
 - [ ] **Step 6: Commit the schema slice**
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java
+git add backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
 git commit -m "feat(contact): add message and analytics schema"
 ```
 
@@ -853,7 +752,7 @@ Within one transaction for a requested `siteDate`:
 3. insert `PV` for `PAGE_VIEW` counts;
 4. insert `DAILY_UV` using `count(distinct visitor_day_key)`;
 5. insert `EVENT_COUNT` for every event type;
-6. generate ALL and each applicable dimension with `(none)` for absent optional values;
+6. generate ALL with `(all)` and each applicable dimension with `(none)` for absent optional values;
 7. record a successful or failed `maintenance_run` with counts only.
 
 The job idempotency key is `analytics-aggregate:{siteDate}:analytics-rules-v1`. Re-running produces byte-equivalent result rows apart from `updated_at`.
