@@ -8,6 +8,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -83,6 +84,20 @@ public class EmailOutboxMapper {
                 .param("messageId", messageId, Types.OTHER)
                 .query(ROW_MAPPER)
                 .list();
+    }
+
+    public Optional<EmailOutboxRecord> findById(UUID id) {
+        Objects.requireNonNull(id, "email outbox id is required");
+        return jdbc.sql("select " + COLUMNS
+                        + " from portfolio.email_outbox where id=:id")
+                .param("id", id, Types.OTHER)
+                .query(ROW_MAPPER)
+                .optional();
+    }
+
+    public EmailOutboxRecord require(UUID id) {
+        return findById(id).orElseThrow(() ->
+                new IllegalStateException("email outbox row was not found"));
     }
 
     public long count() {

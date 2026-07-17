@@ -1,6 +1,19 @@
 spring:
   application:
     name: portfolio-server
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      mail.smtp.starttls.required: true
+      mail.smtp.ssl.checkserveridentity: true
+      mail.smtp.connectiontimeout: 10000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
   datasource:
     url: ${PORTFOLIO_DB_URL}
     username: ${PORTFOLIO_DB_RUNTIME_USER}
@@ -53,6 +66,9 @@ server:
         same-site: strict
 
 management:
+  health:
+    mail:
+      enabled: ${PORTFOLIO_EMAIL_ENABLED:false}
   endpoints:
     web:
       exposure:
@@ -80,6 +96,12 @@ portfolio:
     dedupe-secret: ${PORTFOLIO_CONTACT_DEDUPE_SECRET:}
     owner-email: ${PORTFOLIO_OWNER_EMAIL:}
     mail-id-domain: ${PORTFOLIO_MAIL_ID_DOMAIN:yychainsaw.xyz}
+  email:
+    enabled: ${PORTFOLIO_EMAIL_ENABLED:false}
+    from: ${PORTFOLIO_EMAIL_FROM:}
+    poll-interval: 10s
+    lease-duration: 2m
+    batch-size: 10
   jobs:
     retention:
       enabled: ${PORTFOLIO_JOBS_RETENTION_ENABLED:false}

@@ -327,16 +327,19 @@ git commit -m "feat(contact): accept private contact submissions"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxRepository.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxWorker.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/config/EmailOutboxProperties.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/persistence/EmailOutboxMapper.java`
 - Modify: `backend-parent/portfolio-server/pom.xml`
 - Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxWorkerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxLeaseIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxConfigurationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxSmtpWireTest.java`
 
 **Interfaces:**
 - Consumes: `JavaMailSender`, V9 tables, `Clock`, and contact message reads.
 - Produces: `EmailSenderPort#send(ContactNotification)` and an independently scheduled outbox worker.
 
-- [ ] **Step 1: Write failing retry and lease tests**
+- [x] **Step 1: Write failing retry and lease tests**
 
 ```java
 @Test
@@ -367,15 +370,15 @@ void tenthFailureMovesNotificationToDead() {
 
 The integration test starts two claimers and asserts each ready row is leased once via `FOR UPDATE SKIP LOCKED`.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
-.\mvnw.cmd -pl portfolio-server -am -Dtest=EmailOutboxWorkerTest,EmailOutboxLeaseIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+.\mvnw.cmd -pl portfolio-server -am -Dtest=EmailOutbox*Test -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 Expected: FAIL because the outbox worker does not exist.
 
-- [ ] **Step 3: Add Spring Mail and typed configuration**
+- [x] **Step 3: Add Spring Mail and typed configuration**
 
 Add `spring-boot-starter-mail` without an explicit version. Bind:
 
@@ -397,6 +400,7 @@ spring:
       mail.smtp.auth: true
       mail.smtp.starttls.enable: true
       mail.smtp.starttls.required: true
+      mail.smtp.ssl.checkserveridentity: true
       mail.smtp.connectiontimeout: 10000
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
@@ -406,9 +410,9 @@ The worker reuses `portfolio.contact.owner-email` and the already persisted comp
 `stable_message_id`; it must not define duplicate owner-address or mail-id-domain settings under
 `portfolio.email`.
 
-Production startup fails if email is enabled but required values are blank or transport TLS is disabled. Development may keep delivery disabled while preserving outbox rows. If the selected provider requires implicit SMTPS instead of STARTTLS, use a separately tested `smtps` profile with certificate validation; never fall back to cleartext SMTP or trust-all TLS.
+Production startup fails if email is enabled but required values are blank or transport TLS is disabled. Development may keep delivery disabled while preserving outbox rows, and `management.health.mail.enabled` follows `PORTFOLIO_EMAIL_ENABLED` so a deliberately disabled transport cannot make readiness fail. Enabled delivery also rejects JNDI mail sessions, structured SSL/SSL bundles, trust overrides, custom socket factories, protocol/cipher overrides, and mail debug flags; these alternate paths cannot bypass the validated STARTTLS transport or leak credentials. If the selected provider requires implicit SMTPS instead of STARTTLS, use a separately tested `smtps` profile with certificate validation; never fall back to cleartext SMTP or trust-all TLS.
 
-- [ ] **Step 4: Implement atomic lease acquisition**
+- [x] **Step 4: Implement atomic lease acquisition**
 
 Use one transaction containing:
 
@@ -434,9 +438,9 @@ where e.id = c.id
 returning e.*;
 ```
 
-Before each claim cycle, recover expired `SENDING` rows to `FAILED`. Completion/failure updates require both outbox ID and the current `lease_owner`; a delayed sender cannot overwrite a row reclaimed by another worker. Never hold a database transaction open during SMTP I/O.
+Before each claim cycle, recover a bounded batch of expired `SENDING` rows to `FAILED` with `FOR UPDATE SKIP LOCKED`; an expired attempt 10 is terminalized as `DEAD` instead of being stranded. Every claim cycle receives a fresh random `lease_owner` fencing token, and completion/failure updates require outbox ID, that token, the current attempt, and `status='SENDING'`; a delayed sender cannot overwrite a row reclaimed by another worker, including an ABA reclaim by the same process. Renew each row immediately before SMTP so later rows in a batch retain the full lease. Never hold a database transaction open during SMTP I/O.
 
-- [ ] **Step 5: Implement sending, stable headers, and retry policy**
+- [x] **Step 5: Implement sending, stable headers, and retry policy**
 
 ```java
 public interface EmailSenderPort {
@@ -455,9 +459,9 @@ public record ContactNotification(
 ) {}
 ```
 
-Set `Message-ID` from `stableMessageId`, set `Reply-To` to the visitor email, render a plain-text body, and use an allowlisted subject prefix such as `[Portfolio Contact]`. Strip CR/LF from all header values. Retry at 1, 5, 15, 60, 240, 720 minutes and then every 24 hours until attempt 10; attempt 10 becomes `DEAD`. Persist only the exception class and a redacted category, not the SMTP server response body.
+Set `Message-ID` from `stableMessageId`, set `Reply-To` to the visitor email, target the currently validated `portfolio.contact.owner-email`, render a UTF-8 plain-text body, and use an allowlisted subject prefix such as `[Portfolio Contact]`. Strip CR/LF from all header values. Retry at 1, 5, 15, 60, 240, 720 minutes and then every 24 hours until attempt 10; attempt 10 becomes `DEAD`. Persist only the exception class and a redacted category, not the SMTP server response body. Stable `Message-ID` makes the unavoidable crash-window resend identifiable, but SMTP delivery remains at-least-once rather than physically exactly-once.
 
-- [ ] **Step 6: Verify disabled delivery and crash recovery behavior**
+- [x] **Step 6: Verify disabled delivery and crash recovery behavior**
 
 Add tests that:
 
@@ -467,14 +471,14 @@ Add tests that:
 - a deleted message cascades its unsent outbox;
 - the same stable `Message-ID` is used on every retry.
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS; SMTP failure changes only outbox state and all leases are recoverable.
 
 ```powershell
-git add backend-parent/portfolio-server/pom.xml backend-parent/portfolio-server/src/main/resources/application.yml backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message
+git add backend-parent/portfolio-server/pom.xml backend-parent/portfolio-server/src/main/resources/application.yml backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
 git commit -m "feat(contact): deliver notifications from email outbox"
 ```
 
