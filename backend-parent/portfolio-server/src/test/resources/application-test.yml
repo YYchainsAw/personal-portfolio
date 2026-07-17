@@ -6,6 +6,10 @@ portfolio:
   preview:
     hmac-key: ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=
     ttl: PT10M
+  contact:
+    dedupe-secret: ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=
+    owner-email: owner@example.invalid
+    mail-id-domain: yychainsaw.xyz
   jobs:
     worker-enabled: false
   storage:

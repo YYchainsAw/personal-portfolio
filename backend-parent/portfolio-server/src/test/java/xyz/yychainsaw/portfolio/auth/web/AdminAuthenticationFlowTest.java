@@ -1284,6 +1284,12 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
         String databaseUrl = POSTGRES.getJdbcUrl() + separator + "currentSchema=portfolio";
         String previewHmacKey =
                 environment.getRequiredProperty("portfolio.preview.hmac-key");
+        String contactDedupeSecret =
+                environment.getRequiredProperty("portfolio.contact.dedupe-secret");
+        String contactOwnerEmail =
+                environment.getRequiredProperty("portfolio.contact.owner-email");
+        String contactMailIdDomain =
+                environment.getRequiredProperty("portfolio.contact.mail-id-domain");
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("PORTFOLIO_DB_URL", databaseUrl);
         properties.put("PORTFOLIO_DB_MIGRATOR_URL", databaseUrl);
@@ -1298,6 +1304,9 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
                 "PORTFOLIO_TOTP_KEY_RING",
                 "1=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
         properties.put("PORTFOLIO_PREVIEW_HMAC_KEY", previewHmacKey);
+        properties.put("PORTFOLIO_CONTACT_DEDUPE_SECRET", contactDedupeSecret);
+        properties.put("PORTFOLIO_OWNER_EMAIL", contactOwnerEmail);
+        properties.put("PORTFOLIO_MAIL_ID_DOMAIN", contactMailIdDomain);
         properties.put("PORTFOLIO_SESSION_COOKIE_SECURE", "false");
         properties.put("PORTFOLIO_ALLOW_DEVELOPMENT_CORS", Boolean.toString(corsEnabled));
         properties.put("PORTFOLIO_ADMIN_DEV_ORIGIN", DEVELOPMENT_ORIGIN);
@@ -1316,6 +1325,15 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
                 "portfolio.security.totp.key-ring",
                 "1=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
         properties.put("portfolio.preview.hmac-key", previewHmacKey);
+        properties.put(
+                "portfolio.contact.dedupe-secret",
+                contactDedupeSecret);
+        properties.put(
+                "portfolio.contact.owner-email",
+                contactOwnerEmail);
+        properties.put(
+                "portfolio.contact.mail-id-domain",
+                contactMailIdDomain);
         properties.put("server.servlet.session.cookie.secure", "false");
         properties.put("portfolio.web.allow-development-cors", Boolean.toString(corsEnabled));
         properties.put("portfolio.web.development-origin", DEVELOPMENT_ORIGIN);

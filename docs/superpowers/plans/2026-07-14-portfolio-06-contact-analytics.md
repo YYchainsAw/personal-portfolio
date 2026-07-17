@@ -48,7 +48,7 @@
 - Consumes: Plan 01 `xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase`; plan 02 already owns V3-V6 and plan 03 owns V7/V8.
 - Produces: `contact_message`, `email_outbox`, `analytics_event`, and `analytics_daily`.
 
-- [ ] **Step 1: Write the failing migration test**
+- [x] **Step 1: Write the failing migration test**
 
 Create a `@SpringBootTest`, `@Isolated` PostgreSQL integration test extending
 `PostgresIntegrationTestBase`. It must inspect the catalog and exercise real inserts/updates,
@@ -71,7 +71,7 @@ Assert that `PUBLIC` and the runtime login have no direct grants, all objects re
 owned by the migrator, no grant is grantable, and the runtime has no schema `CREATE`,
 `TRUNCATE`, `REFERENCES`, `TRIGGER`, or `MAINTAIN` capability.
 
-- [ ] **Step 2: Run the migration test and verify it fails**
+- [x] **Step 2: Run the migration test and verify it fails**
 
 Run from `backend-parent`:
 
@@ -81,7 +81,7 @@ Run from `backend-parent`:
 
 Expected: FAIL because the V9 and V10 tables do not exist.
 
-- [ ] **Step 3: Create V9 with message and outbox constraints**
+- [x] **Step 3: Create V9 with message and outbox constraints**
 
 Implement the canonical, schema-qualified V9 migration in the file named above. In addition to
 the declared columns, it must include:
@@ -99,7 +99,7 @@ the declared columns, it must include:
 
 The configured site-owner address is the only `to_address`. Do not send an automatic reply to the visitor in this phase.
 
-- [ ] **Step 4: Create V10 with analytics privacy and reporting constraints**
+- [x] **Step 4: Create V10 with analytics privacy and reporting constraints**
 
 Implement the canonical, schema-qualified V10 migration in the file named above. Preserve the
 exact column whitelist and add named constraints that enforce:
@@ -117,13 +117,13 @@ exact column whitelist and add named constraints that enforce:
 
 Do not add IP, IP hash, browser identifier, session identifier, full URL query, or full User-Agent columns. Constrain aggregate dimension values by dimension: `ALL` uses `(all)`, `PAGE` uses an allowlisted uppercase key, `PROJECT` uses a canonical lowercase UUID, `REFERRER` uses a normalized lowercase hostname or `(direct)`/`(none)`, `DEVICE` uses the device enum, and `LOCALE` uses `zh-CN`/`en`. The durable aggregate table must reject any raw visitor/session day HMAC, including one embedded in another value.
 
-- [ ] **Step 5: Re-run the migration test and inspect Flyway order**
+- [x] **Step 5: Re-run the migration test and inspect Flyway order**
 
 Run the Step 2 command.
 
 Expected: PASS; Flyway applies V1 through V10 in order, all four tables exist, runtime has their required DML but no TRUNCATE/schema-CREATE privilege, and both public limiter policies match plan 01 exactly.
 
-- [ ] **Step 6: Commit the schema slice**
+- [x] **Step 6: Commit the schema slice**
 
 ```powershell
 git add backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
@@ -146,14 +146,21 @@ git commit -m "feat(contact): add message and analytics schema"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/persistence/EmailOutboxMapper.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/PublicContactController.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/PublicContactRequest.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/PublicContactBodyReader.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/ContactRateLimitSubjectHasher.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/common/error/GlobalProblemHandler.java`
+- Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
+- Modify: `backend-parent/portfolio-server/src/test/resources/application-test.yml`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/ContactMessageServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/web/PublicContactControllerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/web/PublicContactBodyReaderTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/config/ContactPropertiesTest.java`
 
 **Interfaces:**
 - Consumes: plan-01 CSRF enforcement, `RateLimiter#consume("public-contact", subject)`, `DomainException`, Jackson, `Clock`, and a request-IP resolver that trusts only the plan-01 proxy boundary.
 - Produces: `POST /api/public/contact` and one committed `email_outbox` row per accepted non-duplicate message.
 
-- [ ] **Step 1: Write service tests for atomic insert, deduplication, and the honey field**
+- [x] **Step 1: Write service tests for atomic insert, deduplication, and the honey field**
 
 ```java
 @Test
@@ -161,7 +168,7 @@ void acceptedMessageAndNotificationCommitTogether() {
     SubmitContactCommand command = new SubmitContactCommand(
         "Player One", "player@example.com", "UE collaboration",
         "I would like to discuss your project.", "", true,
-        "rate-subject-1", instant("2026-07-14T10:00:00Z"));
+        "a".repeat(64));
 
     ContactSubmissionResult result = service.submit(command);
 
@@ -172,8 +179,10 @@ void acceptedMessageAndNotificationCommitTogether() {
 
 @Test
 void repeatedContentInSameTenMinuteWindowReturnsGenericAcceptanceWithoutSecondRow() {
-    ContactSubmissionResult first = service.submit(validCommandAt("2026-07-14T10:01:00Z"));
-    ContactSubmissionResult second = service.submit(validCommandAt("2026-07-14T10:08:59Z"));
+    clock.set(instant("2026-07-14T10:01:00Z"));
+    ContactSubmissionResult first = service.submit(validCommand());
+    clock.set(instant("2026-07-14T10:08:59Z"));
+    ContactSubmissionResult second = service.submit(validCommand());
 
     assertThat(first.accepted()).isTrue();
     assertThat(second).isEqualTo(ContactSubmissionResult.acceptedWithoutIdentifier());
@@ -183,7 +192,7 @@ void repeatedContentInSameTenMinuteWindowReturnsGenericAcceptanceWithoutSecondRo
 
 @Test
 void populatedHoneyFieldReturnsGenericAcceptanceAndWritesNothing() {
-    ContactSubmissionResult result = service.submit(validCommand().withWebsite("https://spam.invalid"));
+    ContactSubmissionResult result = service.submit(honeypotCommand());
 
     assertThat(result).isEqualTo(ContactSubmissionResult.acceptedWithoutIdentifier());
     assertThat(contactMapper.count()).isZero();
@@ -193,15 +202,15 @@ void populatedHoneyFieldReturnsGenericAcceptanceAndWritesNothing() {
 
 Use a PostgreSQL integration test for the rollback case: force the outbox insert to fail and assert that no `contact_message` survives.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
-.\mvnw.cmd -pl portfolio-server -am -Dtest=ContactMessageServiceTest,PublicContactControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
+.\mvnw.cmd -pl portfolio-server -am -Dtest=ContactMessageServiceTest,PublicContactControllerTest,PublicContactBodyReaderTest,ContactPropertiesTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 Expected: FAIL because the intake service and endpoint do not exist.
 
-- [ ] **Step 3: Define the strict request and command boundary**
+- [x] **Step 3: Define the strict request and command boundary**
 
 ```java
 public record PublicContactRequest(
@@ -220,8 +229,7 @@ public record SubmitContactCommand(
     String body,
     String website,
     boolean privacyAccepted,
-    String rateLimitSubject,
-    Instant receivedAt
+    String rateLimitSubject
 ) {}
 
 public record ContactSubmissionResult(boolean accepted, UUID messageId) {
@@ -235,9 +243,9 @@ public record ContactSubmissionResult(boolean accepted, UUID messageId) {
 }
 ```
 
-Reject unknown JSON fields for this DTO and cap the complete JSON body at 32 KiB. The controller deliberately does not apply eager `@Valid` before the honeypot check: it maps a null `website` to `""`, returns the same generic `202` immediately for any nonblank honeypot value, and only then invokes Bean Validation/application normalization for a real submission. This preserves the honeypot contract even when a bot leaves other required fields invalid. Normalize Unicode to NFC, trim outer whitespace, lowercase the email domain only, reject control characters except line breaks in the body, and never reflect submitted values in the response.
+Reject unknown and duplicate JSON fields for this DTO, disable scalar coercion by checking every tree value's exact JSON type, and reject trailing tokens. An endpoint-specific bounded reader must reject both declared and chunked/no-length bodies above 32,768 raw bytes before deserializing them, returning `413 PAYLOAD_TOO_LARGE`; the multipart limit does not cover JSON. The controller deliberately does not apply eager `@Valid` before the honeypot check: it maps a null `website` to `""`, returns the same generic `202` immediately for any nonblank honeypot value, and only then invokes manual Bean Validation/application normalization for a real submission. Syntax/type/unknown/duplicate failures are `400 MALFORMED_REQUEST`; well-formed field failures use the existing `422 VALIDATION_ERROR` contract. Normalize Unicode to NFC, trim Unicode whitespace at the boundary, normalize CRLF/CR and Unicode line separators to LF in the body, lowercase the email domain only, reject malformed UTF-16, single-line separators, unsafe format controls, and control characters except LF in the body, and never reflect submitted values in the response.
 
-- [ ] **Step 4: Implement a secret-keyed rolling ten-minute duplicate check**
+- [x] **Step 4: Implement a secret-keyed rolling ten-minute duplicate check**
 
 ```java
 public String contactKey(SubmitContactCommand command) {
@@ -248,62 +256,62 @@ public String contactKey(SubmitContactCommand command) {
 }
 ```
 
-Store the secret as base64 environment configuration. Within the submission transaction, acquire a PostgreSQL transaction advisory lock derived from this keyed fingerprint, then query for the same fingerprint at or after `receivedAt - 10 minutes`. This makes the window rolling and prevents concurrent duplicates without retaining a reusable unkeyed hash of contact content.
+Store the secret as canonical base64 environment configuration and require at least 256 decoded bits. After normalization and rate limiting, open an explicit `READ_COMMITTED` transaction, acquire a PostgreSQL transaction advisory lock derived from this keyed fingerprint, then read the injected `Clock` exactly once (truncated to PostgreSQL microsecond precision). Query for the same fingerprint at or after `acceptedAt - 10 minutes`, and use that same `acceptedAt` for consent, message, and outbox timestamps. This makes the window rolling, lets a lock waiter see the preceding commit, and prevents concurrent duplicates without retaining a reusable unkeyed hash of contact content. Exactly ten minutes remains suppressed; ten minutes plus one microsecond is accepted.
 
-- [ ] **Step 5: Implement the transactional service**
+The public rate-limit subject uses a separate process-random 256-bit HMAC key and a `public-contact` domain separator. Resolve the raw address only at the controller boundary through `TrustedClientAddressResolver`, hash it immediately, and pass only the 64-character result onward. Never reuse the persistent contact-content dedupe secret for IP subjects.
 
-```java
-@Transactional
-public ContactSubmissionResult submit(SubmitContactCommand command) {
-    String website = Objects.requireNonNullElse(command.website(), "");
-    if (!website.isBlank()) {
-        return ContactSubmissionResult.acceptedWithoutIdentifier();
-    }
-    RateLimitDecision decision = rateLimiter.consume("public-contact", command.rateLimitSubject());
-    if (!decision.allowed()) {
-        throw new DomainException("CONTACT_RATE_LIMITED", HttpStatus.TOO_MANY_REQUESTS, Map.of());
-    }
-    SubmitContactCommand normalized = validateAndNormalize(command);
-    String dedupeKey = fingerprintService.contactKey(normalized);
-    contactMapper.acquireDedupeLock(dedupeKey);
-    if (contactMapper.existsByDedupeKeySince(
-            dedupeKey, normalized.receivedAt().minus(Duration.ofMinutes(10)))) {
-        return ContactSubmissionResult.acceptedWithoutIdentifier();
-    }
+- [x] **Step 5: Implement the transactional service**
 
-    UUID messageId = uuidGenerator.next();
-    contactMapper.insert(ContactMessageRecord.unread(messageId, normalized, dedupeKey));
-    outboxMapper.insert(EmailOutboxRecord.pending(
-        uuidGenerator.next(), messageId, properties.ownerEmail(),
-        "portfolio-contact-" + messageId + "@" + properties.mailIdDomain(), normalized.receivedAt()));
-    return ContactSubmissionResult.accepted(messageId);
-}
+Keep the honeypot check, internal hashed-subject validation, limiter call, normalization, and
+content HMAC outside any database transaction. A denied limiter becomes
+`CONTACT_RATE_LIMITED` with a bounded positive `retryAfterSeconds` field; the controller copies
+that exact safe value to `Retry-After` before rethrowing.
+
+Use `TransactionTemplate` (or a separate proxied writer) with explicit `READ_COMMITTED` for the
+single critical section below; do not use a self-invoked `@Transactional` method. Bound both the
+overall transaction and PostgreSQL advisory-lock wait, and assert that the lock mapper is never
+called without an active transaction:
+
+```text
+pg_advisory_xact_lock(first 64 bits of keyed fingerprint)
+→ acceptedAt = truncateToMicros(clock.instant())
+→ exists(dedupe_key, created_at >= acceptedAt - 10 minutes)
+→ insert contact_message with explicit acceptedAt timestamps
+→ insert exactly one email_outbox with the same timestamps
+→ commit
 ```
+
+Both inserts must affect exactly one row and use no `ON CONFLICT DO NOTHING`. Store the complete
+RFC header value `<portfolio-contact-{messageId}@{validatedAsciiDomain}>` once; Task 3 sends it
+unchanged. Any outbox failure escapes the transaction and rolls back the message. JDBC/MyBatis
+queries use bound parameters only; a `JdbcClient` mapper is acceptable and needs no XML.
 
 `validateAndNormalize` returns a new immutable command containing only the normalized values; it never tries to mutate the incoming record. The controller ignores the internal `messageId` and serializes only `{ "accepted": true }`.
 
-The endpoint returns `202 Accepted` with only `{ "accepted": true }`; it never returns `messageId` publicly. Add a two-thread PostgreSQL test proving the advisory lock permits only one insert, plus a boundary test proving 9 minutes 59.999 seconds is suppressed while 10 minutes 0.001 seconds is accepted. Add a controller test with a populated honeypot plus otherwise-invalid/missing fields and assert the same generic `202` with no rate-limit, message, or outbox write.
+The endpoint returns `202 Accepted` with only `{ "accepted": true }`; it never returns `messageId` publicly. Add a two-thread PostgreSQL test proving the advisory lock permits only one insert, plus boundary tests proving 10 minutes minus one microsecond and exactly 10 minutes are suppressed while 10 minutes plus one microsecond is accepted. Add a controller test with a populated honeypot plus otherwise-invalid/missing fields and assert the same generic `202` with no rate-limit, message, or outbox write. Every PII-bearing request, command, persistence row, and configuration type must override `toString()` with a redacted representation.
 
-- [ ] **Step 6: Add controller tests for validation, privacy, rate limiting, and redaction**
+- [x] **Step 6: Add controller tests for validation, privacy, rate limiting, and redaction**
 
 Verify:
 
 - valid input returns `202`;
-- missing/invalid CSRF returns `403 CSRF_INVALID` and writes no message/outbox row;
-- missing consent, invalid email, overlong fields, and unknown fields return the common `400` validation problem;
+- acquire the real anonymous CSRF cookie/token, then prove missing, invalid, and mismatched cookie/header requests return `403 CSRF_INVALID` before body, limiter, service, or database work;
+- 32,768 raw bytes are accepted for parsing while 32,769 bytes, including a no-length/chunked stream, return `413 PAYLOAD_TOO_LARGE` without consuming quota;
+- missing consent, invalid email, and overlong fields return `422 VALIDATION_ERROR`; malformed, unknown, duplicate, or wrong-type JSON returns `400 MALFORMED_REQUEST`;
 - rate limit returns `429` plus `Retry-After`;
 - the injected limiter fake records exactly `consume("public-contact", hashedSubject)` and never receives a raw IP or any other policy name;
+- untrusted peers cannot spoof `X-Real-IP`; only the configured proxy's single valid header affects the hashed subject, while duplicate/invalid headers map to the safe unknown subject;
 - logs and response bodies do not contain email or message body;
 - the controller does not pass a raw IP into persistence.
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS with one message and one outbox row committed atomically.
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message
+git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/common/error/GlobalProblemHandler.java backend-parent/portfolio-server/src/main/resources/application.yml backend-parent/portfolio-server/src/test/resources/application-test.yml backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message docs/superpowers/plans/2026-07-14-portfolio-05-public-site-seo.md docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
 git commit -m "feat(contact): accept private contact submissions"
 ```
 
@@ -376,8 +384,6 @@ portfolio:
   email:
     enabled: ${PORTFOLIO_EMAIL_ENABLED:false}
     from: ${PORTFOLIO_EMAIL_FROM:}
-    owner-address: ${PORTFOLIO_OWNER_EMAIL:}
-    mail-id-domain: ${PORTFOLIO_MAIL_ID_DOMAIN:yychainsaw.xyz}
     poll-interval: 10s
     lease-duration: 2m
     batch-size: 10
@@ -395,6 +401,10 @@ spring:
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
 ```
+
+The worker reuses `portfolio.contact.owner-email` and the already persisted complete
+`stable_message_id`; it must not define duplicate owner-address or mail-id-domain settings under
+`portfolio.email`.
 
 Production startup fails if email is enabled but required values are blank or transport TLS is disabled. Development may keep delivery disabled while preserving outbox rows. If the selected provider requires implicit SMTPS instead of STARTTLS, use a separately tested `smtps` profile with certificate validation; never fall back to cleartext SMTP or trust-all TLS.
 

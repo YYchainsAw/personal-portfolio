@@ -8,6 +8,7 @@ import java.util.Map;
 import org.springframework.context.MessageSourceResolvable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -181,11 +182,22 @@ public final class GlobalProblemHandler extends ResponseEntityExceptionHandler {
         problem.setProperty("code", code);
         problem.setProperty("traceId", traceId);
         problem.setProperty("fieldErrors", Map.copyOf(fieldErrors));
+        addSafeRetryAfter(problem, fieldErrors);
 
         HttpHeaders responseHeaders = new HttpHeaders();
         responseHeaders.putAll(headers);
+        responseHeaders.setCacheControl(CacheControl.noStore());
         responseHeaders.set(TRACE_HEADER, traceId);
         return super.handleExceptionInternal(exception, problem, responseHeaders, status, request);
+    }
+
+    private static void addSafeRetryAfter(
+            ProblemDetail problem, Map<String, String> fieldErrors) {
+        String value = fieldErrors.get("retryAfterSeconds");
+        if (value == null || !value.matches("[1-9][0-9]{0,9}")) {
+            return;
+        }
+        problem.setProperty("retryAfterSeconds", Long.parseLong(value));
     }
 
     private static ProblemContract contractFor(HttpStatusCode status) {

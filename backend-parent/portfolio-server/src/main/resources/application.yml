@@ -76,6 +76,10 @@ portfolio:
   preview:
     hmac-key: ${PORTFOLIO_PREVIEW_HMAC_KEY:}
     ttl: PT10M
+  contact:
+    dedupe-secret: ${PORTFOLIO_CONTACT_DEDUPE_SECRET:}
+    owner-email: ${PORTFOLIO_OWNER_EMAIL:}
+    mail-id-domain: ${PORTFOLIO_MAIL_ID_DOMAIN:yychainsaw.xyz}
   jobs:
     retention:
       enabled: ${PORTFOLIO_JOBS_RETENTION_ENABLED:false}
