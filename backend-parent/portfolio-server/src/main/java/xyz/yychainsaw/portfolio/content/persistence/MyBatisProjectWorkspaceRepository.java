@@ -119,8 +119,15 @@ public class MyBatisProjectWorkspaceRepository implements ProjectWorkspaceReposi
     @Override
     @Transactional
     public void markPublished(UUID projectId, long expectedVersion) {
+        markPublished(projectId, expectedVersion, clock.instant());
+    }
+
+    @Override
+    @Transactional
+    public void markPublished(UUID projectId, long expectedVersion, Instant updatedAt) {
         Objects.requireNonNull(projectId, "project id is required");
-        if (mapper.markPublished(projectId, expectedVersion, clock.instant()) == 1) {
+        Objects.requireNonNull(updatedAt, "updatedAt is required");
+        if (mapper.markPublished(projectId, expectedVersion, updatedAt) == 1) {
             return;
         }
         if (mapper.selectProject(projectId) == null) {
@@ -132,7 +139,14 @@ public class MyBatisProjectWorkspaceRepository implements ProjectWorkspaceReposi
     @Override
     @Transactional
     public void updateCatalogOrder(List<UUID> projectIdsInOrder) {
+        updateCatalogOrder(projectIdsInOrder, clock.instant());
+    }
+
+    @Override
+    @Transactional
+    public void updateCatalogOrder(List<UUID> projectIdsInOrder, Instant updatedAt) {
         Objects.requireNonNull(projectIdsInOrder, "catalog order is required");
+        Objects.requireNonNull(updatedAt, "updatedAt is required");
         if (projectIdsInOrder.isEmpty()) {
             return;
         }
@@ -154,7 +168,10 @@ public class MyBatisProjectWorkspaceRepository implements ProjectWorkspaceReposi
         }
 
         List<UUID> finalOrder = new ArrayList<>(requested);
-        current.keySet().stream()
+        current.entrySet().stream()
+                .sorted(Map.Entry.<UUID, Integer>comparingByValue()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .map(Map.Entry::getKey)
                 .filter(id -> !requested.contains(id))
                 .forEach(finalOrder::add);
         if (finalOrder.isEmpty()) {
@@ -174,7 +191,7 @@ public class MyBatisProjectWorkspaceRepository implements ProjectWorkspaceReposi
             for (int index = 0; index < finalOrder.size(); index++) {
                 rows.add(Map.of("id", finalOrder.get(index), "sortOrder", index));
             }
-            mapper.assignCatalogOrder(rows, clock.instant());
+            mapper.assignCatalogOrder(rows, updatedAt);
         } catch (RuntimeException exception) {
             throw ContentPersistenceErrors.translateConstraint(exception);
         }

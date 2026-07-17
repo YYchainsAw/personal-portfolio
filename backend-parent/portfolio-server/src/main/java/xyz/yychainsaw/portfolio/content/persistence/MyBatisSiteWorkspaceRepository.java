@@ -32,6 +32,15 @@ public class MyBatisSiteWorkspaceRepository implements SiteWorkspaceRepository {
 
     @Override
     @Transactional
+    public SiteWorkspaceDto requireForUpdate() {
+        if (mapper.selectProfileForUpdate(SiteWorkspaceDto.SITE_ID) == null) {
+            throw ContentPersistenceErrors.siteMissing();
+        }
+        return assembler.load(mapper, SiteWorkspaceDto.SITE_ID);
+    }
+
+    @Override
+    @Transactional
     public void replace(SiteWorkspaceDto workspace, long expectedVersion) {
         replaceAt(workspace, expectedVersion, clock.instant());
     }

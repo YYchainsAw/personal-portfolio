@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="xyz.yychainsaw.portfolio.publishing.persistence.mybatis.PublishingMapper">
+  <resultMap id="publicationRow" type="xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository$PublicationRow">
+    <constructor>
+      <arg column="aggregate_type" javaType="xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType"/>
+      <arg column="aggregate_id" javaType="java.util.UUID"/>
+      <arg column="status" javaType="java.lang.String"/>
+      <arg column="current_revision_id" javaType="java.util.UUID"/>
+      <arg column="current_slug" javaType="java.lang.String"/>
+      <arg column="version" javaType="_long"/>
+      <arg column="published_at" javaType="java.time.Instant"/>
+    </constructor>
+  </resultMap>
+
+  <resultMap id="revisionRow" type="xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository$RevisionRow">
+    <constructor>
+      <arg column="id" javaType="java.util.UUID"/>
+      <arg column="aggregate_type" javaType="xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType"/>
+      <arg column="aggregate_id" javaType="java.util.UUID"/>
+      <arg column="version" javaType="_long"/>
+      <arg column="snapshot_schema_version" javaType="_int"/>
+      <arg column="json" javaType="java.lang.String"/>
+      <arg column="checksum" javaType="java.lang.String"/>
+      <arg column="published_by" javaType="java.util.UUID"/>
+      <arg column="published_at" javaType="java.time.Instant"/>
+    </constructor>
+  </resultMap>
+
+  <sql id="publicationColumns">
+    aggregate_type, aggregate_id, status, current_revision_id, current_slug, version, published_at
+  </sql>
+
+  <sql id="revisionColumns">
+    id, aggregate_type, aggregate_id, version, snapshot_schema_version,
+    snapshot::text as json, checksum, published_by, published_at
+  </sql>
+
+  <insert id="ensureProjectPublication">
+    insert into portfolio.publication(aggregate_type, aggregate_id, status, version)
+    values ('PROJECT', #{projectId}, 'ARCHIVED', 0)
+    on conflict (aggregate_type, aggregate_id) do nothing
+  </insert>
+
+  <select id="lock" resultMap="publicationRow">
+    select <include refid="publicationColumns"/>
+    from portfolio.publication
+    where aggregate_type = #{type} and aggregate_id = #{aggregateId}
+    for update
+  </select>
+
+  <select id="find" resultMap="publicationRow">
+    select <include refid="publicationColumns"/>
+    from portfolio.publication
+    where aggregate_type = #{type} and aggregate_id = #{aggregateId}
+  </select>
+
+  <select id="findPublishedProjects" resultMap="publicationRow">
+    select publication.aggregate_type, publication.aggregate_id, publication.status,
+           publication.current_revision_id, publication.current_slug,
+           publication.version, publication.published_at
+    from portfolio.publication publication
+    join portfolio.project project_workspace
+      on project_workspace.id = publication.aggregate_id
+    where publication.aggregate_type = 'PROJECT' and publication.status = 'PUBLISHED'
+    order by project_workspace.sort_order, project_workspace.id
+  </select>
+
+  <select id="findPublishedProjectBySlug" resultMap="publicationRow">
+    select <include refid="publicationColumns"/>
+    from portfolio.publication
+    where aggregate_type = 'PROJECT' and status = 'PUBLISHED' and current_slug = #{slug}
+  </select>
+
+  <select id="redirectTarget" resultType="string">
+    select new_slug from portfolio.slug_redirect where old_slug = #{oldSlug}
+  </select>
+
+  <insert id="insertRevision">
+    insert into portfolio.content_revision(
+      id, aggregate_type, aggregate_id, version, snapshot_schema_version,
+      snapshot, checksum, published_by, published_at)
+    values (
+      #{revision.id}, #{revision.type}, #{revision.aggregateId}, #{revision.version},
+      #{revision.schemaVersion}, #{revision.json}::jsonb, #{revision.checksum},
+      #{revision.publishedBy}, #{revision.publishedAt})
+  </insert>
+
+  <insert id="insertMediaReferences">
+    insert into portfolio.revision_media_reference(
+      revision_id, asset_id, variant_name, usage)
+    values
+    <foreach collection="references" item="reference" separator=",">
+      (#{revisionId}, #{reference.assetId}, #{reference.variantName}, #{reference.usage})
+    </foreach>
+  </insert>
+
+  <update id="casPublish">
+    update portfolio.publication
+    set status='PUBLISHED', current_revision_id=#{revisionId}, current_slug=#{slug},
+        version=version+1, published_at=#{publishedAt}
+    where aggregate_type=#{type} and aggregate_id=#{aggregateId} and version=#{expectedVersion}
+  </update>
+
+  <update id="casArchive">
+    update portfolio.publication
+    set status='ARCHIVED', version=version+1, published_at=#{archivedAt}
+    where aggregate_type=#{type} and aggregate_id=#{aggregateId} and version=#{expectedVersion}
+  </update>
+
+  <select id="currentSlugOrRedirectExists" resultType="boolean">
+    select exists (
+      select 1 from portfolio.publication
+      where aggregate_type='PROJECT'
+        and current_slug=#{slug} and aggregate_id&lt;&gt;#{excludingProjectId}
+      union
+      select 1 from portfolio.slug_redirect
+      where old_slug=#{slug}
+    )
+  </select>
+
+  <insert id="insertRedirect">
+    insert into portfolio.slug_redirect(old_slug, new_slug, project_id, created_at)
+    values (#{oldSlug}, #{newSlug}, #{projectId}, #{createdAt})
+  </insert>
+
+  <select id="requireRevision" resultMap="revisionRow">
+    select <include refid="revisionColumns"/>
+    from portfolio.content_revision where id=#{revisionId}
+  </select>
+
+  <select id="history" resultMap="revisionRow">
+    select <include refid="revisionColumns"/>
+    from portfolio.content_revision
+    where aggregate_type=#{type} and aggregate_id=#{aggregateId}
+    order by version desc
+  </select>
+</mapper>

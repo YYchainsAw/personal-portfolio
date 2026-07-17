@@ -24,7 +24,20 @@ public interface ProjectWorkspaceRepository {
 
     void markPublished(UUID projectId, long expectedVersion);
 
+    default void markPublished(
+            UUID projectId,
+            long expectedVersion,
+            Instant updatedAt) {
+        markPublished(projectId, expectedVersion);
+    }
+
     void updateCatalogOrder(List<UUID> projectIdsInOrder);
+
+    default void updateCatalogOrder(
+            List<UUID> projectIdsInOrder,
+            Instant updatedAt) {
+        updateCatalogOrder(projectIdsInOrder);
+    }
 
     default void insert(ProjectWorkspaceDto workspace, Instant updatedAt) {
         insert(workspace);

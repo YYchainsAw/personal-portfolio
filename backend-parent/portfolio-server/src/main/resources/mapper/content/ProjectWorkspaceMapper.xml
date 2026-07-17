@@ -268,7 +268,7 @@
   </update>
 
   <select id="lockCatalog" resultType="map">
-    select id,sort_order from portfolio.project order by sort_order,id for update
+    select id,sort_order from portfolio.project order by id for update
   </select>
 
   <update id="moveCatalogToTemporary">

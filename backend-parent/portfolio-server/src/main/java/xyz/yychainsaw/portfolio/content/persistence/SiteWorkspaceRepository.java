@@ -6,6 +6,8 @@ import xyz.yychainsaw.portfolio.content.api.SiteWorkspaceDto;
 public interface SiteWorkspaceRepository {
     SiteWorkspaceDto require();
 
+    SiteWorkspaceDto requireForUpdate();
+
     void replace(SiteWorkspaceDto workspace, long expectedVersion);
 
     default void replace(
