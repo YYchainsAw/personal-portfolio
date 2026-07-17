@@ -11,10 +11,10 @@
 ## Global Constraints
 
 - This plan depends on plan 01 for the Maven modules, PostgreSQL/Testcontainers harness, authentication, CSRF, `CurrentAdminProvider`, `AuditService`, common error handling, and Flyway migrations V1/V2.
-- This plan depends on plan 02 for Flyway migration V3, `media_asset`, `media_variant`, media translations, storage drivers, import ingestion, and READY-media queries.
+- This plan depends on plan 02 for Flyway migrations V3-V6, `media_asset`, `media_variant`, media translations, storage drivers, import ingestion, local-staging/job-retention safeguards, and READY-media queries.
 - Use package root `xyz.yychainsaw.portfolio`; do not copy code or data from `QingLian-MyFitnessApp-Android-SpringBoot`.
-- Use exactly `V4__content_workspace.sql` for normalized content and `V5__publishing.sql` for publication state.
-- UUIDs are generated in Java except the fixed SITE and PROJECT_CATALOG IDs; all persisted timestamps are `timestamptz` written from `Clock` in UTC.
+- Use exactly `V7__content_workspace.sql` for normalized content and `V8__publishing.sql` for publication state. V4-V6 already belong to plan 02 and must never be renamed or replaced.
+- UUIDs are generated in Java except the fixed SITE and PROJECT_CATALOG IDs. Application transaction writes pass UTC instants from an injected `Clock`; Flyway seed/default timestamps and database-maintained `updated_at` triggers may use PostgreSQL `now()`.
 - Supported locales are exactly `zh-CN` and `en`; every translation table has a `(parent_id, locale)` unique or primary-key constraint.
 - Public slugs are shared by both locales and match `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
 - Public readers never query workspace translation tables and never expose a draft, non-current revision, or archived publication.
@@ -24,6 +24,18 @@
 - No Redis, message queue, Elasticsearch, microservice, arbitrary EAV field, arbitrary HTML, uploaded video, or generic page builder is introduced.
 - Use TDD for every task: add one focused failing test, observe the expected failure, add the smallest implementation, run the focused test, then run the affected module suite.
 - Each task ends with the exact commit shown. Do not combine task commits.
+
+### Repository reconciliation (binding)
+
+The checked-in plan 01/02 implementation is authoritative where an older illustrative snippet below differs. In particular:
+
+- The runtime database role is exactly `portfolio_runtime_access`; all V7/V8 grants and revokes use that role.
+- `StorageService` exposes `location()`, and `StorageRead` exposes `totalLength()`, `range()`, `contentLength()`, `contentType()`, and `etag()`. Consumers validate descriptor location against `storage.location()`, use the served range returned by storage, and close every `StorageRead` after streaming.
+- MVC security tests reuse the established plan 01 real-login/session fixture pattern (for example `AdminAuditQueryTest`) so requests carry `AdminPrincipal` plus active session metadata. Plain `@WithMockUser` is insufficient for `SecurityCurrentAdminProvider`. Service tests may mock `CurrentAdminProvider` directly.
+- The global lock order is sorted READY media share locks first, then fixed SITE/project/catalog update locks. A mutation may optimistically read a workspace to discover references, but after taking media locks it must take content locks, re-read the expected version and reference set, and only then write. Publish, archive, reorder, import attachment, and restore all follow this order.
+- `project.sort_order` remains unique. Reorder implementations must avoid transient duplicate values with a collision-free two-phase update (or defer an explicitly deferrable constraint); direct pairwise swaps are forbidden. Catalog order comes from the explicitly locked current project-ID order, never from a historical project snapshot's stale `sortOrder`.
+- Snapshot readers dispatch from the stored `snapshot_schema_version` through `SnapshotMapperRegistry`; callers never decode history directly into the newest record type.
+- A newly imported media asset is `PROCESSING`, so it cannot be attached to durable content. The one-time importer must preflight first, import/finalize media outside the content-attachment transaction, verify every selected asset/variant is READY, then attach all content atomically under the global lock order. Failed/pre-content media remains governed by plan 02 staging/cleanup lifecycle.
 
 ## Cross-plan interface contract
 
@@ -155,16 +167,29 @@ public record ByteRange(long startInclusive, long endInclusive) {
 // owned by plan 02
 package xyz.yychainsaw.portfolio.media.storage;
 
+import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
+
+public record StorageLocation(StorageProvider provider, String bucket, String region) {}
+```
+
+```java
+// owned by plan 02
+package xyz.yychainsaw.portfolio.media.storage;
+
+import java.io.IOException;
 import java.io.InputStream;
+import java.util.Optional;
 
 public record StorageRead(
         InputStream inputStream,
+        long totalLength,
+        Optional<ByteRange> range,
         long contentLength,
         String contentType,
         String etag
 ) implements AutoCloseable {
     @Override
-    public void close() throws Exception {
+    public void close() throws IOException {
         inputStream.close();
     }
 }
@@ -182,6 +207,7 @@ import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 
 public interface StorageService {
     StorageProvider provider();
+    StorageLocation location();
     StoredObject put(String objectKey, InputStream input, long contentLength, String contentType);
     StorageRead open(String objectKey, Optional<ByteRange> range);
     URI signedGet(String objectKey, Duration ttl);
@@ -367,8 +393,8 @@ public interface MediaChangeListener {
 - `frontend/scripts/export-portfolio.mjs`: load `portfolio.ts` through Vite, validate it, and write deterministic canonical JSON.
 - `frontend/scripts/canonical-json.mjs`: recursively sort object keys while preserving array order.
 - `frontend/schema/portfolio-import-v1.schema.json`: closed JSON Schema contract for the one-time import artifact.
-- `backend-parent/portfolio-server/src/main/resources/db/migration/V4__content_workspace.sql`: all normalized editable content tables and constraints.
-- `backend-parent/portfolio-server/src/main/resources/db/migration/V5__publishing.sql`: immutable revisions, publication pointers, redirects, media references, and fixed singleton rows.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V7__content_workspace.sql`: all normalized editable content tables and constraints.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V8__publishing.sql`: immutable revisions, publication pointers, redirects, media references, and fixed singleton rows.
 - `content/model`: aggregate records and validation vocabulary; no persistence annotations.
 - `content/persistence`: MyBatis mapper interfaces, row records, XML, assemblers, and transactional aggregate repositories.
 - `content/application`: workspace query/update services and the one-time importer.
@@ -383,6 +409,7 @@ public interface MediaChangeListener {
 ### Task 1: Deterministic Vite portfolio exporter and closed JSON Schema
 
 **Files:**
+- Modify: `.gitignore`
 - Create: `frontend/scripts/canonical-json.mjs`
 - Create: `frontend/scripts/export-portfolio.mjs`
 - Create: `frontend/scripts/export-portfolio.test.mjs`
@@ -475,7 +502,7 @@ export const canonicalize = (value) => {
   if (value === null || typeof value !== 'object') return value
   return Object.fromEntries(
     Object.keys(value)
-      .sort((left, right) => left.localeCompare(right, 'en'))
+      .sort()
       .map((key) => [key, canonicalize(value[key])]),
   )
 }
@@ -544,7 +571,7 @@ Create a draft-2020-12 schema with `additionalProperties: false` on every object
         "image": { "type": "string", "pattern": "^/images/[^/]+$" },
         "objectPosition": { "type": "string", "minLength": 1 },
         "credit": { "type": "string", "minLength": 1 },
-        "sourceUrl": { "type": "string", "format": "uri" },
+        "sourceUrl": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https://(?![^/?#]*@)[^#\\s]+$" },
         "alt": { "$ref": "#/$defs/localizedString" }
       }
     },
@@ -558,7 +585,7 @@ Create a draft-2020-12 schema with `additionalProperties: false` on every object
         "layout": { "enum": ["wide", "standard"] },
         "objectPosition": { "type": "string", "minLength": 1 },
         "credit": { "type": "string", "minLength": 1 },
-        "sourceUrl": { "type": "string", "format": "uri" },
+        "sourceUrl": { "type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https://(?![^/?#]*@)[^#\\s]+$" },
         "alt": { "$ref": "#/$defs/localizedString" }
       }
     }
@@ -820,19 +847,19 @@ npm run test:export
 npm run export:portfolio
 ```
 
-Expected: both commands exit `0`; the test reports `2 passed`, including the blank-versus-missing translation contract, and the exporter prints JSON containing a 64-character `sha256` and an output path ending in `runtime/import/portfolio-v1.json`.
+Expected: both commands exit `0`; the test reports `4 passed`, covering deterministic code-unit key ordering, blank-versus-missing translations, and bounded credential-free HTTPS source URLs, and the exporter prints JSON containing a 64-character `sha256` and an output path ending in `runtime/import/portfolio-v1.json`. The generated runtime artifact is ignored and untracked.
 
 - [ ] **Step 7: Commit the exporter contract**
 
 ```powershell
-git add frontend/package.json frontend/package-lock.json frontend/scripts/canonical-json.mjs frontend/scripts/export-portfolio.mjs frontend/scripts/export-portfolio.test.mjs frontend/schema/portfolio-import-v1.schema.json
+git add .gitignore frontend/package.json frontend/package-lock.json frontend/scripts/canonical-json.mjs frontend/scripts/export-portfolio.mjs frontend/scripts/export-portfolio.test.mjs frontend/schema/portfolio-import-v1.schema.json
 git commit -m "feat(content): add deterministic portfolio exporter"
 ```
 
-### Task 2: Flyway V4 normalized bilingual content workspace
+### Task 2: Flyway V7 normalized bilingual content workspace
 
 **Files:**
-- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V4__content_workspace.sql`
+- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V7__content_workspace.sql`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/persistence/ContentWorkspaceMigrationTest.java`
 
 **Interfaces:**
@@ -863,7 +890,7 @@ class ContentWorkspaceMigrationTest extends PostgresIntegrationTestBase {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void v4CreatesEveryNormalizedWorkspaceTable() {
+    void v7CreatesEveryNormalizedWorkspaceTable() {
         List<String> actual = jdbc.queryForList(
                 "select table_name from information_schema.tables " +
                 "where table_schema = 'portfolio' order by table_name",
@@ -888,7 +915,7 @@ class ContentWorkspaceMigrationTest extends PostgresIntegrationTestBase {
     }
 
     @Test
-    void v4RejectsUnsupportedLocaleAndInvalidSlug() {
+    void v7RejectsUnsupportedLocaleAndInvalidSlug() {
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> jdbc.update(
                 "insert into site_profile_translation(site_id, locale, display_name, secondary_name) " +
                 "values (?::uuid, 'fr', 'Nom', 'Name')",
@@ -913,13 +940,13 @@ class ContentWorkspaceMigrationTest extends PostgresIntegrationTestBase {
         assertThat(jdbc.update("delete from project where id=?", projectId)).isEqualTo(1);
 
         assertThatThrownBy(() -> jdbc.execute(
-                "create table v4_runtime_must_not_create(id integer)"))
+                "create table v7_runtime_must_not_create(id integer)"))
                 .hasMessageContaining("permission denied");
     }
 }
 ```
 
-- [ ] **Step 2: Run the focused test and observe the missing V4 failure**
+- [ ] **Step 2: Run the focused test and observe the missing V7 failure**
 
 Run from `backend-parent/`:
 
@@ -927,11 +954,11 @@ Run from `backend-parent/`:
 .\mvnw.cmd -pl portfolio-server -am -Dtest=ContentWorkspaceMigrationTest test
 ```
 
-Expected: FAIL because `site_profile` and the other V4 tables do not exist.
+Expected: FAIL because `site_profile` and the other V7 tables do not exist.
 
-- [ ] **Step 3: Create V4 site, navigation, profile, and taxonomy tables**
+- [ ] **Step 3: Create V7 site, navigation, profile, and taxonomy tables**
 
-Start `V4__content_workspace.sql` with this exact SQL:
+Start `V7__content_workspace.sql` with this exact SQL:
 
 ```sql
 create table site_profile (
@@ -1147,7 +1174,7 @@ create table skill_translation (
 );
 ```
 
-- [ ] **Step 4: Append project, typed block, roadmap, and resume tables to V4**
+- [ ] **Step 4: Append project, typed block, roadmap, and resume tables to V7**
 
 ```sql
 create table project (
@@ -1358,9 +1385,9 @@ create index idx_project_content_block_project on project_content_block(project_
 create index idx_roadmap_stage_site on roadmap_stage(site_id, sort_order);
 
 -- The singleton SITE row is created by Flyway; runtime may read and edit it, not create/delete it.
-grant select, update on table site_profile to portfolio_runtime;
+grant select, update on table site_profile to portfolio_runtime_access;
 
--- UUID keys are application-generated, so V4 creates no sequences. Workspace replace/import
+-- UUID keys are application-generated, so V7 creates no sequences. Workspace replace/import
 -- needs CRUD on every mutable child/root table and receives no schema CREATE or table TRUNCATE.
 grant select, insert, update, delete on table
     site_profile_translation,
@@ -1405,7 +1432,7 @@ grant select, insert, update, delete on table
     roadmap_outcome,
     roadmap_outcome_translation,
     resume_document
-to portfolio_runtime;
+to portfolio_runtime_access;
 ```
 
 - [ ] **Step 5: Run the migration tests and the full Flyway test set**
@@ -1417,12 +1444,12 @@ Run from `backend-parent/`:
 .\mvnw.cmd -pl portfolio-server -am -Dtest=*MigrationTest test
 ```
 
-Expected: both commands exit `0`; `ContentWorkspaceMigrationTest` reports `3 tests run, 0 failures`, runtime DML succeeds while runtime DDL is denied, and Flyway applies V1 through V4 from an empty PostgreSQL database.
+Expected: both commands exit `0`; `ContentWorkspaceMigrationTest` reports `3 tests run, 0 failures`, runtime DML succeeds while runtime DDL is denied, and Flyway applies V1 through V7 from an empty PostgreSQL database.
 
-- [ ] **Step 6: Commit V4**
+- [ ] **Step 6: Commit V7**
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/resources/db/migration/V4__content_workspace.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/persistence/ContentWorkspaceMigrationTest.java
+git add backend-parent/portfolio-server/src/main/resources/db/migration/V7__content_workspace.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/persistence/ContentWorkspaceMigrationTest.java
 git commit -m "feat(content): add normalized workspace schema"
 ```
 
@@ -1495,6 +1522,8 @@ class WorkspaceValidatorTest {
 ```
 
 `WorkspaceFixtures.projectBuilder()` returns a complete two-locale project with empty media/blocks by default and exposes `translations(Map<LocaleCode,ProjectCopy>)`, `blocks(List<ContentBlockDto>)`, and `build()`. The same class defines `site(long version)`, `project()`, `projectWithoutMedia()`, and `withEnglishTitle(ProjectWorkspaceDto source, String title)`; each builds from fixed test constants so tests never rely on production seed data.
+
+The unsafe-link case must start from that otherwise valid two-locale fixture, so the asserted error is caused only by the URL. `WorkspaceValidator` is a Spring bean (`@Component`) and the focused test also verifies it is discoverable for Task 4 constructor injection.
 
 - [ ] **Step 2: Run the test and verify the contracts are absent**
 
@@ -1762,6 +1791,7 @@ import xyz.yychainsaw.portfolio.content.api.LocaleCode;
 import xyz.yychainsaw.portfolio.content.api.ProjectWorkspaceDto;
 import xyz.yychainsaw.portfolio.content.api.SiteWorkspaceDto;
 
+@org.springframework.stereotype.Component
 public final class WorkspaceValidator {
     public void validateSite(SiteWorkspaceDto site) {
         TreeMap<String, String> errors = new TreeMap<>();
@@ -1865,7 +1895,7 @@ Expected: both commands exit `0`; the validator test reports `2 tests run, 0 fai
 - [ ] **Step 7: Commit typed workspace contracts**
 
 ```powershell
-git add backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/content/api backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/application/WorkspaceValidator.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/application/WorkspaceValidatorTest.java
+git add backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/content/api backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/application/WorkspaceValidator.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/application/WorkspaceValidatorTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/support/WorkspaceFixtures.java
 git commit -m "feat(content): define typed workspace contracts"
 ```
 
@@ -1889,6 +1919,7 @@ git commit -m "feat(content): define typed workspace contracts"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/web/AdminContentController.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/persistence/ContentWorkspaceRepositoryTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/web/AdminContentControllerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/persistence/ContentMediaReferenceConcurrencyTest.java`
 
 **Interfaces:**
 - Consumes: Task 3 DTOs and validator, plan 01 `CurrentAdminProvider`, Spring Security admin rules, and common `DomainException` mapping.
@@ -2003,7 +2034,8 @@ public interface SiteWorkspaceMapper {
     Map<String, Object> selectProfile(UUID siteId);
     List<Map<String, Object>> selectRows(@Param("tableKey") String tableKey, @Param("siteId") UUID siteId);
     int updateRoot(@Param("siteId") UUID siteId, @Param("monogram") String monogram,
-                   @Param("email") String email, @Param("expectedVersion") long expectedVersion);
+                   @Param("email") String email, @Param("expectedVersion") long expectedVersion,
+                   @Param("updatedAt") java.time.Instant updatedAt);
     void deleteOwnedRows(@Param("tableKey") String tableKey, @Param("siteId") UUID siteId);
     void insertRows(@Param("tableKey") String tableKey, @Param("rows") List<Map<String, Object>> rows);
 }
@@ -2028,7 +2060,7 @@ In `SiteWorkspaceMapper.xml`, implement a `<choose>` branch for every enum value
 ```xml
 <update id="updateRoot">
   update site_profile
-  set monogram = #{monogram}, email = #{email}, version = version + 1, updated_at = now()
+  set monogram = #{monogram}, email = #{email}, version = version + 1, updated_at = #{updatedAt}
   where id = #{siteId} and version = #{expectedVersion}
 </update>
 ```
@@ -2050,7 +2082,7 @@ enum ProjectTable {
 update project
 set slug = #{slug}, number_label = #{number}, sort_order = #{sortOrder},
     featured = #{featured}, visible = #{visible}, publication_dirty = true,
-    version = version + 1, updated_at = now()
+    version = version + 1, updated_at = #{updatedAt}
 where id = #{id} and version = #{expectedVersion}
 ```
 
@@ -2064,10 +2096,13 @@ where id = #{id} and version = #{expectedVersion}
 final class MyBatisSiteWorkspaceRepository implements SiteWorkspaceRepository {
     private final SiteWorkspaceMapper mapper;
     private final SiteWorkspaceAssembler assembler;
+    private final java.time.Clock clock;
 
-    MyBatisSiteWorkspaceRepository(SiteWorkspaceMapper mapper, SiteWorkspaceAssembler assembler) {
+    MyBatisSiteWorkspaceRepository(SiteWorkspaceMapper mapper, SiteWorkspaceAssembler assembler,
+                                   java.time.Clock clock) {
         this.mapper = mapper;
         this.assembler = assembler;
+        this.clock = clock;
     }
 
     @Override
@@ -2078,7 +2113,8 @@ final class MyBatisSiteWorkspaceRepository implements SiteWorkspaceRepository {
     @Override
     @org.springframework.transaction.annotation.Transactional
     public void replace(SiteWorkspaceDto workspace, long expectedVersion) {
-        int changed = mapper.updateRoot(workspace.siteId(), workspace.monogram(), workspace.email(), expectedVersion);
+        int changed = mapper.updateRoot(workspace.siteId(), workspace.monogram(), workspace.email(),
+                expectedVersion, clock.instant());
         if (changed != 1) {
             throw new xyz.yychainsaw.portfolio.common.error.DomainException(
                     "CONTENT_VERSION_CONFLICT",
@@ -2090,7 +2126,7 @@ final class MyBatisSiteWorkspaceRepository implements SiteWorkspaceRepository {
 }
 ```
 
-Create focused `SiteWorkspaceAssembler` and `ProjectWorkspaceAssembler` classes in the same persistence package. They must convert every Task 3 record field to/from the exact V4 table column; child lists are sorted by `sort_order`, and translation maps reject duplicate locale rows rather than overwriting them.
+Create focused `SiteWorkspaceAssembler` and `ProjectWorkspaceAssembler` classes in the same persistence package. They must convert every Task 3 record field to/from the exact V7 table column; child lists are sorted by `sort_order`, and translation maps reject duplicate locale rows rather than overwriting them.
 
 - [ ] **Step 5: Run the round-trip test**
 
@@ -2104,45 +2140,7 @@ Expected: PASS with `1 test run, 0 failures`.
 
 - [ ] **Step 6: Write failing authenticated API tests**
 
-```java
-// backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/web/AdminContentControllerTest.java
-package xyz.yychainsaw.portfolio.content.web;
-
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.web.servlet.MockMvc;
-import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
-
-@SpringBootTest
-@AutoConfigureMockMvc
-class AdminContentControllerTest extends PostgresIntegrationTestBase {
-    @Autowired MockMvc mvc;
-
-    @Test
-    void anonymousCannotReadWorkspace() throws Exception {
-        mvc.perform(get("/api/admin/site/workspace")).andExpect(status().isUnauthorized());
-    }
-
-    @Test
-    @org.springframework.security.test.context.support.WithMockUser(username = "admin", roles = "ADMIN")
-    void staleSiteUpdateReturns409() throws Exception {
-        mvc.perform(put("/api/admin/site/workspace")
-                        .with(csrf())
-                        .contentType("application/json")
-                        .content("{\"expectedVersion\":999,\"workspace\":null}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("CONTENT_VERSION_CONFLICT"));
-    }
-}
-```
+`AdminContentControllerTest` is a full `@SpringBootTest`/`@AutoConfigureMockMvc` PostgreSQL test. It has an anonymous `GET` case expecting `401`, then seeds/logs in a real administrator using the established plan 01 fixture pattern and sends that session cookie plus CSRF. The stale update serializes `new UpdateSiteWorkspaceRequest(999L, WorkspaceFixtures.site(currentVersion))` with the Boot `ObjectMapper`; the workspace is otherwise fully valid and non-null, so the expected `409 / CONTENT_VERSION_CONFLICT` can only come from the root CAS. Add separate assertions that a valid active-session update succeeds, the same principal with missing/revoked session metadata returns `401`, and a mutation without CSRF is rejected.
 
 - [ ] **Step 7: Implement service and controller endpoints**
 
@@ -2208,7 +2206,7 @@ public final class ContentWorkspaceService {
 }
 ```
 
-The service skeleton above is subordinate to the cross-plan media-lifecycle contract: each mutation method is one caller-owned transaction, extracts the complete referenced asset/variant set from the request or an unlocked consistent read, sorts it deterministically, calls `MediaQueryService.requireReadyAsset` / `requireReadyVariant` for every reference, and only then takes SITE/project/catalog row locks and performs `replace` plus success audit. After taking content locks it must re-read and validate the expected version before writing. The importer, publish snapshot writer, and restore path use the same media-before-content order and transaction boundary. This prevents archive or cleanup from crossing a concurrent durable-reference insertion and prevents translation-vs-publish deadlocks; relying on the media foreign key alone is forbidden.
+The service skeleton above is subordinate to the cross-plan media-lifecycle contract: each mutation method is one caller-owned transaction, extracts the complete referenced asset/variant set from the request or an unlocked consistent read, sorts it deterministically, calls `MediaQueryService.requireReadyAsset` / `requireReadyVariant` for every reference, and only then takes SITE/project/catalog row locks and performs `replace` plus success audit. Each mutating repository has an injected `Clock`, captures one UTC instant per aggregate mutation, and passes it to mapper SQL as `updatedAt`; application SQL does not call `now()`. After taking content locks the service re-reads and validates the expected version before writing. The importer, publish snapshot writer, and restore path use the same media-before-content order and transaction boundary. This prevents archive or cleanup from crossing a concurrent durable-reference insertion and prevents translation-vs-publish deadlocks; relying on the media foreign key alone is forbidden.
 
 `AdminContentController` exposes exactly:
 
@@ -2226,6 +2224,8 @@ PUT  /api/admin/skills/{skillId}
 ```
 
 Each taxonomy PUT passes `UpdateTaxonomyRequest.names/expectedVersion` to the matching repository CAS; a zero-row update raises `CONTENT_VERSION_CONFLICT`. Each mutation requires CSRF through plan 01, obtains `CurrentAdminProvider.requireAdminId()`, and records `CONTENT_WORKSPACE_UPDATED` through `AuditService.record` only after the repository succeeds.
+
+For MVC authorization tests, create a real admin principal plus active session by reusing the established plan 01 login/session fixture pattern from tests such as `AdminAuditQueryTest`, and send its session cookie on each request. Do not use plain `@WithMockUser`, because the production current-admin provider validates both `AdminPrincipal` and active-session state.
 
 - [ ] **Step 8: Run API, repository, and security tests**
 
@@ -2255,10 +2255,14 @@ git commit -m "feat(content): add workspace persistence and APIs"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportMapper.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportService.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportCli.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/DefaultMediaImportService.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/persistence/MediaAssetRepository.java`
 - Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/PortfolioApplication.java`
 - Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/auth/cli/AdminCliRunner.java`
 - Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/PortfolioApplicationTest.java`
-- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/auth/cli/AdminCliRunnerTest.java`
+- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/auth/cli/AdminBootstrapServiceTest.java`
+- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaImportCliConfigurationIntegrationTest.java`
+- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/DefaultMediaImportServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/resources/import/portfolio-v1-valid.json`
 - Create: `backend-parent/portfolio-server/src/test/resources/import/portfolio-v1-incomplete-translations.json`
@@ -2269,7 +2273,7 @@ git commit -m "feat(content): add workspace persistence and APIs"
 - Create: `backend-parent/portfolio-server/src/test/resources/import/assets/images/development-log.jpg`
 
 **Interfaces:**
-- Consumes: Task 1 canonical JSON, Task 4 repositories, plan 02 `MediaImportService`, Jackson, `TransactionTemplate`, and the fixed SITE ID.
+- Consumes: Task 1 canonical JSON, Task 4 repositories, plan 02 `MediaImportService`, `MediaFinalizationService`, `MediaQueryService`, Jackson, `TransactionTemplate`, and the fixed SITE ID.
 - Produces: `PortfolioImportService.dryRun(Path, Path, String)` and `commit(Path, Path, String)`, deterministic `ImportReport`, and non-web CLI mode.
 
 Use these exact report types:
@@ -2394,6 +2398,8 @@ Expected: FAIL at compilation because `PortfolioImportService` and report types 
 
 `PortfolioImportV1` must be a record with these exact nested records; only locale containers are maps keyed by `LocaleCode`:
 
+Before typed binding, `PortfolioImportReader` parses the bytes into a `JsonNode` and performs a closed structural walk equivalent to the Task 1 schema. Unknown fields, wrong scalar/container types, missing/null required values, malformed URLs, and duplicate object keys become deterministic `STRUCTURE_ERROR` `ImportIssue` values with concrete paths. Typed deserialization happens only when that structural list is empty; malformed input is returned as an `ImportReport` and never escapes as a generic Jackson exception or reaches media/repository writes.
+
 ```java
 package xyz.yychainsaw.portfolio.content.importer;
 
@@ -2443,39 +2449,9 @@ public record PortfolioImportV1(
 
 - [ ] **Step 4: Implement byte-level checksum and strict typed reading**
 
-```java
-// backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer/PortfolioImportReader.java
-package xyz.yychainsaw.portfolio.content.importer;
+`PortfolioImportReader` reads the file once, hashes those exact bytes, enables strict duplicate-key detection, and parses a raw `JsonNode`. JSON syntax/duplicate-key failures become one stable `$ / IMPORT_JSON_INVALID` structure issue. It then runs the explicit closed structural walk before binding. Only a structure-clean tree is converted with a copied `ObjectMapper` configured with `FAIL_ON_UNKNOWN_PROPERTIES`; binding failure is converted to a concrete-path structure issue rather than thrown as a generic Jackson exception.
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-
-public final class PortfolioImportReader {
-    private final ObjectMapper mapper;
-
-    public PortfolioImportReader(ObjectMapper base) {
-        this.mapper = base.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-    }
-
-    public ReadResult read(Path input) {
-        try {
-            byte[] bytes = Files.readAllBytes(input);
-            PortfolioImportV1 payload = mapper.readValue(bytes, PortfolioImportV1.class);
-            return new ReadResult(payload, HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
-        } catch (IOException | NoSuchAlgorithmException error) {
-            throw new IllegalArgumentException("cannot read canonical portfolio import", error);
-        }
-    }
-
-    public record ReadResult(PortfolioImportV1 payload, String sha256) {}
-}
-```
+Its result contract is `ReadResult(Optional<PortfolioImportV1> payload, String sha256, List<ImportIssue> issues)`: `payload` is present if and only if `issues` contains no structure error. `dryRun` and `commit` merge reader issues with checksum/semantic issues, sort once by severity/path/code/message, and return immediately when the optional payload is empty. File I/O failure remains a fixed safe CLI/domain failure because no JSON document existed to report.
 
 - [ ] **Step 5: Implement deterministic structural validation and fixed placeholder paths**
 
@@ -2497,6 +2473,7 @@ Structural validation must add these codes and paths:
 
 | Code | Path | Condition |
 |---|---|---|
+| `IMPORT_JSON_INVALID` | `$` or parser-derived concrete path | malformed JSON, duplicate object key, unknown property, or wrong JSON container/scalar type |
 | `IMPORT_SCHEMA_VERSION_UNSUPPORTED` | `schemaVersion` | value is not `1` |
 | `IMPORT_CHECKSUM_MISMATCH` | `$` | expected SHA-256 differs from file bytes |
 | `IMPORT_REQUIRED_FIELD_MISSING` | concrete object path | a required locale key or named property is absent/null rather than present as a string (possibly `""` for a translation) |
@@ -2533,72 +2510,22 @@ public record MappedImport(
 }
 ```
 
-```java
-// central flow in PortfolioImportService
-@org.springframework.stereotype.Service
-public final class PortfolioImportService {
-    private final PortfolioImportReader reader;
-    private final PortfolioImportValidator validator;
-    private final PortfolioImportMapper mapper;
-    private final xyz.yychainsaw.portfolio.media.application.MediaImportService media;
-    private final xyz.yychainsaw.portfolio.content.persistence.SiteWorkspaceRepository sites;
-    private final xyz.yychainsaw.portfolio.content.persistence.ProjectWorkspaceRepository projects;
-    private final xyz.yychainsaw.portfolio.content.persistence.TaxonomyRepository taxonomies;
-    private final org.springframework.transaction.support.TransactionTemplate transactions;
+`PortfolioImportService` keeps the exact public `dryRun`/`commit` signatures and implements this ordered flow:
 
-    public PortfolioImportService(
-            PortfolioImportReader reader,
-            PortfolioImportValidator validator,
-            PortfolioImportMapper mapper,
-            xyz.yychainsaw.portfolio.media.application.MediaImportService media,
-            xyz.yychainsaw.portfolio.content.persistence.SiteWorkspaceRepository sites,
-            xyz.yychainsaw.portfolio.content.persistence.ProjectWorkspaceRepository projects,
-            xyz.yychainsaw.portfolio.content.persistence.TaxonomyRepository taxonomies,
-            org.springframework.transaction.support.TransactionTemplate transactions) {
-        this.reader = reader;
-        this.validator = validator;
-        this.mapper = mapper;
-        this.media = media;
-        this.sites = sites;
-        this.projects = projects;
-        this.taxonomies = taxonomies;
-        this.transactions = transactions;
-    }
+1. Read, hash, structurally validate, and typed-validate the full document. Return the sorted report immediately on any structure error. `dryRun` stops here and never calls the mapper, media/finalization services, transaction template, or repositories.
+2. For commit, perform an optimistic empty-workspace guard. Extend plan 02's provider-neutral importer so its SHA-256 candidate lookup considers `READY` and `PROCESSING` rows under the existing share-lock transaction. It may reuse a `PROCESSING` row only when all persisted translations/credit/source URL exactly match the command; it returns that stable asset ID with no ready variants and never uploads/inserts a duplicate. `FAILED`, archived, or metadata-mismatched rows are not reusable. In a separate transaction per distinct asset command, call `MediaImportService.importLocal` and commit each returned asset ID so `PROCESSING` rows/jobs are visible to the finalizer.
+3. Outside every transaction, inspect every returned `ImportedMedia` in deterministic public-path order. Call `MediaFinalizationService.finalizeAsset` for every result whose `readyVariants` is empty, whether that ID was newly inserted or is a reused `PROCESSING` row. Results already carrying READY variants need no finalization. Any failure aborts before content attachment and leaves media under plan 02 cleanup/retry rules.
+4. Treat every pre-finalization `ImportedMedia.readyVariants` value as only a hint. Begin the single content transaction, sort/deduplicate all returned asset IDs, and freshly call `MediaQueryService.requireReadyAsset` plus the required `requireReadyVariant` selections for every asset. Build the authoritative `publicPath -> MediaAssetDescriptor/MediaVariantDescriptor` map only from those locked READY results; a still-PROCESSING/missing variant aborts with zero content rows.
+5. Still inside that transaction, build the final `MappedImport` from the fresh locked descriptor map (the mapper must never invoke media import/finalization itself), re-check that SITE is at its fixed seed version and that no project/import marker exists, then write SITE, taxonomy, and all projects. Run `assertEquivalent` against rows re-read inside the same transaction. Any failure rolls back every content row, while the READY share locks remain held through commit.
+6. Return `committed:true` only after that content transaction commits. A rerun after success returns `IMPORT_ALREADY_COMPLETED`; a rerun after pre-content `PROCESSING` residue resumes/finalizes the exact stable asset IDs and can complete normally.
 
-    public ImportReport dryRun(java.nio.file.Path input, java.nio.file.Path assetRoot, String expectedSha256) {
-        PortfolioImportReader.ReadResult read = reader.read(input);
-        return validator.report(read.payload(), read.sha256(), expectedSha256, assetRoot, false);
-    }
-
-    public ImportReport commit(java.nio.file.Path input, java.nio.file.Path assetRoot, String expectedSha256) {
-        PortfolioImportReader.ReadResult read = reader.read(input);
-        ImportReport report = validator.report(read.payload(), read.sha256(), expectedSha256, assetRoot, false);
-        if (report.hasStructureErrors()) return report;
-        return transactions.execute(status -> {
-            if (sites.require().version() != 0 || !projects.findAll().isEmpty()) {
-                throw new xyz.yychainsaw.portfolio.common.error.DomainException(
-                        "IMPORT_ALREADY_COMPLETED", org.springframework.http.HttpStatus.CONFLICT,
-                        java.util.Map.of("import", "workspace is not empty"));
-            }
-            PortfolioImportMapper.MappedImport mapped = mapper.map(read.payload(), assetRoot, media);
-            sites.replace(mapped.site(), 0L);
-            taxonomies.replaceImportTags(mapped.tags());
-            mapped.projects().forEach(projects::insert);
-            PortfolioImportMapper.assertEquivalent(read.payload(), sites.require(), projects.findAll());
-            return new ImportReport(read.sha256(), true, mapped.projects().size(),
-                    mapped.mediaCount(), mapped.tagCount(), report.issues());
-        });
-    }
-}
-```
-
-Any exception from media import, taxonomy/project insertion, or `assertEquivalent` must escape the transaction so all database rows roll back. `dryRun` calls only the reader and validator; it must never call `mapper.map`, `MediaImportService`, a repository mutation, or `TransactionTemplate`.
+Tests add a real PostgreSQL case proving no content FK is ever inserted while an imported asset is `PROCESSING`, a finalization failure leaves zero content rows, and a retry after such residue reuses the original asset ID and succeeds without duplicate media. The existing media-service test also proves PROCESSING reuse requires exact translations and that mismatched/FAILED candidates still create or follow the normal lifecycle rather than being attached.
 
 - [ ] **Step 7: Add the non-web CLI adapter**
 
 `PortfolioImportCli` is enabled only when `portfolio.cli.command=import`. Read these required properties: `portfolio.import.input`, `portfolio.import.asset-root`, `portfolio.import.sha256`, and `portfolio.import.commit`. Print exactly one JSON `ImportReport` to stdout and exit with code `2` for structure errors, `3` for a domain conflict, and `0` otherwise. Do not print content fields or absolute asset paths.
 
-Extend `PortfolioApplication`'s pre-context command parser at the same time: `import` becomes an explicit non-web command, and only its command token plus the exact four `portfolio.import.*` options above are accepted (each exactly once, no positional or arbitrary Spring options). `PortfolioApplication` itself selects `WebApplicationType.NONE`, so the invocation must not pass `spring.main.web-application-type`. `AdminCliRunner` must return without handling the already preflight-approved `import` command; `PortfolioImportCli` is its sole owner. Tests must prove unknown/duplicate/missing/extra options fail before context creation, maintenance commands retain their old one-option boundary, and the real import NONE context contains the plan 02 `MediaImportService` stack.
+Extend `PortfolioApplication`'s pre-context command parser at the same time: `import` becomes an explicit non-web command, and only its command token plus the exact four `portfolio.import.*` options above are accepted (each exactly once, no positional or arbitrary Spring options). `PortfolioApplication` itself selects `WebApplicationType.NONE`, so the invocation must not pass `spring.main.web-application-type`. `AdminCliRunner` must return without handling the already preflight-approved `import` command; `PortfolioImportCli` is its sole owner. Tests live in the existing `PortfolioApplicationTest`, `AdminBootstrapServiceTest`, and `MediaImportCliConfigurationIntegrationTest` (there is no separate `AdminCliRunnerTest`). They prove unknown/duplicate/missing/extra options fail before context creation, maintenance commands retain their old one-option boundary, and the real import NONE context contains `MediaImportService`, `MediaFinalizationService`, and the plan 02 local/COS-neutral storage stack.
 
 Dry-run command from repository root after Task 1 generates the artifact:
 
@@ -2626,23 +2553,23 @@ npm run test:export
 npm run export:portfolio
 ```
 
-Expected: all commands exit `0`; importer tests report `3 tests run, 0 failures`; generated JSON passes both Node schema validation and Java typed deserialization.
+Expected: all commands exit `0`; importer tests include the three report-contract cases plus PROCESSING/finalization/retry lifecycle coverage with zero failures; generated JSON passes both Node schema validation and Java typed deserialization.
 
 - [ ] **Step 9: Commit the importer**
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/importer backend-parent/portfolio-server/src/test/resources/import
+git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/PortfolioApplication.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/auth/cli/AdminCliRunner.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/content/importer backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/DefaultMediaImportService.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/persistence/MediaAssetRepository.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/PortfolioApplicationTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/auth/cli/AdminBootstrapServiceTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/DefaultMediaImportServiceTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaImportCliConfigurationIntegrationTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/importer backend-parent/portfolio-server/src/test/resources/import
 git commit -m "feat(content): add transactional portfolio importer"
 ```
 
-### Task 6: Flyway V5 immutable revisions and publication pointers
+### Task 6: Flyway V8 immutable revisions and publication pointers
 
 **Files:**
-- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V5__publishing.sql`
+- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V8__publishing.sql`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/persistence/PublishingMigrationTest.java`
 
 **Interfaces:**
-- Consumes: V4 project/workspace IDs, plan 02 `media_asset` and `(asset_id, variant_name)` media variant key, and the runtime/migration database roles from plan 01.
+- Consumes: V7 project/workspace IDs, plan 02 `media_asset` and `(asset_id, variant_name)` media variant key, and the runtime/migration database roles from plan 01.
 - Produces: `content_revision`, `publication`, `slug_redirect`, `revision_media_reference`, fixed singleton publication rows, indexes, and immutability triggers.
 
 - [ ] **Step 1: Write failing singleton and immutability tests**
@@ -2690,7 +2617,7 @@ class PublishingMigrationTest extends PostgresIntegrationTestBase {
 }
 ```
 
-- [ ] **Step 2: Run the migration test and observe missing V5 tables**
+- [ ] **Step 2: Run the migration test and observe missing V8 tables**
 
 Run from `backend-parent/`:
 
@@ -2700,7 +2627,7 @@ Run from `backend-parent/`:
 
 Expected: FAIL because `publication` and `content_revision` do not exist.
 
-- [ ] **Step 3: Create V5 with fixed singleton rows and CAS-ready versions**
+- [ ] **Step 3: Create V8 with fixed singleton rows and CAS-ready versions**
 
 ```sql
 create table content_revision (
@@ -2778,9 +2705,9 @@ before update or delete on revision_media_reference
 for each row execute function reject_published_history_mutation();
 ```
 
-After the tables, grant the runtime role from plan 01 `SELECT, INSERT` on `content_revision` and `revision_media_reference`, `SELECT, INSERT, UPDATE` on `publication`, and `SELECT, INSERT` on `slug_redirect`. Do not grant runtime `UPDATE` or `DELETE` on history tables or `DELETE` on redirects. The online application has no trigger-bypass flag; a separately reviewed offline history-purge run must use the plan 01 migration-owner credential to disable/re-enable these two triggers around explicit revision IDs after backup and an audit tombstone.
+After the tables, grant `portfolio_runtime_access` `SELECT, INSERT` on `content_revision` and `revision_media_reference`, `SELECT, INSERT, UPDATE` on `publication`, and `SELECT, INSERT` on `slug_redirect`. Do not grant runtime `UPDATE` or `DELETE` on history tables or `DELETE` on redirects. The online application has no trigger-bypass flag; a separately reviewed offline history-purge run must use the plan 01 migration-owner credential to disable/re-enable these two triggers around explicit revision IDs after backup and an audit tombstone.
 
-- [ ] **Step 4: Run V5, full migration, and empty-database tests**
+- [ ] **Step 4: Run V8, full migration, and empty-database tests**
 
 Run from `backend-parent/`:
 
@@ -2789,12 +2716,12 @@ Run from `backend-parent/`:
 .\mvnw.cmd -pl portfolio-server -am -Dtest=*MigrationTest test
 ```
 
-Expected: PASS; V1 through V5 apply from empty PostgreSQL, the two singleton rows have version `0`, and both immutable-history triggers are installed. Task 8 verifies their runtime SQL-state behavior after creating a real revision through the application service.
+Expected: PASS; V1 through V8 apply from empty PostgreSQL, the two singleton rows have version `0`, and both immutable-history triggers are installed. Task 8 verifies their runtime SQL-state behavior after creating a real revision through the application service.
 
-- [ ] **Step 5: Commit V5**
+- [ ] **Step 5: Commit V8**
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/resources/db/migration/V5__publishing.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/persistence/PublishingMigrationTest.java
+git add backend-parent/portfolio-server/src/main/resources/db/migration/V8__publishing.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/persistence/PublishingMigrationTest.java
 git commit -m "feat(publishing): add immutable publication schema"
 ```
 
@@ -3272,9 +3199,12 @@ public interface ProjectCatalogSnapshotMapper {
 ```java
 public SiteWorkspaceDto restoreSite(int schemaVersion, String json, SiteWorkspaceDto currentWorkspace);
 public ProjectWorkspaceDto restoreProject(int schemaVersion, String json, long currentVersion);
+public SiteSnapshotV1 readSite(int schemaVersion, String json);
+public ProjectSnapshotV1 readProject(int schemaVersion, String json);
+public ProjectCatalogSnapshotV1 readCatalog(int schemaVersion, String json);
 ```
 
-For any schema other than `1`, throw `new DomainException("SNAPSHOT_SCHEMA_UNSUPPORTED", HttpStatus.UNPROCESSABLE_ENTITY, Map.of("snapshotSchemaVersion", Integer.toString(schemaVersion)))`.
+Every restore, preview-history, public API, and HTML caller uses these registry methods with the stored `snapshot_schema_version`; direct `codec.decode(..., *V1.class)` calls outside the V1 registry adapter are forbidden. For any schema other than `1`, throw `new DomainException("SNAPSHOT_SCHEMA_UNSUPPORTED", HttpStatus.UNPROCESSABLE_ENTITY, Map.of("snapshotSchemaVersion", Integer.toString(schemaVersion)))`.
 
 - [ ] **Step 6: Run round-trip and media-resolution tests**
 
@@ -3312,6 +3242,7 @@ git commit -m "feat(publishing): add versioned snapshot mappers"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/application/ContentMediaReferenceChecker.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/application/ContentMediaChangeListener.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/web/AdminPublishingController.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/web/AdminPublishingControllerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/PublicationServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/CatalogPublicationConcurrencyTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/PublishingReadPortsTest.java`
@@ -3320,7 +3251,7 @@ git commit -m "feat(publishing): add versioned snapshot mappers"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/support/PublishingTestFixture.java`
 
 **Interfaces:**
-- Consumes: workspace repositories/validator, Task 7 snapshot mappers/codec, plan 01 admin/audit contracts plus the test-only `PostgresIntegrationTestBase#migratorDataSource()` helper, plan 02 READY-media queries, and V5 tables.
+- Consumes: workspace repositories/validator, Task 7 snapshot mappers/codec, plan 01 admin/audit contracts plus the test-only `PostgresIntegrationTestBase#migratorDataSource()` helper, plan 02 READY-media queries, and V8 tables.
 - Produces: transactional publish/archive/reorder commands, publication history, revision media references, fixed catalog locking/CAS, admin publishing endpoints, plan 06 current-project/label read ports, and plan 02 retained-reference plus media-change dirty propagation.
 
 Use exact command/result types:
@@ -3499,7 +3430,7 @@ set status='PUBLISHED', current_revision_id=#{revisionId}, current_slug=#{slug},
 where aggregate_type=#{type} and aggregate_id=#{aggregateId} and version=#{expectedVersion}
 ```
 
-Every project publish, archive, slug change, and reorder calls `lock(PROJECT_CATALOG, PROJECT_CATALOG_ID)` before it reads any current project publication. A CAS row count other than one maps to `CATALOG_VERSION_CONFLICT` or `PUBLICATION_VERSION_CONFLICT` with HTTP `409`.
+After optimistic media discovery and acquisition of the complete sorted READY share-lock set, every project publish, archive, slug change, and reorder calls `lock(PROJECT_CATALOG, PROJECT_CATALOG_ID)` before its authoritative re-read of any current project publication. Pre-lock discovery reads are explicitly non-authoritative and must be repeated under the catalog lock. A CAS row count other than one maps to `CATALOG_VERSION_CONFLICT` or `PUBLICATION_VERSION_CONFLICT` with HTTP `409`.
 
 - [ ] **Step 4: Implement publication-only validation**
 
@@ -3517,58 +3448,19 @@ All failures use HTTP `422` and deterministic field paths. `PublicationValidator
 
 - [ ] **Step 5: Implement the project/catalog transaction**
 
-The core service order must be exact:
+The core service order must be exact and media-first:
 
-```java
-@org.springframework.transaction.annotation.Transactional
-public PublicationResult publishProject(PublishProjectCommand command) {
-    UUID adminId = currentAdmin.requireAdminId();
-    var catalogPointer = publishing.lock(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID);
-    requireVersion(catalogPointer.version(), command.expectedCatalogVersion(), "catalogVersion");
-    ProjectWorkspaceDto workspace = projects.requireForUpdate(command.projectId());
-    if (workspace.version() != command.expectedWorkspaceVersion()) {
-        throw conflict("CONTENT_VERSION_CONFLICT", "workspaceVersion");
-    }
-    publishing.ensureProjectPublication(workspace.id());
-    var projectPointer = publishing.lock(AggregateType.PROJECT, workspace.id());
-    requireVersion(projectPointer.version(), command.expectedProjectPublicationVersion(), "publicationVersion");
-    if (publishing.currentSlugOrRedirectExists(workspace.slug(), workspace.id())) {
-        throw conflict("SLUG_CONFLICT", "slug");
-    }
+1. Require the current admin and perform a no-lock optimistic read of the target workspace plus the current catalog inputs needed to discover the complete project-and-catalog media reference set.
+2. Normalize/deduplicate that set by `(assetId, variantName)`, sort by unsigned UUID text then variant name, and call `MediaQueryService.requireReadyAsset` / `requireReadyVariant` for every entry. These share locks remain held to transaction commit.
+3. Lock the fixed PROJECT_CATALOG publication pointer, validate `expectedCatalogVersion`, lock/re-read the target workspace, validate `expectedWorkspaceVersion`, then ensure and lock its PROJECT pointer and validate `expectedProjectPublicationVersion`.
+4. Recompute the workspace/catalog input identity and media-reference set under those content locks. If the version, project-ID order, current pointer versions, slug, or reference set differs from the optimistic discovery, return the applicable `409` without inserting a revision; never acquire a new lower-sorted media lock after content locks.
+5. Validate and encode PROJECT and PROJECT_CATALOG snapshots, insert their immutable revisions and exhaustive media-reference rows, insert any redirect, CAS both pointers, clear dirty state with the matching workspace version, and record the success audit. All timestamps for this transaction are captured once from `clock.instant()` and reused.
 
-    ProjectSnapshotV1 projectSnapshot = projectMapper.toSnapshot(workspace);
-    var projectMedia = validator.validateProject(workspace, projectSnapshot);
-    var encodedProject = codec.encode(projectSnapshot);
-    var projectRevision = newRevision(AggregateType.PROJECT, workspace.id(),
-            projectPointer.version() + 1, encodedProject, adminId);
-    publishing.insertRevision(projectRevision);
-    publishing.insertMediaReferences(projectRevision.id(), projectMedia);
-
-    java.util.List<ProjectSnapshotV1> current = loadCurrentProjectsReplacing(projectSnapshot);
-    ProjectCatalogSnapshotV1 catalogSnapshot = catalogMapper.fromCurrentProjects(current);
-    var encodedCatalog = codec.encode(catalogSnapshot);
-    var catalogRevision = newRevision(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID,
-            catalogPointer.version() + 1, encodedCatalog, adminId);
-    publishing.insertRevision(catalogRevision);
-    publishing.insertMediaReferences(catalogRevision.id(), catalogMedia(catalogSnapshot));
-
-    if (projectPointer.currentSlug() != null && !projectPointer.currentSlug().equals(workspace.slug())) {
-        publishing.insertRedirect(projectPointer.currentSlug(), workspace.slug(), workspace.id());
-    }
-    requireCas(publishing.casPublish(AggregateType.PROJECT, workspace.id(), projectPointer.version(),
-            projectRevision.id(), workspace.slug(), clock.instant()), "PUBLICATION_VERSION_CONFLICT");
-    requireCas(publishing.casPublish(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID,
-            catalogPointer.version(), catalogRevision.id(), null, clock.instant()), "CATALOG_VERSION_CONFLICT");
-    projects.markPublished(workspace.id(), workspace.version());
-    audit.record(publicationAudit(adminId, "PROJECT_PUBLISHED", workspace.id(), projectRevision.id()));
-    return new PublicationResult(projectRevision.id(), projectPointer.version() + 1,
-            catalogRevision.id(), catalogPointer.version() + 1, encodedProject.sha256());
-}
-```
+`publishSite` uses the same optimistic-discovery/media-lock/SITE-lock/re-read sequence. `archiveProject` and `reorderCatalog` discover the media set for the resulting catalog before taking catalog/project locks; they then revalidate the exact current published project-ID order. A reorder updates `sort_order` collision-free in two phases and builds the catalog from the supplied locked ID order, not from old snapshot sort values.
 
 `publicationAudit` returns `new AuditCommand(adminId, action, "PROJECT", projectId.toString(), AuditOutcome.SUCCESS, null, Map.of("revisionId", revisionId.toString()))`; site/archive/reorder variants use target types `SITE` or `PROJECT_CATALOG` and string-only metadata, matching plan 01 exactly.
 
-The `PROJECT_CATALOG_ID` constant is exactly `UUID.fromString("00000000-0000-0000-0000-000000000002")`. Add `updateCatalogOrder(List<UUID> projectIdsInOrder)` to `ProjectWorkspaceRepository`; it updates only `sort_order` in the supplied deterministic order while the catalog publication lock is held. `requireForUpdate` uses a `SELECT` query ending in `FOR UPDATE`; `markPublished` clears `publication_dirty` only when the workspace version still matches. `publishSite` follows the same revision/validation/CAS sequence without catalog work. `archiveProject` locks catalog before reading/locking the project pointer, writes a new catalog revision, archives the project pointer, and writes no new PROJECT revision. `reorderCatalog` locks and validates catalog first, verifies the supplied IDs equal the current published project ID set exactly once, updates workspace sort orders, generates one catalog revision, and CAS-advances only the catalog pointer.
+The `PROJECT_CATALOG_ID` constant is exactly `UUID.fromString("00000000-0000-0000-0000-000000000002")`. Add `updateCatalogOrder(List<UUID> projectIdsInOrder)` to `ProjectWorkspaceRepository`; while the catalog publication lock is held it uses a collision-free two-phase update and then assigns the supplied zero-based deterministic order. `requireForUpdate` uses a `SELECT` query ending in `FOR UPDATE`; `markPublished` clears `publication_dirty` only when the workspace version still matches. `publishSite` follows the same revision/validation/CAS sequence without catalog work. `archiveProject` follows media-first optimistic discovery, then locks catalog/project state, writes a new catalog revision, archives the project pointer, and writes no new PROJECT revision. `reorderCatalog` follows the same media-first order, verifies the supplied IDs equal the locked current published project ID set exactly once, updates workspace sort orders, generates one catalog revision from that explicit ID order, and CAS-advances only the catalog pointer.
 
 - [ ] **Step 6: Add exact admin publishing routes**
 
@@ -3580,7 +3472,7 @@ PUT  /api/admin/publishing/catalog/order
 GET  /api/admin/publishing/{aggregateType}/{aggregateId}/history
 ```
 
-`AdminPublishingController` checks path/body project IDs match, requires the plan 01 authenticated admin and CSRF, returns `PublicationResult`, and delegates every error to the common RFC-style error handler.
+`AdminPublishingController` checks path/body project IDs match, requires the plan 01 authenticated admin and CSRF, returns `PublicationResult`, and delegates every error to the common RFC-style error handler. `AdminPublishingControllerTest` uses the same real `AdminPrincipal` plus active-session fixture pattern as Task 4 and covers anonymous `401`, missing/revoked session `401`, missing-CSRF rejection, path/body mismatch, success, and stale-version `409`.
 
 - [ ] **Step 7: Write failing PostgreSQL integration tests for downstream read ports and cleanup protection**
 
@@ -3750,7 +3642,7 @@ class ContentMediaChangeListenerTest extends PostgresIntegrationTestBase {
 
 The shared fixture references the same asset twice in SITE (`hero_media` and current `resume_document`) and from two distinct PROJECTs across `project_media`, `content_block_media`, `content_block_video.cover_asset_id`, and `content_block_action.media_asset_id`. The assertions prove deduplication: SITE and each project advance exactly once even if the asset appears in several rows.
 
-`WorkspaceMediaLocation` contains exactly `HERO`, `RESUME`, `PROJECT_MEDIA`, `BLOCK_IMAGE_OR_GALLERY`, `VIDEO_COVER`, and `BLOCK_DOWNLOAD`; each fixture inserts through the corresponding normalized V4 table. `CleanupReferenceKind` contains exactly `WORKSPACE`, `CURRENT_REVISION`, `OLD_RETAINED_REVISION`, and `ARCHIVED_REVISION`. `OLD_RETAINED_REVISION` is no longer any publication pointer's current revision; `ARCHIVED_REVISION` belongs to a publication whose status is `ARCHIVED`; both retain their `revision_media_reference` rows. `expectedReference()` exposes only `referenceType/referenceId`. The fixture never exposes copy, slug, title, provider credentials, bucket, or object key through `MediaReference`.
+`WorkspaceMediaLocation` contains exactly `HERO`, `RESUME`, `PROJECT_MEDIA`, `BLOCK_IMAGE_OR_GALLERY`, `VIDEO_COVER`, and `BLOCK_DOWNLOAD`; each fixture inserts through the corresponding normalized V7 table. `CleanupReferenceKind` contains exactly `WORKSPACE`, `CURRENT_REVISION`, `OLD_RETAINED_REVISION`, and `ARCHIVED_REVISION`. `OLD_RETAINED_REVISION` is no longer any publication pointer's current revision; `ARCHIVED_REVISION` belongs to a publication whose status is `ARCHIVED`; both retain their `revision_media_reference` rows. `expectedReference()` exposes only `referenceType/referenceId`. The fixture never exposes copy, slug, title, provider credentials, bucket, or object key through `MediaReference`.
 
 Run from `backend-parent/`:
 
@@ -3929,6 +3821,7 @@ git commit -m "feat(publishing): publish project and catalog atomically"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/application/PreviewService.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/config/PreviewProperties.java`
 - Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/web/AdminPublishingController.java`
+- Modify: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/web/AdminPublishingControllerTest.java`
 - Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/RestoreServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/PreviewTokenServiceTest.java`
@@ -3943,7 +3836,7 @@ Use exact API records:
 ```java
 public record RestoreRevisionRequest(long expectedWorkspaceVersion) {}
 public record PreviewTokenRequest(AggregateType aggregateType, UUID aggregateId,
-                                  long workspaceVersion, LocaleCode locale) {}
+                                  long workspaceVersion) {}
 public record PreviewTokenResponse(String token, Instant expiresAt) {}
 ```
 
@@ -3967,7 +3860,7 @@ void restoringProjectCopiesHistoryIntoDraftWithoutMovingPublication() {
 @Test
 void rejectsTamperedExpiredAndCrossAdminTokens() {
     PreviewTokenResponse issued = tokens.issue(new PreviewTokenRequest(
-            AggregateType.PROJECT, PROJECT_ID, 7L, LocaleCode.EN), ADMIN_ID);
+            AggregateType.PROJECT, PROJECT_ID, 7L), ADMIN_ID);
     assertThatThrownBy(() -> tokens.verify(issued.token() + "x", ADMIN_ID))
             .isInstanceOf(DomainException.class)
             .extracting(error -> ((DomainException) error).code())
@@ -4026,7 +3919,7 @@ public void restore(UUID revisionId, long expectedWorkspaceVersion) {
 }
 ```
 
-Do not insert a `content_revision`, move `publication`, restore a historical catalog snapshot, or delete the current workspace first. The repository replacement transaction preserves IDs and increments workspace version once.
+The code skeleton above is subordinate to the global lock order. Decode the stored schema through `SnapshotMapperRegistry`, optimistically derive the restored draft and its complete reference set, acquire the sorted READY media share locks, then lock/re-read the SITE or PROJECT workspace, revalidate `expectedWorkspaceVersion` and the derived reference set, and replace it. Do not insert a `content_revision`, move `publication`, restore a historical catalog snapshot, or delete the current workspace first. The repository replacement transaction preserves IDs and increments workspace version once.
 
 - [ ] **Step 4: Implement compact signed preview claims**
 
@@ -4043,10 +3936,10 @@ The production key must decode from Base64 to at least 32 bytes. The token is `b
 
 ```java
 record PreviewClaims(UUID adminId, AggregateType aggregateType, UUID aggregateId,
-                     long workspaceVersion, LocaleCode locale, Instant expiresAt, UUID nonce) {}
+                     long workspaceVersion, Instant expiresAt, UUID nonce) {}
 ```
 
-`verify` uses `MessageDigest.isEqual`, rejects expiry, checks the session admin equals `claims.adminId`, and returns `PREVIEW_TOKEN_INVALID` with HTTP `403` for every failure without revealing which check failed.
+`verify` uses `MessageDigest.isEqual`, rejects expiry, checks the session admin equals `claims.adminId`, and returns `PREVIEW_TOKEN_INVALID` with HTTP `403` for every failure without revealing which check failed. Preview deliberately returns the complete bilingual draft snapshot; locale selection is a client concern and therefore is not part of the signed claim.
 
 - [ ] **Step 5: Implement preview without history writes**
 
@@ -4092,7 +3985,7 @@ Issuing and consuming a token both require an authenticated admin session; mutat
 Run from `backend-parent/`:
 
 ```powershell
-.\mvnw.cmd -pl portfolio-server -am -Dtest=RestoreServiceTest,PreviewTokenServiceTest,*PublishingControllerTest test
+.\mvnw.cmd -pl portfolio-server -am -Dtest=RestoreServiceTest,PreviewTokenServiceTest,AdminPublishingControllerTest test
 ```
 
 Expected: PASS; historical pointers remain unchanged by restore, unknown schema is `422`, tampered/expired token is `403`, unauthenticated preview is `401`, and no preview creates a revision.
@@ -4383,35 +4276,32 @@ import xyz.yychainsaw.portfolio.publicapi.PublicProjectDto;
 import xyz.yychainsaw.portfolio.publicapi.PublicSiteDto;
 import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository;
 import xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType;
-import xyz.yychainsaw.portfolio.publishing.snapshot.SnapshotCodec;
-import xyz.yychainsaw.portfolio.publishing.snapshot.v1.ProjectCatalogSnapshotV1;
-import xyz.yychainsaw.portfolio.publishing.snapshot.v1.ProjectSnapshotV1;
-import xyz.yychainsaw.portfolio.publishing.snapshot.v1.SiteSnapshotV1;
+import xyz.yychainsaw.portfolio.publishing.snapshot.SnapshotMapperRegistry;
 
 @Service
 public final class PublicSnapshotQueryService {
     private static final UUID PROJECT_CATALOG_ID =
             UUID.fromString("00000000-0000-0000-0000-000000000002");
     private final PublishingRepository publishing;
-    private final SnapshotCodec codec;
+    private final SnapshotMapperRegistry snapshots;
     private final PublicProjectionMapper projections;
 
-    public PublicSnapshotQueryService(PublishingRepository publishing, SnapshotCodec codec,
-                                      PublicProjectionMapper projections) {
+    public PublicSnapshotQueryService(PublishingRepository publishing, SnapshotMapperRegistry snapshots,
+                                       PublicProjectionMapper projections) {
         this.publishing = publishing;
-        this.codec = codec;
+        this.snapshots = snapshots;
         this.projections = projections;
     }
 
     public PublishedEnvelope<PublicSiteDto> site(LocaleCode locale) {
         var revision = requireCurrent(AggregateType.SITE, SiteWorkspaceDto.SITE_ID);
-        var snapshot = codec.decode(revision.json(), SiteSnapshotV1.class);
+        var snapshot = snapshots.readSite(revision.schemaVersion(), revision.json());
         return new PublishedEnvelope<>(revision.version(), revision.checksum(), projections.site(snapshot, locale));
     }
 
     public PublishedEnvelope<java.util.List<PublicProjectCardDto>> catalog(LocaleCode locale) {
         var revision = requireCurrent(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID);
-        var snapshot = codec.decode(revision.json(), ProjectCatalogSnapshotV1.class);
+        var snapshot = snapshots.readCatalog(revision.schemaVersion(), revision.json());
         return new PublishedEnvelope<>(revision.version(), revision.checksum(), projections.catalog(snapshot, locale));
     }
 
@@ -4419,7 +4309,7 @@ public final class PublicSnapshotQueryService {
         var publication = publishing.findPublishedProjectBySlug(slug)
                 .orElseThrow(this::projectNotFound);
         var revision = publishing.requireRevision(publication.currentRevisionId());
-        var snapshot = codec.decode(revision.json(), ProjectSnapshotV1.class);
+        var snapshot = snapshots.readProject(revision.schemaVersion(), revision.json());
         return new PublishedEnvelope<>(revision.version(), revision.checksum(), projections.project(snapshot, locale));
     }
 
@@ -4468,7 +4358,7 @@ select exists (
 )
 ```
 
-`PublicMediaReferenceRepository.isCurrentlyPublished(assetId, variantName)` executes exactly that query. `PublicMediaController` returns `404` before calling `MediaQueryService` when it is false, so a stale conditional request never reveals an unpublished reference. It then loads `MediaVariantDescriptor variant`, selects `StorageService storage = storageRouter.require(variant.provider())`, derives the quoted strong ETag only from `variant.sha256()`, and never reconstructs metadata from a key. For LOCAL, honor `If-None-Match` with `304` only after the publication check; parse at most one RFC 7233 bytes range; honor the range only when an optional `If-Range` strong ETag matches, otherwise send the full representation; call `storage.open(variant.objectKey(), optionalRange)`; and return `200` or `206`, `Cache-Control: public, no-cache`, `Accept-Ranges: bytes`, the strong ETag, `Content-Range` computed from the requested range and `variant.byteSize()`, and an `InputStreamResource` wrapping `StorageRead.inputStream()`. For TENCENT_COS, reject Range with `416` and otherwise return `302` to `storage.signedGet(variant.objectKey(), Duration.ofMinutes(5))` with the variant ETag and `Cache-Control: no-store`; never expose the signed URL in JSON. A signed URL may remain valid for five minutes after archive, matching the approved withdrawal boundary. Tests cover Local `200/206/304`, mismatched `If-Range -> 200`, multi-range/unsatisfiable `416`, publication removal after a cached ETag -> `404`, COS Range `416`, and COS signed redirect/no-store.
+`PublicMediaReferenceRepository.isCurrentlyPublished(assetId, variantName)` executes exactly that query. `PublicMediaController` returns `404` before calling `MediaQueryService` when it is false, so a stale conditional request never reveals an unpublished reference. It then loads `MediaVariantDescriptor variant`, selects `StorageService storage = storageRouter.require(variant.provider())`, and requires `storage.provider()` plus `storage.location()` to exactly match the descriptor provider/bucket/region before any read or redirect. It derives the quoted strong ETag only from `variant.sha256()` and never reconstructs metadata from a key. For LOCAL, honor `If-None-Match` with `304` only after the publication check; parse at most one RFC 7233 bytes range; honor the range only when an optional `If-Range` strong ETag matches, otherwise request the full representation; call `storage.open(variant.objectKey(), optionalRange)`; validate `StorageRead.totalLength()` against `variant.byteSize()`, and build `200`/`206` plus `Content-Range` from the actual `StorageRead.range()` and `contentLength()`, never merely from the requested range. Stream the body through a response callback that closes the `StorageRead` in `try`-with-resources after copy. Set `Cache-Control: public, no-cache`, `Accept-Ranges: bytes`, and the strong ETag. For TENCENT_COS, reject Range with `416` and otherwise return `302` to `storage.signedGet(variant.objectKey(), Duration.ofMinutes(5))` with the variant ETag and `Cache-Control: no-store`; never expose the signed URL in JSON. A signed URL may remain valid for five minutes after archive, matching the approved withdrawal boundary. Tests cover location mismatch, stream closure, Local `200/206/304`, actual served-range headers, mismatched `If-Range -> 200`, multi-range/unsatisfiable `416`, publication removal after a cached ETag -> `404`, COS Range `416`, and COS signed redirect/no-store.
 
 - [ ] **Step 6: Run current/draft/history/media/ETag tests**
 
@@ -4483,7 +4373,7 @@ Expected: PASS; workspace edits do not leak, a matching API ETag returns `304`, 
 - [ ] **Step 7: Commit public JSON and media delivery**
 
 ```powershell
-git add backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/publicapi backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/web
+git add backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/publicapi backend-parent/portfolio-server/pom.xml backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/web
 git commit -m "feat(public): expose published content and media"
 ```
 
@@ -4503,7 +4393,7 @@ git commit -m "feat(public): expose published content and media"
 - Create: `backend-parent/portfolio-server/src/main/resources/templates/public/privacy.html`
 - Create: `backend-parent/portfolio-server/src/main/resources/static/robots.txt`
 - Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
-- Create: `backend-parent/portfolio-server/src/test/resources/application-test.yml`
+- Modify: `backend-parent/portfolio-server/src/test/resources/application-test.yml`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/web/PublicHtmlContractTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/web/CompositeEtagServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/resources/vite/manifest.json`
@@ -4602,7 +4492,7 @@ portfolio:
     public-base-url: ${PORTFOLIO_PUBLIC_BASE_URL:https://yychainsaw.xyz}
 ```
 
-`PORTFOLIO_RELEASE_ID` is the Git commit plus Vite manifest SHA-256 assembled by the deployment plan. Empty release ID fails application startup outside the `test` profile. Create `backend-parent/portfolio-server/src/test/resources/application-test.yml` so every inherited `@ActiveProfiles("test")` integration context has a deterministic nonblank release and reads the manifest from the file created by this task:
+`PORTFOLIO_RELEASE_ID` is the Git commit plus Vite manifest SHA-256 assembled by the deployment plan. Empty release ID fails application startup outside the `test` profile. Merge the render keys into the existing `backend-parent/portfolio-server/src/test/resources/application-test.yml` so every inherited `@ActiveProfiles("test")` integration context has a deterministic nonblank release and reads the manifest from the file created by this task. Preserve its existing `portfolio.release-id`, jobs-disabled, LOCAL test-storage, staging-cleanup-disabled, and media-cleanup-disabled settings:
 
 ```yaml
 portfolio:
@@ -5065,7 +4955,7 @@ Run from `backend-parent/`:
 .\mvnw.cmd -pl portfolio-server -am clean verify
 ```
 
-Expected: exit `0`; Flyway builds V1-V5 from empty PostgreSQL, import/publish/concurrency/restore/public API/media/HTML/cache/security tests all pass, and `ContentPublishingAcceptanceTest` passes.
+Expected: exit `0`; Flyway builds V1-V8 from empty PostgreSQL, import/publish/concurrency/restore/public API/media/HTML/cache/security tests all pass, and `ContentPublishingAcceptanceTest` passes.
 
 - [ ] **Step 3: Run the real-source import dry-run**
 
@@ -5095,7 +4985,7 @@ git commit -m "test(publishing): add content acceptance gate"
 
 - [ ] `git status --short` shows only intentional implementation files; no generated `runtime/import/portfolio-v1.json`, secrets, build output, or database volume is staged.
 - [ ] `git log --oneline -12` shows one commit per task in the documented order.
-- [ ] `V4__content_workspace.sql` and `V5__publishing.sql` apply from an empty PostgreSQL 17 container.
+- [ ] `V7__content_workspace.sql` and `V8__publishing.sql` apply from an empty PostgreSQL 17 container after the existing V1-V6 chain.
 - [ ] Exporting the unchanged `portfolio.ts` twice produces byte-identical JSON and SHA-256.
 - [ ] Dry-run performs no database/media write; every structure error produces zero content rows.
 - [ ] Required locale keys/fields cannot be omitted; present blank translations import as stably ordered `IMPORT_TRANSLATION_INCOMPLETE` warnings and still cannot publish.
