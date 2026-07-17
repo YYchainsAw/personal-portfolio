@@ -333,6 +333,7 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: prod
       PORTFOLIO_RELEASE_ID: ${PORTFOLIO_RELEASE_ID:?PORTFOLIO_RELEASE_ID is required}
+      PORTFOLIO_COS_STAGING_ROOT: /tmp/portfolio-cos-staging
     depends_on:
       postgres: { condition: service_healthy }
     ports:
@@ -340,7 +341,7 @@ services:
     volumes:
       - local-media:/var/lib/portfolio/media
     tmpfs:
-      - /tmp:size=128m,mode=1777
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -362,7 +363,7 @@ volumes:
   local-media:
 ```
 
-The Task-1 runtime stage installs `curl`, so the health check validates the local readiness response rather than only testing that a TCP port is open.
+The Task-1 runtime stage installs `curl`, so the health check validates the local readiness response rather than only testing that a TCP port is open. The rendered Compose contract requires `java.io.tmpdir` and `PORTFOLIO_COS_STAGING_ROOT` to remain under this size-limited ephemeral tmpfs, rejects persistent/unbounded process temporary storage, and verifies no scratch path resolves inside the durable Local media volume. Provision `local-media` once with an owner-only, no-follow `.portfolio-volume-id` containing a random opaque value stored separately as protected `PORTFOLIO_LOCAL_VOLUME_ID`; a new or wrong empty volume must not be accepted merely because it is writable.
 
 - [ ] **Step 3: Add production configuration safeguards**
 
@@ -516,7 +517,7 @@ NGINX_PID=/www/server/nginx/logs/nginx.pid
 
 The example IPv4 is documentation-only and must be replaced with the confirmed server address. Install the reviewed values as `/etc/portfolio/nginx.env` owned `root:portfolio-deploy` mode `0640`. `preflight.sh --public-cutover` fails when jurisdiction is `MAINLAND_CN` and any of `ICP_APPROVED=true`, nonblank `ICP_NUMBER`, or `PUBLIC_DOMAIN_ENABLED=true` is missing. For every `PUBLIC_HOSTS` entry, normalize and sort `dig +short A` and `dig +short AAAA`; require exact equality with the recorded expected set, require zero AAAA records when the value is `NONE`, and reject extra/stale/conflicting answers rather than accepting mere resolution.
 
-Resolve all four Nginx paths with `realpath`, require absolute values beneath the reviewed BaoTa installation, require the process in `NGINX_PID` to own ports 80/443 and its executable to equal `NGINX_BIN`, and use only `"$NGINX_BIN" -p "$NGINX_PREFIX" -c "$NGINX_CONF" -t` and `"$NGINX_BIN" -p "$NGINX_PREFIX" -c "$NGINX_CONF" -s reload`. The same command pair is used by preflight, deploy, rollback, and recovery; generic `nginx` or `systemctl reload nginx` calls are forbidden. Preflight also checks TLS files, API loopback, disk headroom, Docker 26, Compose availability, `jq`, `dig`, `unzip`, `zstd`, `curl`, `age`, `rclone`, clock synchronization, protected file permissions, and `PORTFOLIO_MEDIA_CLEANUP_ENABLED=true` now that plan 03's complete reference checker is installed. For Hong Kong/overseas, it records that the mainland ICP gate does not apply but still requires an explicit jurisdiction value.
+Resolve all four Nginx paths with `realpath`, require absolute values beneath the reviewed BaoTa installation, require the process in `NGINX_PID` to own ports 80/443 and its executable to equal `NGINX_BIN`, and use only `"$NGINX_BIN" -p "$NGINX_PREFIX" -c "$NGINX_CONF" -t` and `"$NGINX_BIN" -p "$NGINX_PREFIX" -c "$NGINX_CONF" -s reload`. The same command pair is used by preflight, deploy, rollback, and recovery; generic `nginx` or `systemctl reload nginx` calls are forbidden. Preflight also checks TLS files, API loopback, disk headroom, Docker 26, Compose availability, `jq`, `dig`, `unzip`, `zstd`, `curl`, `age`, `rclone`, clock synchronization, protected file permissions, the release bundle's exact `PORTFOLIO_RELEASE_ID`, protected nonblank `PORTFOLIO_LOCAL_VOLUME_ID`, `PORTFOLIO_JOBS_WORKER_ENABLED=true`, `PORTFOLIO_STAGING_CLEANUP_ENABLED=true`, and `PORTFOLIO_MEDIA_CLEANUP_ENABLED=true` now that plan 03's complete reference checker is installed. It verifies the mounted Local root and owner-only no-follow `.portfolio-volume-id` before application start, compares the marker in constant time without logging either value, and rejects a missing, replaced, wrong, or extra-mounted root. It counts Local staging entries without crossing filesystems, rejects a count at or above the application's configured hard scan ceiling, and requires the latest sanitized cleanup scan duration to remain below the reviewed fraction of the job lease. It also verifies rendered/running `/tmp` is a size-limited `noexec,nosuid,nodev` tmpfs and that COS/JVM scratch resolves beneath it, never beneath durable media. Preflight builds a required-provider set from configured adapters, the default writer, and distinct provider/bucket/region locations already referenced by `media_asset`; an unconfigured or location-mismatched historical provider fails closed. During explicit bucket provisioning, before the first deployment, the operator runs `install-cos-staging-lifecycle.sh --apply` once for every required COS location with short-lived lifecycle-read/configure authority, verifies the read-back, and discards that credential. Every routine preflight is read-only: for each required COS location it invokes `verify-cos-staging-lifecycle.sh --check-live` with separate short-lived lifecycle-read authority and fails before workers are enabled unless that bucket has the exact enabled `staging/` one-day rule; the runtime media credential must lack lifecycle-management permission. For required Local storage, preflight additionally requires the canonical root to be writable with adequate headroom and the durable staging scheduler to be enabled. A mixed Local/COS installation must pass both independent gates regardless of the current default writer. For Hong Kong/overseas, preflight records that the mainland ICP gate does not apply but still requires an explicit jurisdiction value.
 
 Until review completes, use `PUBLIC_DOMAIN_ENABLED=false`; run private smoke tests through `curl --resolve yychainsaw.xyz:443:127.0.0.1` only after a local test certificate is configured, or use direct loopback API checks.
 
@@ -584,13 +585,14 @@ Then acquire `flock /run/lock/portfolio-deploy.lock`. Resolve every supplied pat
 6. run `docker compose up -d postgres` and wait for health;
 7. run the application migration/start with `docker compose up -d portfolio-api`;
 8. wait for readiness and run `smoke.sh api-local --base-url http://127.0.0.1:18080`;
-9. create a new symlink and atomically rename it to `/opt/portfolio/current-admin`;
-10. source `/etc/portfolio/nginx.env`, run the exact recorded BaoTa test/reload command pair, then run `smoke.sh nginx-local --resolve yychainsaw.xyz:${NGINX_LOCAL_PORT}:127.0.0.1` against the loopback-only local Nginx fixture;
-11. only when `preflight.sh --public-cutover` passes, run `smoke.sh public --base-url https://yychainsaw.xyz` against real DNS/TLS;
-12. write current/previous release marker files atomically;
-13. run safe release/asset pruning and record a redacted deployment result.
+9. when Local is in the required-provider set, derive the same most-recent nonfuture 04:00 Hong Kong boundary date and 24-hour-prior cutoff as `StagingCleanupScheduler`, then wait a bounded interval for the exact `media-staging-cleanup:{PORTFOLIO_RELEASE_ID}:{yyyy-MM-dd}` job and canonical payload from this release to exist and reach `SUCCEEDED`; a stale success row from any other release cannot satisfy the gate. For every required COS location, retain the matching successful live verifier evidence from preflight; mixed installations require all evidence;
+10. create a new symlink and atomically rename it to `/opt/portfolio/current-admin`;
+11. source `/etc/portfolio/nginx.env`, run the exact recorded BaoTa test/reload command pair, then run `smoke.sh nginx-local --resolve yychainsaw.xyz:${NGINX_LOCAL_PORT}:127.0.0.1` against the loopback-only local Nginx fixture;
+12. only when `preflight.sh --public-cutover` passes, run `smoke.sh public --base-url https://yychainsaw.xyz` against real DNS/TLS;
+13. write current/previous release marker files atomically;
+14. run safe release/asset pruning and record a redacted deployment result.
 
-If steps 7–11 fail, restore the previous release env, start the previous API image, restore the previous admin symlink, run the exact BaoTa syntax/reload command pair, and leave the forward database migration in place. Exit non-zero and preserve diagnostic logs without secrets.
+If steps 7–12 fail, restore the previous release env, start the previous API image, restore the previous admin symlink, run the exact BaoTa syntax/reload command pair, and leave the forward database migration in place. Exit non-zero and preserve diagnostic logs without secrets.
 
 - [ ] **Step 4: Cover the local and public smoke matrix**
 
@@ -618,6 +620,8 @@ GET /api/not-a-route                JSON 404, never admin/public HTML
 ```
 
 After content exists, add a current project, old-slug redirect, public media, login page, contact validation, and authenticated login/TOTP smoke using a dedicated operator workflow that never places credentials on the command line. `nginx-local` and `public` must GET the public-media URL and compare its SHA-256/content type with the selected `media_variant`; a database-only success is insufficient.
+
+`deploy-state-machine.sh` covers worker-disabled and cleanup-disabled preflight failures, missing/wrong/replaced Local volume markers, persistent or oversized/non-hardened tmp mounts, COS scratch escaping tmpfs, Local-only, COS-only, and mixed-provider gates, a COS bucket missing its installed rule, stale cleanup success from a previous release, the before-04:00 boundary date, canonical cutoff mismatch, current-release cleanup timeout/failure, and the all-evidence success path. No fixture may mutate the real bucket, storage root, or production database.
 
 - [ ] **Step 5: Implement safe three-release pruning**
 
@@ -934,7 +938,7 @@ The production runbook must cover:
 - confirmed Tencent region/jurisdiction and where the evidence is recorded;
 - current ICP state, approval/number recording, DNS cutover and rollback;
 - Ubuntu updates, Docker 26/Compose, non-root deploy group, directory ownership, firewall, BaoTa Nginx ownership, TLS, and clock sync;
-- secret generation, file permissions, COS/SMTP/rclone least privilege, and off-server key custody;
+- secret generation, file permissions, opaque Local volume identity provisioning/rotation, bounded ephemeral JVM/COS scratch, COS/SMTP/rclone least privilege, separate short-lived COS lifecycle-operations credentials, idempotent lifecycle installation during bucket provisioning, independent read-only verification during every preflight, Local staging-scheduler activation evidence, and off-server key custody;
 - first database start, Flyway validation, one-time admin bootstrap, TOTP enrollment, and recovery-code offline storage;
 - release build, deploy, smoke, rollback, three-release retention, and public-asset cleanup;
 - private remote Git/protected release-tag continuity for source plus no-secret Compose/Nginx/runbook configuration, and exact-tag rebuild when no release bundle survives;
@@ -956,6 +960,7 @@ cd backend-parent && ./mvnw -B verify && cd ..
 bash deploy/tests/release-artifact-contract.sh "/opt/portfolio/releases/$PORTFOLIO_RELEASE_ID" "$PORTFOLIO_RELEASE_ID"
 bash deploy/tests/compose-contract.sh
 bash deploy/tests/nginx-contract.sh
+bash deploy/tests/cos-staging-lifecycle-contract.sh
 bash deploy/tests/deploy-state-machine.sh
 bash deploy/tests/backup-contract.sh
 bash deploy/tests/restore-safety-contract.sh

@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.UUID;
 
 final class LocalFileIdentity {
     private static final String UNSAFE_PATH = "LOCAL_UNSAFE_PATH";
@@ -25,10 +26,31 @@ final class LocalFileIdentity {
 
     static LocalFileIdentity capture(Path path, Object fileKey, GuardLinker guardLinker)
             throws IOException {
+        return capture(
+                path,
+                fileKey,
+                LocalReservedNames.newIdentity(path.getParent()),
+                guardLinker);
+    }
+
+    static LocalFileIdentity captureReserved(
+            Path path,
+            Object fileKey,
+            UUID cleanupJobId,
+            GuardLinker guardLinker) throws IOException {
+        return capture(
+                path,
+                fileKey,
+                LocalReservedNames.reservedIdentity(path.getParent(), cleanupJobId),
+                guardLinker);
+    }
+
+    private static LocalFileIdentity capture(
+            Path path, Object fileKey, Path guard, GuardLinker guardLinker)
+            throws IOException {
         if (fileKey != null) {
             return new LocalFileIdentity(fileKey, null);
         }
-        Path guard = LocalReservedNames.newIdentity(path.getParent());
         try {
             guardLinker.create(guard, path);
             if (!Files.isSameFile(path, guard)) {

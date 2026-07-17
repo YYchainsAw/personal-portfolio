@@ -15,15 +15,21 @@ import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -61,6 +67,9 @@ class LocalStorageServiceTest {
         StoredObject stored = service.put(
                 "originals/asset.bin", tracking(bytes), bytes.length, CONTENT_TYPE);
 
+        assertThat(service.location())
+                .isEqualTo(new StorageLocation(StorageProvider.LOCAL, null, null));
+        assertThat(service.location().provider()).isEqualTo(service.provider());
         assertThat(stored.provider()).isEqualTo(StorageProvider.LOCAL);
         assertThat(stored.bucket()).isNull();
         assertThat(stored.region()).isNull();
@@ -489,6 +498,26 @@ class LocalStorageServiceTest {
     }
 
     @Test
+    void storageLocationRequiresTheExactProviderSpecificShape() {
+        assertThat(StorageLocation.class.isRecord()).isTrue();
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(null, null, null))
+                .withMessage("Storage location is invalid");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(
+                        StorageProvider.LOCAL, "private-root", null))
+                .withMessage("Storage location is invalid");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(
+                        StorageProvider.TENCENT_COS, null, "ap-guangzhou"))
+                .withMessage("Storage location is invalid");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StorageLocation(
+                        StorageProvider.TENCENT_COS, "portfolio-1234567890", "   "))
+                .withMessage("Storage location is invalid");
+    }
+
+    @Test
     void storedObjectRequiresTheKeysCanonicalContentType() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> new StoredObject(
@@ -575,6 +604,509 @@ class LocalStorageServiceTest {
                 "Application/Octet-Stream",
                 "0".repeat(64));
         assertThat(valid.contentType()).isEqualTo(CONTENT_TYPE);
+    }
+
+    @Test
+    void stagingCleanupDeletesTheInclusiveOldBoundaryAndPreservesEverythingElse()
+            throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String oldKey = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        String youngKey = stagingKey(
+                "22222222-2222-4222-8222-222222222222", sha(2), "png");
+        String nonCanonicalDirectoryKey = stagingKey(
+                "not-a-canonical-asset", sha(3), "jpg");
+        String nonCanonicalFileKey = stagingKey(
+                "33333333-3333-4333-8333-333333333333",
+                "not-a-canonical-sha",
+                "jpg");
+        String originalKey = "originals/44444444-4444-4444-8444-444444444444/"
+                + sha(5) + ".pdf";
+        stage(service, root, oldKey, cutoff);
+        stage(service, root, youngKey, cutoff.plusSeconds(1));
+        String canonicalDirectorySeed = stagingKey(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sha(3), "jpg");
+        stage(service, root, canonicalDirectorySeed, cutoff.minusSeconds(60));
+        Files.move(
+                root.resolve(canonicalDirectorySeed).getParent(),
+                root.resolve(nonCanonicalDirectoryKey).getParent());
+        String canonicalFileSeed = stagingKey(
+                "33333333-3333-4333-8333-333333333333", sha(10), "jpg");
+        stage(service, root, canonicalFileSeed, cutoff.minusSeconds(60));
+        Files.move(root.resolve(canonicalFileSeed), root.resolve(nonCanonicalFileKey));
+        stage(service, root, originalKey, cutoff.minusSeconds(60));
+        Path unknown = root.resolve("staging").resolve("@unknown-reserved");
+        Files.write(unknown, new byte[] {9});
+        boolean prunesOldDirectory = hasFileIdentity(root.resolve(oldKey).getParent());
+
+        StagingCleanupResult result = service.cleanupStaging(cutoff);
+
+        assertThat(result.deleted()).isEqualTo(prunesOldDirectory ? 2 : 1);
+        assertThat(result.scanned()).isPositive();
+        assertThat(result.candidates()).isOne();
+        assertThat(result.elapsed().isNegative()).isFalse();
+        assertThat(root.resolve(oldKey)).doesNotExist();
+        assertThat(Files.exists(root.resolve(oldKey).getParent()))
+                .isEqualTo(!prunesOldDirectory);
+        assertThat(root.resolve(youngKey)).exists();
+        assertThat(root.resolve(nonCanonicalDirectoryKey)).exists();
+        assertThat(root.resolve(nonCanonicalFileKey)).exists();
+        assertThat(root.resolve(originalKey)).exists();
+        assertThat(unknown).exists();
+    }
+
+    @Test
+    void stagingCleanupIsAMissingRootNoOpAndRejectsAnUnsafeCanonicalNode() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+
+        assertThat(service.cleanupStaging(cutoff).deleted()).isZero();
+
+        String seed = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, seed, cutoff.plusSeconds(1));
+        Path unsafe = root.resolve("staging")
+                .resolve("22222222-2222-4222-8222-222222222222");
+        Files.write(unsafe, new byte[] {1});
+
+        assertStorageFailure(
+                () -> service.cleanupStaging(cutoff),
+                "LOCAL_STAGING_CLEANUP_FAILED");
+        assertThat(unsafe).exists();
+        assertThat(root.resolve(seed)).exists();
+    }
+
+    @Test
+    void fullStreamingSelectionIgnoresYoungAndUnknownEntriesAndDeletesOldestFirst()
+            throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String asset = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        int limit = LocalStorageService.STAGING_CLEANUP_FILE_DELETE_LIMIT;
+        List<Path> eligible = new ArrayList<>();
+        for (int index = 0; index < limit + 3; index++) {
+            String key = stagingKey(asset, sha(10_000 + index), "jpg");
+            Instant modified = cutoff.minusSeconds(index + 1L);
+            stage(service, root, key, modified);
+            eligible.add(root.resolve(key));
+        }
+        for (int index = 0; index < limit + 7; index++) {
+            String key = stagingKey(asset, sha(20_000 + index), "png");
+            stage(service, root, key, cutoff.plusSeconds(index + 1L));
+        }
+        Path directory = root.resolve("staging").resolve(asset);
+        for (int index = 0; index < limit + 7; index++) {
+            Files.write(directory.resolve("000-unknown-" + index), new byte[] {1});
+        }
+
+        assertThat(service.cleanupStaging(cutoff).deleted()).isEqualTo(limit);
+
+        assertThat(eligible.subList(0, 3)).allMatch(Files::exists);
+        assertThat(eligible.subList(3, eligible.size())).noneMatch(Files::exists);
+        assertThat(service.cleanupStaging(cutoff).deleted()).isEqualTo(3);
+        assertThat(eligible).noneMatch(Files::exists);
+        assertThat(directory).exists();
+        assertThat(service.cleanupStaging(cutoff).deleted()).isZero();
+    }
+
+    @Test
+    void exceedingTheConfiguredScanCeilingFailsBeforeAnyDeletion() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = new LocalStorageService(
+                new LocalStorageProperties(root),
+                LocalStorageService.OperationObserver.NOOP,
+                3);
+        openServices.add(service);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        List<Path> staged = new ArrayList<>();
+        for (int index = 0; index < 3; index++) {
+            String key = stagingKey(
+                    "11111111-1111-4111-8111-111111111111",
+                    sha(index + 1),
+                    "jpg");
+            stage(service, root, key, cutoff.minusSeconds(index));
+            staged.add(root.resolve(key));
+        }
+
+        assertStorageFailure(
+                () -> service.cleanupStaging(cutoff),
+                "LOCAL_STAGING_CLEANUP_FAILED");
+        assertThat(staged).allMatch(Files::exists);
+    }
+
+    @Test
+    void cleanupIsRepeatSafeWhenAnotherReplicaDeletesTheCandidateFirst() throws Exception {
+        Path root = storageRoot();
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        AtomicBoolean deletedByReplica = new AtomicBoolean();
+        LocalStorageService service = new LocalStorageService(
+                new LocalStorageProperties(root),
+                new LocalStorageService.OperationObserver() {
+                    @Override
+                    public void beforeStagingCleanupDelete(Path target) throws IOException {
+                        if (deletedByReplica.compareAndSet(false, true)) {
+                            Files.delete(target);
+                        }
+                    }
+                });
+        openServices.add(service);
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, key, cutoff);
+        boolean prunesDirectory = hasFileIdentity(root.resolve(key).getParent());
+
+        assertThat(service.cleanupStaging(cutoff).deleted())
+                .isEqualTo(prunesDirectory ? 1 : 0);
+        assertThat(root.resolve(key)).doesNotExist();
+        assertThat(service.cleanupStaging(cutoff).deleted()).isZero();
+    }
+
+    @Test
+    void cleanupFailsClosedWhenASelectedFilesIdentityIsExchanged() throws Exception {
+        Path root = storageRoot();
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        AtomicReference<LocalStorageService> holder = new AtomicReference<>();
+        AtomicBoolean exchanged = new AtomicBoolean();
+        Path backup = root.resolve("staging")
+                .resolve("11111111-1111-4111-8111-111111111111")
+                .resolve("@old-candidate");
+        LocalStorageService service = new LocalStorageService(
+                new LocalStorageProperties(root),
+                new LocalStorageService.OperationObserver() {
+                    @Override
+                    public void beforeStagingCleanupDelete(Path target) throws IOException {
+                        if (!exchanged.compareAndSet(false, true)) {
+                            return;
+                        }
+                        Files.move(target, backup);
+                        putStagingReserved(
+                                holder.get(), key, tracking(new byte[] {2}), 1);
+                        Files.setLastModifiedTime(target, FileTime.from(cutoff));
+                    }
+                });
+        holder.set(service);
+        openServices.add(service);
+        stage(service, root, key, cutoff);
+
+        assertStorageFailure(
+                () -> service.cleanupStaging(cutoff),
+                "LOCAL_STAGING_CLEANUP_FAILED");
+        assertThat(root.resolve(key)).exists();
+        assertThat(backup).exists();
+    }
+
+    @Test
+    void deterministicIdentityGuardRecoversAfterItsFirstReleaseIsRefused()
+            throws Exception {
+        Path root = storageRoot();
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String asset = "11111111-1111-4111-8111-111111111111";
+        String key = stagingKey(asset, sha(1), "jpg");
+        AtomicInteger releases = new AtomicInteger();
+        LocalStorageService service = new LocalStorageService(
+                new LocalStorageProperties(root),
+                new LocalStorageService.OperationObserver() {
+                    @Override
+                    public void beforeStagingCleanupGuardRelease(
+                            Path guard, Path target) throws IOException {
+                        if (releases.incrementAndGet() == 1) {
+                            throw new IOException("simulated guard release refusal");
+                        }
+                    }
+                });
+        openServices.add(service);
+        stage(service, root, key, cutoff);
+        boolean prunesDirectory = hasFileIdentity(root.resolve(key).getParent());
+
+        assertStorageFailure(
+                () -> service.cleanupStaging(cutoff),
+                "LOCAL_STAGING_CLEANUP_FAILED");
+
+        Path directory = root.resolve("staging").resolve(asset);
+        assertThat(root.resolve(key)).doesNotExist();
+        try (var entries = Files.list(directory)) {
+            assertThat(entries.filter(path -> path.getFileName()
+                            .toString()
+                            .startsWith("@cleanup-identity-")))
+                    .hasSize(1);
+        }
+
+        assertThat(service.cleanupStaging(cutoff).deleted())
+                .isEqualTo(prunesDirectory ? 2 : 1);
+        assertThat(Files.exists(directory)).isEqualTo(!prunesDirectory);
+        assertThat(releases).hasValue(1);
+    }
+
+    @Test
+    void verificationGuardSlotRecoversAsTheOnlyRemainingLink() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, key, cutoff);
+        Path target = root.resolve(key);
+        Path directory = target.getParent();
+        boolean prunesDirectory = hasFileIdentity(directory);
+        Path verification = directory.resolve(
+                "@cleanup-verification-" + target.getFileName());
+        Files.createLink(verification, target);
+        Files.delete(target);
+
+        assertThat(service.cleanupStaging(cutoff).deleted())
+                .isEqualTo(prunesDirectory ? 2 : 1);
+        assertThat(verification).doesNotExist();
+        assertThat(directory.resolve(
+                "@cleanup-identity-" + target.getFileName())).doesNotExist();
+        assertThat(Files.exists(directory)).isEqualTo(!prunesDirectory);
+    }
+
+    @Test
+    void equalPrimaryAndVerificationGuardSlotsAreBothRecoveredWithinTheBound()
+            throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, key, cutoff);
+        Path target = root.resolve(key);
+        Path directory = target.getParent();
+        boolean prunesDirectory = hasFileIdentity(directory);
+        Path primary = directory.resolve("@cleanup-identity-" + target.getFileName());
+        Path verification = directory.resolve(
+                "@cleanup-verification-" + target.getFileName());
+        Files.createLink(primary, target);
+        Files.createLink(verification, target);
+        Files.delete(target);
+
+        assertThat(service.cleanupStaging(cutoff).deleted())
+                .isEqualTo(prunesDirectory ? 3 : 2);
+        assertThat(primary).doesNotExist();
+        assertThat(verification).doesNotExist();
+    }
+
+    @Test
+    void differentGuardSlotIdentitiesFailClosedBeforeDeletingEither() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String asset = "11111111-1111-4111-8111-111111111111";
+        String firstKey = stagingKey(asset, sha(1), "jpg");
+        String secondKey = stagingKey(asset, sha(2), "jpg");
+        stage(service, root, firstKey, cutoff);
+        stage(service, root, secondKey, cutoff);
+        Path first = root.resolve(firstKey);
+        Path second = root.resolve(secondKey);
+        Path primary = first.getParent().resolve(
+                "@cleanup-identity-" + first.getFileName());
+        Path verification = first.getParent().resolve(
+                "@cleanup-verification-" + first.getFileName());
+        Files.createLink(primary, first);
+        Files.createLink(verification, second);
+        Files.delete(first);
+        Files.delete(second);
+
+        assertStorageFailure(
+                () -> service.cleanupStaging(cutoff),
+                "LOCAL_STAGING_CLEANUP_FAILED");
+        assertThat(primary).exists();
+        assertThat(verification).exists();
+    }
+
+    @Test
+    void nullDirectoryIdentityRetainsTheDirectoryButStillDeletesTheStronglyBoundFile()
+            throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = new LocalStorageService(
+                new LocalStorageProperties(root),
+                new LocalStorageService.OperationObserver() {
+                    @Override
+                    public Object stagingCleanupDirectoryIdentity(
+                            Path directory, BasicFileAttributes attributes) {
+                        return null;
+                    }
+                });
+        openServices.add(service);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, key, cutoff);
+        Path target = root.resolve(key);
+
+        assertThat(service.cleanupStaging(cutoff).deleted()).isOne();
+        assertThat(target).doesNotExist();
+        assertThat(target.getParent()).isDirectory().isEmptyDirectory();
+    }
+
+    @Test
+    void concurrentCleanupCallsNeverDoubleDeleteAStagingObject() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, key, cutoff);
+        boolean prunesDirectory = hasFileIdentity(root.resolve(key).getParent());
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<StagingCleanupResult> first =
+                    executor.submit(() -> service.cleanupStaging(cutoff));
+            Future<StagingCleanupResult> second =
+                    executor.submit(() -> service.cleanupStaging(cutoff));
+
+            assertThat(first.get(10, SECONDS).deleted()
+                            + second.get(10, SECONDS).deleted())
+                    .isEqualTo(prunesDirectory ? 2 : 1);
+            assertThat(root.resolve(key)).doesNotExist();
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void unknownSymbolicLinksAreNeverFollowedOrDeletedWhenThePlatformAllowsThem()
+            throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String seed = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, seed, cutoff.plusSeconds(1));
+        Path outside = root.resolve("outside-do-not-delete");
+        Files.write(outside, new byte[] {1});
+        Path link = root.resolve("staging").resolve("@unknown-link");
+        try {
+            Files.createSymbolicLink(link, outside);
+        } catch (IOException | UnsupportedOperationException unsupported) {
+            return;
+        }
+
+        assertThat(service.cleanupStaging(cutoff).deleted()).isZero();
+        assertThat(Files.exists(link, NOFOLLOW_LINKS)).isTrue();
+        assertThat(outside).exists();
+    }
+
+    @Test
+    void interruptedCleanupFailsBeforeDeletingAnySelectedCandidate() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Instant cutoff = Instant.parse("2026-07-15T20:00:00Z");
+        String key = stagingKey(
+                "11111111-1111-4111-8111-111111111111", sha(1), "jpg");
+        stage(service, root, key, cutoff);
+
+        Thread.currentThread().interrupt();
+        try {
+            assertStorageFailure(
+                    () -> service.cleanupStaging(cutoff),
+                    "LOCAL_STAGING_CLEANUP_FAILED");
+        } finally {
+            assertThat(Thread.interrupted()).isTrue();
+        }
+        assertThat(root.resolve(key)).exists();
+    }
+
+    @Test
+    void stagingCleanupResultRejectsIncompleteOrNegativeMetrics() {
+        for (long[] values : List.of(
+                new long[] {-1, 0, 0},
+                new long[] {0, -1, 0},
+                new long[] {0, 0, -1})) {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new StagingCleanupResult(
+                            values[0], values[1], values[2], Duration.ZERO))
+                    .withMessage("Invalid staging cleanup result")
+                    .withNoCause();
+        }
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StagingCleanupResult(0, 0, 0, null))
+                .withMessage("Invalid staging cleanup result")
+                .withNoCause();
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StagingCleanupResult(
+                        0, 0, 0, Duration.ofNanos(-1)))
+                .withMessage("Invalid staging cleanup result")
+                .withNoCause();
+    }
+
+    private static void stage(
+            LocalStorageService service, Path root, String key, Instant modified) {
+        String contentType = key.endsWith(".jpg")
+                ? "image/jpeg"
+                : key.endsWith(".png")
+                        ? "image/png"
+                        : "application/pdf";
+        if (key.startsWith("staging/")) {
+            putStagingReserved(service, key, tracking(new byte[] {1}), 1);
+        } else {
+            service.put(key, tracking(new byte[] {1}), 1, contentType);
+        }
+        try {
+            Files.setLastModifiedTime(root.resolve(key), FileTime.from(modified));
+        } catch (IOException exception) {
+            throw new UncheckedIOException(exception);
+        }
+    }
+
+    private static void putStagingReserved(
+            LocalStorageService service,
+            String key,
+            InputStream input,
+            long contentLength) {
+        String[] segments = key.split("/");
+        String filename = segments[2];
+        int extension = filename.lastIndexOf('.');
+        String sha256 = filename.substring(0, extension);
+        String mimeType = switch (filename.substring(extension + 1)) {
+            case "jpg" -> "image/jpeg";
+            case "png" -> "image/png";
+            case "pdf" -> "application/pdf";
+            default -> throw new IllegalArgumentException("test staging extension is invalid");
+        };
+        LocalStagingPublication publication = new LocalStagingPublication(
+                UUID.fromString(segments[1]),
+                key,
+                sha256,
+                mimeType,
+                new StorageLocation(StorageProvider.LOCAL, null, null),
+                0,
+                UUID.randomUUID());
+        LocalPublicationAuthorization authorization = new LocalPublicationAuthorization(
+                publication,
+                service.volumeId(),
+                Long.MAX_VALUE,
+                System::nanoTime,
+                new LocalPublicationAuthorization.FenceLease() {
+                    @Override
+                    public boolean isHeld() {
+                        return true;
+                    }
+
+                    @Override
+                    public void close() {}
+                });
+        service.putReservedStaging(authorization, publication, input, contentLength);
+    }
+
+    private static String stagingKey(String assetId, String sha256, String extension) {
+        return "staging/" + assetId + "/" + sha256 + "." + extension;
+    }
+
+    private static String sha(int value) {
+        return String.format(java.util.Locale.ROOT, "%064x", value);
+    }
+
+    private static boolean hasFileIdentity(Path path) throws IOException {
+        return Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW_LINKS)
+                .fileKey() != null;
     }
 
     private LocalStorageService service(Path root) {

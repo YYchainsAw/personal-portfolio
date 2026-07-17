@@ -27,11 +27,14 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -55,6 +58,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
     private final List<AclEntry> fileAcl;
     private final Path rootMarker;
     private final byte[] rootMarkerToken;
+    private final String volumeId;
     private final FileChannel rootMarkerGuard;
 
     private LocalStorageAccessPolicy(
@@ -79,6 +83,7 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
         this.fileAcl = List.copyOf(fileAcl);
         this.rootMarker = rootMarker;
         this.rootMarkerToken = rootMarkerToken.clone();
+        this.volumeId = deriveVolumeId(this.rootMarkerToken);
         this.rootMarkerGuard = rootMarkerGuard;
     }
 
@@ -169,6 +174,11 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
 
     Path root() {
         return root;
+    }
+
+    String verifiedVolumeId() throws IOException {
+        verifyRoot();
+        return volumeId;
     }
 
     void verifyRoot() throws IOException {
@@ -632,6 +642,18 @@ final class LocalStorageAccessPolicy implements AutoCloseable {
                 }
             }
             return token;
+        }
+    }
+
+    private static String deriveVolumeId(byte[] markerToken) {
+        if (markerToken == null || markerToken.length != ROOT_MARKER_BYTES) {
+            throw unsafePath();
+        }
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(markerToken));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new StorageException("LOCAL_INITIALIZATION_FAILED", exception);
         }
     }
 

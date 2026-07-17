@@ -14,6 +14,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -88,6 +89,20 @@ class ProblemHandlingTest {
                 "Request validation failed");
 
         assertThat(json(result).path("fieldErrors").path("name").asText()).isEqualTo("required");
+    }
+
+    @Test
+    void containerElementValidationFailureAlsoReturnsTheStable422Contract()
+            throws Exception {
+        MvcResult result = expectProblem(
+                post("/test/validated-list")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[{\"name\":\"\"}]"),
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                "VALIDATION_ERROR",
+                "Request validation failed");
+
+        assertThat(json(result).path("fieldErrors").toString()).contains("required");
     }
 
     @Test
@@ -186,6 +201,10 @@ class ProblemHandlingTest {
 
         @PostMapping("/test/validated")
         void validated(@Valid @RequestBody ValidationRequest request) {
+        }
+
+        @PostMapping("/test/validated-list")
+        void validatedList(@Valid @RequestBody List<ValidationRequest> request) {
         }
 
         @GetMapping("/test/required")

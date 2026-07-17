@@ -1279,7 +1279,7 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
         return application.run();
     }
 
-    private static Map<String, Object> secondaryContextProperties(boolean corsEnabled) {
+    private Map<String, Object> secondaryContextProperties(boolean corsEnabled) {
         String separator = POSTGRES.getJdbcUrl().contains("?") ? "&" : "?";
         String databaseUrl = POSTGRES.getJdbcUrl() + separator + "currentSchema=portfolio";
         Map<String, Object> properties = new LinkedHashMap<>();
@@ -1313,6 +1313,18 @@ class AdminAuthenticationFlowTest extends PostgresIntegrationTestBase {
         properties.put("server.servlet.session.cookie.secure", "false");
         properties.put("portfolio.web.allow-development-cors", Boolean.toString(corsEnabled));
         properties.put("portfolio.web.development-origin", DEVELOPMENT_ORIGIN);
+        properties.put(
+                "portfolio.media.local-staging.active-capacity",
+                environment.getRequiredProperty(
+                        "portfolio.media.local-staging.active-capacity"));
+        properties.put(
+                "portfolio.media.local-staging.scan-entry-ceiling",
+                environment.getRequiredProperty(
+                        "portfolio.media.local-staging.scan-entry-ceiling"));
+        properties.put(
+                "portfolio.media.local-staging.reserved-headroom",
+                environment.getRequiredProperty(
+                        "portfolio.media.local-staging.reserved-headroom"));
         return Map.copyOf(properties);
     }
 

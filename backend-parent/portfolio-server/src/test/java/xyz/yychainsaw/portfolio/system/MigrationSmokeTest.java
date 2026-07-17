@@ -29,7 +29,7 @@ class MigrationSmokeTest extends PostgresIntegrationTestBase {
                         order by installed_rank
                         """)
                 .query(String.class).list();
-        assertThat(versions).containsExactly("1", "2", "3");
+        assertThat(versions).containsExactly("1", "2", "3", "4", "5", "6");
 
         Integer tableCount = jdbc.sql("""
                 select count(*) from information_schema.tables

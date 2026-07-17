@@ -33,6 +33,10 @@ spring:
   jackson:
     default-property-inclusion: non_null
     time-zone: UTC
+  servlet:
+    multipart:
+      max-file-size: 30MB
+      max-request-size: 32MB
 
 server:
   address: ${PORTFOLIO_BIND_ADDRESS:127.0.0.1}
@@ -64,6 +68,21 @@ mybatis-plus:
     banner: false
 
 portfolio:
+  jobs:
+    retention:
+      enabled: ${PORTFOLIO_JOBS_RETENTION_ENABLED:false}
+      batch-size: ${PORTFOLIO_JOBS_RETENTION_BATCH_SIZE:500}
+      max-batches: ${PORTFOLIO_JOBS_RETENTION_MAX_BATCHES:10}
+  media:
+    cleanup:
+      enabled: ${PORTFOLIO_MEDIA_CLEANUP_ENABLED:false}
+    ingest:
+      transaction-timeout: ${PORTFOLIO_MEDIA_INGEST_TRANSACTION_TIMEOUT:PT30S}
+    local-publication:
+      max-concurrency: ${PORTFOLIO_LOCAL_PUBLICATION_MAX_CONCURRENCY:2}
+      connection-headroom: ${PORTFOLIO_LOCAL_PUBLICATION_CONNECTION_HEADROOM:2}
+      acquire-timeout: ${PORTFOLIO_LOCAL_PUBLICATION_ACQUIRE_TIMEOUT:PT10S}
+      operation-timeout: ${PORTFOLIO_LOCAL_PUBLICATION_OPERATION_TIMEOUT:PT2M}
   security:
     totp:
       active-key-version: ${PORTFOLIO_TOTP_ACTIVE_KEY_VERSION}
@@ -108,3 +127,7 @@ logging:
   structured:
     format:
       console: logstash
+portfolio:
+  media:
+    cleanup:
+      enabled: false

@@ -34,9 +34,11 @@ import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -499,6 +501,46 @@ class LocalStorageSecurityTest {
         assertStorageFailure(() -> service.copy("link.bin", "copy.bin"), "LOCAL_UNSAFE_PATH");
         assertThat(Files.readString(outside)).isEqualTo("outside");
         assertThat(Files.isSymbolicLink(link)).isTrue();
+    }
+
+    @Test
+    void volumeIdIsTheStableLowercaseSha256OfTheVerifiedRootMarkerToken() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService firstService = service(root);
+        String firstVolumeId = firstService.volumeId();
+        byte[] markerToken = Files.readAllBytes(
+                root.resolve(".portfolio-storage-root@guard"));
+
+        firstService.close();
+        String restartedVolumeId = service(root).volumeId();
+
+        assertAll(
+                () -> assertThat(markerToken).hasSize(32),
+                () -> assertThat(firstVolumeId).matches("[0-9a-f]{64}"),
+                () -> assertThat(firstVolumeId).isEqualTo(HexFormat.of().formatHex(
+                        MessageDigest.getInstance("SHA-256").digest(markerToken))),
+                () -> assertThat(restartedVolumeId).isEqualTo(firstVolumeId));
+    }
+
+    @Test
+    void differentStorageRootsHaveDifferentVolumeIds() {
+        Path firstRoot = storageRoot();
+        Path secondRoot = firstRoot.resolveSibling("second-store");
+
+        assertThat(service(firstRoot).volumeId())
+                .isNotEqualTo(service(secondRoot).volumeId());
+    }
+
+    @Test
+    void volumeIdFailsClosedWhenTheVerifiedRootMarkerTokenChanges() throws Exception {
+        Path root = storageRoot();
+        LocalStorageService service = service(root);
+        Path marker = root.resolve(".portfolio-storage-root@guard");
+        byte[] replacementToken = Files.readAllBytes(marker);
+        replacementToken[0] ^= (byte) 0xff;
+        Files.write(marker, replacementToken);
+
+        assertStorageFailure(service::volumeId, "LOCAL_UNSAFE_PATH");
     }
 
     @Test
