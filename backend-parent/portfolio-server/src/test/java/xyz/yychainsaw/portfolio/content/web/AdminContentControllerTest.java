@@ -15,14 +15,13 @@ import dev.samstevens.totp.time.TimeProvider;
 import jakarta.servlet.http.Cookie;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,6 +52,7 @@ import xyz.yychainsaw.portfolio.content.api.UpdateSiteWorkspaceRequest;
 import xyz.yychainsaw.portfolio.content.api.UpdateTaxonomyRequest;
 import xyz.yychainsaw.portfolio.content.persistence.SiteWorkspaceRepository;
 import xyz.yychainsaw.portfolio.content.support.WorkspaceFixtures;
+import xyz.yychainsaw.portfolio.support.DatabaseTestCleaner;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 @SpringBootTest
@@ -83,6 +83,11 @@ class AdminContentControllerTest extends PostgresIntegrationTestBase {
     private UUID createdProjectId;
     private UUID tagId;
     private UUID skillId;
+
+    @BeforeEach
+    void clearSharedAuthenticationState() {
+        DatabaseTestCleaner.clearAuthenticationState();
+    }
 
     @AfterEach
     void clean() {
@@ -432,8 +437,6 @@ class AdminContentControllerTest extends PostgresIntegrationTestBase {
         Cookie pending = findResponseCookie(password, SESSION_COOKIE)
                 .orElseThrow(() -> new AssertionError("pending session cookie was not set"));
         String primaryId = requirePrimaryId(pending.getValue());
-        admin.primaryIds.add(primaryId);
-
         MvcResult second = mvc.perform(withCsrf(post(SECOND_FACTOR_PATH)
                         .cookie(pending)
                         .with(remote(remote))
@@ -554,8 +557,6 @@ class AdminContentControllerTest extends PostgresIntegrationTestBase {
         private final UUID adminId = UUID.randomUUID();
         private final String username = "ContentAdmin" + adminId.toString().replace("-", "");
         private final String totpSecret;
-        private final Set<String> primaryIds = new LinkedHashSet<>();
-
         private Fixture() {
             TotpService.Enrollment enrollment = totp.beginEnrollment(adminId, username);
             totpSecret = enrollment.plaintextSecret();
@@ -574,22 +575,7 @@ class AdminContentControllerTest extends PostgresIntegrationTestBase {
 
         @Override
         public void close() {
-            JdbcClient owner = migratorJdbc();
-            owner.sql("alter table portfolio.audit_log disable trigger audit_log_reject_mutation")
-                    .update();
-            try {
-                owner.sql("delete from portfolio.audit_log where actor_admin_id=:id")
-                        .param("id", adminId).update();
-            } finally {
-                owner.sql("alter table portfolio.audit_log enable trigger audit_log_reject_mutation")
-                        .update();
-            }
-            for (String primaryId : primaryIds) {
-                owner.sql("delete from portfolio.spring_session where primary_id=:id")
-                        .param("id", primaryId).update();
-            }
-            owner.sql("delete from portfolio.admin_user where id=:id")
-                    .param("id", adminId).update();
+            DatabaseTestCleaner.clearAuthenticationState();
         }
     }
 

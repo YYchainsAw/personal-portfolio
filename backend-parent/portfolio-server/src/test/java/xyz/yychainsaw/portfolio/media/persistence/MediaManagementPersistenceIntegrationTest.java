@@ -26,6 +26,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.media.application.MediaObjectKeys;
 import xyz.yychainsaw.portfolio.media.domain.MediaStatus;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
+import xyz.yychainsaw.portfolio.support.DatabaseTestCleaner;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 @SpringBootTest
@@ -41,6 +42,7 @@ class MediaManagementPersistenceIntegrationTest extends PostgresIntegrationTestB
     @BeforeEach
     @AfterEach
     void clearMediaFixtures() {
+        DatabaseTestCleaner.clearMediaReferences();
         JdbcClient owner = migratorJdbc();
         owner.sql("delete from portfolio.media_translation").update();
         owner.sql("delete from portfolio.media_variant").update();

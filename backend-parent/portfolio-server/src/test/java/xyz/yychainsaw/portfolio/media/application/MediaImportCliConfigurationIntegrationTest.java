@@ -57,6 +57,7 @@ import xyz.yychainsaw.portfolio.media.storage.StorageLocation;
 import xyz.yychainsaw.portfolio.media.storage.StorageRouter;
 import xyz.yychainsaw.portfolio.media.storage.StorageService;
 import xyz.yychainsaw.portfolio.media.storage.StoredObject;
+import xyz.yychainsaw.portfolio.support.DatabaseTestCleaner;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 @SpringBootTest(
@@ -285,6 +286,7 @@ class MediaImportCliConfigurationIntegrationTest extends PostgresIntegrationTest
     }
 
     private static void clearFixtures() {
+        DatabaseTestCleaner.clearMediaReferences();
         JdbcClient owner = migratorJdbc();
         owner.sql("delete from portfolio.project").update();
         owner.sql("delete from portfolio.resume_document").update();
