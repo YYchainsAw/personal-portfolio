@@ -47,6 +47,7 @@ admin-web/
 │   ├── App.vue                          top-level RouterView
 │   ├── assets/admin.css                 Tailwind import and admin design tokens
 │   ├── router/index.ts                  authenticated route graph and guard factory
+│   ├── router/redirect.ts               pure same-origin admin redirect sanitizer
 │   ├── api/http.ts                      same-origin Axios, CSRF, problem conversion
 │   ├── api/authApi.ts                   password/TOTP/session/logout calls
 │   ├── api/siteApi.ts                   versioned SITE workspace calls
@@ -529,7 +530,10 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 ### Task 3: Implement guarded routes, password login, and TOTP verification
 
 **Files:**
+- Modify: `admin-web/vite.config.ts`
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
+- Create: `admin-web/src/router/redirect.ts`
 - Create: `admin-web/src/views/auth/LoginView.vue`
 - Create: `admin-web/src/views/auth/TotpView.vue`
 - Create: `admin-web/src/views/FeatureShellView.vue`
@@ -542,7 +546,7 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 - Consumes: `createSessionStore` contract and the production `sessionStore` from Task 2.
 - Produces: named routes `login`, `totp`, `dashboard`, `site`, `projects`, `project-new`, `project-edit`, `media`, `publishing-history`, `messages`, `analytics`, `settings`, and `admin-not-found`.
 
-- [ ] **Step 1: Write failing guard and two-step form tests**
+- [x] **Step 1: Write failing guard and two-step form tests**
 
 ```ts
 // admin-web/src/router/index.spec.ts
@@ -570,7 +574,13 @@ import TotpView from './TotpView.vue'
 
 it('submits exactly six TOTP digits to the session store', async () => {
   const verifySecondFactor = vi.fn().mockResolvedValue(undefined)
-  const wrapper = mount(TotpView, { props: { session: { verifySecondFactor }, onAuthenticated: vi.fn() } })
+  const wrapper = mount(TotpView, {
+    props: {
+      session: { verifySecondFactor, invalidate: vi.fn() },
+      onAuthenticated: vi.fn(),
+      onRestart: vi.fn(),
+    },
+  })
   await wrapper.get('input[autocomplete="one-time-code"]').setValue('123456')
   await wrapper.get('form').trigger('submit')
   expect(verifySecondFactor).toHaveBeenCalledWith('TOTP', '123456')
@@ -579,70 +589,21 @@ it('submits exactly six TOTP digits to the session store', async () => {
 
 Also test that the password form uses `autocomplete="username"` and `autocomplete="current-password"`, disables itself while submitting, and displays only `ApiProblem.body.title` plus `traceId`.
 
-- [ ] **Step 2: Run the focused tests and observe route/view failures**
+- [x] **Step 2: Run the focused tests and observe route/view failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/router/index.spec.ts src/views/auth`
 
 Expected: FAIL because guarded router and auth views do not exist.
 
-- [ ] **Step 3: Implement the route factory and accessible auth views**
+- [x] **Step 3: Implement the route factory and accessible auth views**
 
-```ts
-// admin-web/src/router/index.ts
-import { createRouter, createWebHistory, type RouterHistory } from 'vue-router'
-import { defineComponent, h } from 'vue'
-import { RouterView } from 'vue-router'
-import { sessionStore } from '@/stores/sessionInstance'
+Implement `createAdminRouter(session, history)` with the complete named route graph and a phase-first guard over `UNKNOWN`, `AUTHENTICATED`, `TOTP_REQUIRED`, and `ANONYMOUS`. The guard tolerates bootstrap failure on the login destination, requires a live challenge before TOTP, invalidates expired challenges, and redirects authenticated users away from authentication pages. A reactive phase watcher returns a protected/TOTP page to login after exact global session invalidation; `disposeAdminRouter(router)` releases that watcher for tests and HMR. Keep canonical redirect parsing in side-effect-free `router/redirect.ts`, including length, control/backslash, cross-origin, encoded-path, dot-segment, nested-slash, and authentication-destination rejection.
 
-type SessionGuardPort = { state: { phase: string }; bootstrap(): Promise<string> }
-const RouteOutlet = defineComponent(() => () => h(RouterView))
-const feature = () => import('@/views/FeatureShellView.vue')
+`FeatureShellView.vue` is a small accessible compile-time route destination with required `title` and optional route-ID props; it exists only so Task 3 type-checks before later slices create their real views. The temporary parent outlet owns the single `main` landmark and `FeatureShellView` is a section, so Task 4 can replace that outlet with `AdminShell` without nested landmarks. Tasks 6, 7, 9, and 10 replace every remaining named temporary destination when their files exist.
 
-export function createAdminRouter(session: SessionGuardPort, history: RouterHistory) {
-  const router = createRouter({
-    history,
-    routes: [
-      { path: '/admin/login', name: 'login', component: () => import('@/views/auth/LoginView.vue'), meta: { public: true } },
-      { path: '/admin/totp', name: 'totp', component: () => import('@/views/auth/TotpView.vue'), meta: { public: true } },
-      {
-        path: '/admin', component: RouteOutlet,
-        children: [
-          { path: '', redirect: { name: 'dashboard' } },
-          { path: 'dashboard', name: 'dashboard', component: feature, props: { title: '仪表盘' } },
-          { path: 'site', name: 'site', component: feature, props: { title: '站点内容' } },
-          { path: 'projects', name: 'projects', component: feature, props: { title: '项目' } },
-          { path: 'projects/new', name: 'project-new', component: feature, props: { title: '新建项目' } },
-          { path: 'projects/:projectId', name: 'project-edit', component: feature, props: (route) => ({ title: '编辑项目', projectId: route.params.projectId }) },
-          { path: 'media', name: 'media', component: feature, props: { title: '媒体库' } },
-          { path: 'publishing/:aggregateType/:aggregateId/history', name: 'publishing-history', component: feature, props: (route) => ({ title: '发布历史', ...route.params }) },
-          { path: 'messages', name: 'messages', component: feature, props: { title: '留言' } },
-          { path: 'analytics', name: 'analytics', component: feature, props: { title: '访问统计' } },
-          { path: 'settings', name: 'settings', component: feature, props: { title: '设置' } },
-        ],
-      },
-      { path: '/admin/:pathMatch(.*)*', name: 'admin-not-found', component: () => import('@/views/NotFoundView.vue') },
-    ],
-  })
-  router.beforeEach(async (to) => {
-    if (session.state.phase === 'UNKNOWN') await session.bootstrap()
-    if (!to.meta.public && session.state.phase !== 'AUTHENTICATED') {
-      return { name: 'login', query: { redirect: to.fullPath } }
-    }
-    if (to.name === 'totp' && session.state.phase !== 'TOTP_REQUIRED') return { name: 'login' }
-    if ((to.name === 'login' || to.name === 'totp') && session.state.phase === 'AUTHENTICATED') return { name: 'dashboard' }
-    return true
-  })
-  return router
-}
+`LoginView.vue` accepts injectable `session` and `onChallenge` props with production defaults (`sessionStore` and safe router navigation), calls `session.login`, clears the password before invoking navigation, and can retry a failed route load without resubmitting credentials. It observes the challenge phase and deadline so a stranded, expired challenge unlocks the password form. `TotpView.vue` likewise accepts injectable `session`, `onAuthenticated`, and `onRestart` props. Its default `TOTP` mode validates the raw value against `^[0-9]{6}$`; its explicit fallback normalizes one recovery-code format. Verification and post-authentication navigation are separate states, so a failed lazy route retries only navigation. Expiry/restart never invalidates an in-flight verification; a successful response wins, while a failed response after the deadline invalidates locally. Both pages clear secrets before completion callbacks, use only a pure canonical same-origin `/admin/` redirect sanitizer, and neither logs form values nor writes them to storage.
 
-export default createAdminRouter(sessionStore, createWebHistory('/'))
-```
-
-`FeatureShellView.vue` is a small accessible compile-time route destination with required `title` and optional route-ID props; it exists only so Task 3 type-checks before later slices create their real views. Task 4 replaces the parent `RouteOutlet` and temporary dashboard destination; Tasks 6, 7, 9, and 10 replace every remaining named temporary destination when their files exist.
-
-`LoginView.vue` accepts injectable `session` and `onChallenge` props with production defaults (`sessionStore` and safe router navigation), calls `session.login`, clears the password immediately in `finally`, and navigates to `totp`. `TotpView.vue` likewise accepts injectable `session` and `onAuthenticated` props. Its default `TOTP` mode validates `^[0-9]{6}$`; its explicit fallback mode accepts one recovery-code format; both call `session.verifySecondFactor(method, code)`, clear the code in `finally`, then invoke the production callback that replaces the sanitized `redirect` query only when it begins with `/admin/`; otherwise it replaces `/admin/dashboard`. Neither page logs form values or writes them to storage.
-
-- [ ] **Step 4: Verify auth routing and forms**
+- [x] **Step 4: Verify auth routing and forms**
 
 Run: `npm --prefix admin-web run test:unit -- src/router/index.spec.ts src/views/auth`
 
@@ -652,10 +613,12 @@ Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0.
 
-- [ ] **Step 5: Commit the authenticated entry flow**
+Verification (2026-07-18): the focused suites first failed on the intentionally missing router/views, then passed 29/29 under exact Node 22.18. The final full admin suite passed 51/51 across seven files; strict `vue-tsc`, the Vite production build, and `git diff --check` exited 0; npm audit reported zero vulnerabilities. Coverage includes the complete phase matrix, bootstrap failure, live invalidation, expired challenges, canonical redirect attacks, lazy-route retry without duplicate credentials, both sides of the in-flight expiry race, secret clearing, safe problem rendering, and accessible landmarks. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the authenticated entry flow**
 
 ```bash
-git add admin-web/src/router admin-web/src/views/auth admin-web/src/views/FeatureShellView.vue admin-web/src/views/NotFoundView.vue admin-web/src/stores/sessionInstance.ts
+git add admin-web/src/router admin-web/src/views/auth admin-web/src/views/FeatureShellView.vue admin-web/src/views/NotFoundView.vue docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add password and TOTP entry flow"
 ```
 
@@ -667,13 +630,14 @@ git commit -m "feat(admin): add password and TOTP entry flow"
 - Create: `admin-web/src/components/common/AsyncPanel.vue`
 - Create: `admin-web/src/views/DashboardView.vue`
 - Test: `admin-web/src/components/layout/AdminShell.spec.ts`
+- Test: `admin-web/src/components/common/AsyncPanel.spec.ts`
 - Test: `admin-web/src/views/DashboardView.spec.ts`
 
 **Interfaces:**
 - Consumes: `sessionStore.logout()` and named routes from Task 3.
 - Produces: the shared authenticated layout and a complete route-navigation dashboard; it does not invent an aggregate dashboard endpoint.
 
-- [ ] **Step 1: Write failing shell and dashboard state tests**
+- [x] **Step 1: Write failing shell and dashboard state tests**
 
 ```ts
 // admin-web/src/components/layout/AdminShell.spec.ts
@@ -708,61 +672,32 @@ it('links every complete administration area without an invented summary request
 })
 ```
 
-- [ ] **Step 2: Run the tests and confirm missing shell/dashboard failures**
+- [x] **Step 2: Run the tests and confirm missing shell/dashboard failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/layout src/views/DashboardView.spec.ts`
 
 Expected: FAIL because the layout and dashboard do not exist.
 
-- [ ] **Step 3: Implement the shell, retryable state component, and navigation dashboard**
+- [x] **Step 3: Implement the shell, retryable state component, and navigation dashboard**
 
-```vue
-<!-- admin-web/src/components/layout/AdminShell.vue -->
-<script setup lang="ts">
-import { useRouter } from 'vue-router'
-import { sessionStore } from '@/stores/sessionInstance'
-
-const props = withDefaults(defineProps<{ username?: string; onLogout?: () => Promise<void> }>(), {
-  username: '',
-  onLogout: () => sessionStore.logout(),
-})
-const router = useRouter()
-const links = [
-  ['dashboard', '仪表盘'], ['site', '站点内容'], ['projects', '项目'],
-  ['media', '媒体库'], ['messages', '留言'], ['analytics', '访问统计'], ['settings', '设置'],
-] as const
-async function logout() { await props.onLogout(); await router.replace({ name: 'login' }) }
-</script>
-
-<template>
-  <div class="min-h-screen lg:grid lg:grid-cols-[15rem_1fr]">
-    <aside class="border-r border-slate-200 bg-white p-5">
-      <p class="font-semibold">Portfolio Admin</p>
-      <nav aria-label="后台导航" class="mt-6 grid gap-1">
-        <RouterLink v-for="[name, label] in links" :key="name" :to="{ name }" class="rounded px-3 py-2">{{ label }}</RouterLink>
-      </nav>
-      <p class="mt-8 text-sm text-slate-500">{{ username || sessionStore.state.user?.username }}</p>
-      <button type="button" class="mt-2" @click="logout">安全退出</button>
-    </aside>
-    <main id="admin-main" class="min-w-0 p-5 lg:p-8"><RouterView /></main>
-  </div>
-</template>
-```
+Implement `AdminShell.vue` with the seven exact named destinations, a first-focus skip link, one focusable `main`, responsive navigation, the authenticated username, current-area `aria-current` for direct/project/publication subroutes, and a serialized safe logout action. Logout failures render only the allowlisted title and trace ID and never navigate. Once logout succeeds, immediately remove the protected `RouterView`, navigation, and administrator identity before attempting the login route; if lazy navigation fails, retain a signed-out screen whose button retries navigation without calling logout again. The global anonymous-session watcher and shell navigation may race safely to the same login route.
 
 Implement `AsyncPanel.vue` with four explicit states: `loading` announces `正在加载`; a supplied safe error title plus trace ID and retry button; an empty slot; and a default content slot. Implement `DashboardView.vue` as six semantic cards with the exact named route, concise scope description, and direct action for SITE, projects, media, inbox, analytics, and security/operations. Operational data is rendered in its owning complete views from Tasks 10–12; the dashboard makes no API request and does not duplicate or approximate message, analytics, audit, or maintenance totals.
 
 Replace Task 3's parent `RouteOutlet` with the now-existing `AdminShell.vue`, and replace only the `dashboard` route's `FeatureShellView` with `DashboardView.vue`. Leave later compile-time destinations import-safe until their owning task creates them.
 
-- [ ] **Step 4: Verify shell, dashboard, and keyboard landmarks**
+- [x] **Step 4: Verify shell, dashboard, and keyboard landmarks**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/layout src/components/common src/views/DashboardView.spec.ts`
 
 Expected: PASS; the navigation has an accessible label, every destination is keyboard-reachable, and the dashboard has no request to an unowned aggregate endpoint.
 
-- [ ] **Step 5: Commit the dashboard slice**
+Verification (2026-07-18): all three focused suites first failed because the shell, panel, and dashboard modules did not exist, then passed 16/16. Under exact Node 22.18, the final full admin suite passed 67/67 across ten files; strict `vue-tsc`, Vite production build, and `git diff --check` exited 0; npm audit reported zero vulnerabilities. Vitest is capped at four workers after the unbounded Docker default twice started more forks than the environment could reliably initialize. Coverage includes all named links, project/publication active areas, skip/main landmarks, duplicate and failed logout, immediate protected-screen clearing, navigation-only retry, concurrent anonymous redirects, safe four-state async rendering, rejected/unmounted retry lifecycles, six source-free semantic dashboard cards, and transport/session zero-call assertions. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the dashboard slice**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/components/layout admin-web/src/components/common/AsyncPanel.vue admin-web/src/views/DashboardView.vue
+git add admin-web/vite.config.ts admin-web/src/router admin-web/src/components/layout admin-web/src/components/common/AsyncPanel.vue admin-web/src/components/common/AsyncPanel.spec.ts admin-web/src/views/DashboardView.vue admin-web/src/views/DashboardView.spec.ts docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add authenticated shell and dashboard"
 ```
 
@@ -776,12 +711,14 @@ git commit -m "feat(admin): add authenticated shell and dashboard"
 - Create: `admin-web/src/components/common/ConflictBanner.vue`
 - Test: `admin-web/src/composables/useTranslationStatus.spec.ts`
 - Test: `admin-web/src/composables/useVersionedDraft.spec.ts`
+- Test: `admin-web/src/components/common/TranslationTabs.spec.ts`
+- Test: `admin-web/src/components/common/ConflictBanner.spec.ts`
 
 **Interfaces:**
 - Consumes: `ApiProblem`, UI-only `VersionedDraft<T>`, and the backend's version-bearing workspace DTOs.
 - Produces: `Locale`, `Localized<T>`, `translationStatus`, and `useVersionedDraft<T>`. Site and project editors must use these rather than independent timers.
 
-- [ ] **Step 1: Write failing tests for completion, 15-second save, and 409 stop state**
+- [x] **Step 1: Write failing tests for completion, 15-second save, and 409 stop state**
 
 ```ts
 // admin-web/src/composables/useTranslationStatus.spec.ts
@@ -833,13 +770,13 @@ describe('useVersionedDraft', () => {
 })
 ```
 
-- [ ] **Step 2: Run the focused tests and observe missing-composable failures**
+- [x] **Step 2: Run the focused tests and observe missing-composable failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/composables/useTranslationStatus.spec.ts src/composables/useVersionedDraft.spec.ts`
 
 Expected: FAIL because both composables are absent.
 
-- [ ] **Step 3: Implement exact locale and autosave state**
+- [x] **Step 3: Implement exact locale and autosave state**
 
 ```ts
 // admin-web/src/types/content.ts (shared beginning)
@@ -930,16 +867,20 @@ export function useVersionedDraft<T>(options: {
 
 Implement `TranslationTabs.vue` as a two-button tablist with `aria-selected`, visible `complete/total`, and emitted `update:modelValue`. Implement `ConflictBanner.vue` with the server trace ID, `保留当前页面` (dismisses no state and therefore keeps autosave stopped), and `重新载入服务器版本` (emits `reload` after an explicit confirmation); do not provide a force-overwrite action.
 
-- [ ] **Step 4: Verify timing, conflict, and accessibility behavior**
+The completed primitives serialize saves, deep-clone recursively unwrapped reactive workspaces, preserve edits made during in-flight saves, ignore stale save/reload responses, and require an explicit manual retry after non-409 mutation failures. Each locale tab owns a unique panel and renders only its active scoped slot. `ConflictBanner` requires a controlled `reloading` prop so failed reloads can recover without duplicate requests; confirmation, cancellation, replacement, and completion preserve keyboard focus without pulling it back after the user leaves the banner.
+
+- [x] **Step 4: Verify timing, conflict, and accessibility behavior**
 
 Run: `npm --prefix admin-web run test:unit -- src/composables src/components/common/TranslationTabs.spec.ts src/components/common/ConflictBanner.spec.ts`
 
 Expected: PASS; fake timers cause exactly one save at 15 seconds, `409` stops later calls, and both locale tabs expose completion counts.
 
-- [ ] **Step 5: Commit the reusable editor state**
+Verification (2026-07-18): the focused tests first failed because the content types, composables, and components were absent, then passed 33/33 under exact Node 22.18. The final full admin suite passed 100/100 across 14 files; strict `vue-tsc` and the Vite production build exited 0; npm audit reported zero vulnerabilities. Coverage includes trimmed bilingual completion with deduplicated requirements, exact one-shot 15-second autosave, manual-only retry after non-409 failures, hard stop and explicit reload after any real 409, edits during saves, stale reload/save responses, deep reactive ordered-list cloning, clone failures, scope/unload cleanup, unique tab/panel associations, active-only scoped slots, keyboard and multi-instance isolation, safe conflict text, required controlled reload state, duplicate-request prevention, and focus preservation without focus theft. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the reusable editor state**
 
 ```bash
-git add admin-web/src/types/content.ts admin-web/src/composables admin-web/src/components/common/TranslationTabs.vue admin-web/src/components/common/ConflictBanner.vue
+git add admin-web/src/types/content.ts admin-web/src/composables admin-web/src/components/common/TranslationTabs.vue admin-web/src/components/common/TranslationTabs.spec.ts admin-web/src/components/common/ConflictBanner.vue admin-web/src/components/common/ConflictBanner.spec.ts docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add bilingual conflict-safe autosave"
 ```
 
