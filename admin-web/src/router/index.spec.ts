@@ -3,7 +3,11 @@ import { defineComponent, nextTick, reactive } from 'vue'
 import { createMemoryHistory, RouterView, type Router } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { siteApi } from '@/api/siteApi'
+import { publishingApi } from '@/api/publishingApi'
 import { createSessionStore } from '@/stores/session'
+import { createSiteFixture } from '@/tests/fixtures/siteWorkspace'
+import { SITE_ID } from '@/types/publishing'
 
 import { createAdminRouter, disposeAdminRouter, sanitizeAdminRedirect } from './index'
 
@@ -18,6 +22,7 @@ function createTestRouter(session: Parameters<typeof createAdminRouter>[0]): Rou
 
 afterEach(() => {
   for (const router of routers.splice(0)) disposeAdminRouter(router)
+  vi.restoreAllMocks()
 })
 
 function createGuardSession(initial: GuardPhase, bootstrapped: GuardPhase = initial) {
@@ -184,6 +189,39 @@ describe('admin route guard', () => {
     ).toBe('/admin/publishing/PROJECT/p1/history')
   })
 
+  it('routes the project catalog, static create path, and stable edit UUID to real views', () => {
+    const router = createTestRouter(createGuardSession('AUTHENTICATED'))
+
+    const catalog = router.resolve('/admin/projects')
+    const create = router.resolve('/admin/projects/new')
+    const edit = router.resolve(`/admin/projects/20000000-0000-4000-8000-000000000001`)
+
+    expect(catalog.name).toBe('projects')
+    expect(create.name).toBe('project-new')
+    expect(edit.name).toBe('project-edit')
+    expect(create.matched.at(-1)?.path).toBe('/admin/projects/new')
+    expect(edit.params.projectId).toBe('20000000-0000-4000-8000-000000000001')
+  })
+
+  it('routes the authenticated media destination to its complete view', () => {
+    const router = createTestRouter(createGuardSession('AUTHENTICATED'))
+    const media = router.resolve('/admin/media')
+
+    expect(media.name).toBe('media')
+    expect(media.matched.at(-1)?.path).toBe('/admin/media')
+    expect(media.matched.at(-1)?.props.default).toBe(false)
+  })
+
+  it('routes messages, analytics, and settings to complete authenticated views', () => {
+    const router = createTestRouter(createGuardSession('AUTHENTICATED'))
+
+    for (const path of ['/admin/messages', '/admin/analytics', '/admin/settings']) {
+      const route = router.resolve(path)
+      expect(route.matched.at(-1)?.path).toBe(path)
+      expect(route.matched.at(-1)?.props.default).toBe(false)
+    }
+  })
+
   it('keeps the admin root and not-found destination behind authentication', async () => {
     const authenticatedRouter = createTestRouter(createGuardSession('AUTHENTICATED'))
     await authenticatedRouter.push('/admin')
@@ -199,7 +237,17 @@ describe('admin route guard', () => {
     )
   })
 
-  it('provides one main landmark around dashboard and temporary destinations', async () => {
+  it('provides one main landmark around dashboard and the complete SITE editor', async () => {
+    vi.spyOn(siteApi, 'get').mockResolvedValue(createSiteFixture())
+    vi.spyOn(publishingApi, 'state').mockResolvedValue({
+      aggregateType: 'SITE',
+      aggregateId: SITE_ID,
+      status: 'UNPUBLISHED',
+      version: 0,
+      currentRevisionId: null,
+      publishedAt: null,
+      projectIdsInOrder: [],
+    })
     const router = createTestRouter(createGuardSession('AUTHENTICATED'))
     await router.push('/admin/dashboard')
     await router.isReady()
@@ -219,7 +267,11 @@ describe('admin route guard', () => {
     await flushPromises()
 
     expect(wrapper.findAll('main')).toHaveLength(1)
-    expect(wrapper.get('main#admin-main > [data-feature-shell]').element.tagName).toBe('SECTION')
+    expect(
+      wrapper.get('main#admin-main > section[aria-labelledby="site-editor-title"]').element
+        .tagName,
+    ).toBe('SECTION')
+    expect(wrapper.text()).toContain('双语简历')
 
     wrapper.unmount()
   })

@@ -1,5 +1,6 @@
 package xyz.yychainsaw.portfolio.content.api;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import java.math.BigDecimal;
@@ -33,6 +34,7 @@ public record ContentBlockDto(
     public record Metric(
             UUID id,
             int sortOrder,
+            @JsonFormat(shape = JsonFormat.Shape.STRING)
             BigDecimal numericValue,
             Map<LocaleCode, MetricCopy> copy) {
         public Metric {

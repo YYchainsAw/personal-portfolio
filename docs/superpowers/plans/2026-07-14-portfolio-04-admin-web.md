@@ -147,7 +147,7 @@ The frontend fixes these management endpoints so backend and browser work can pr
 | `GET /api/admin/site/workspace` | none | `SiteWorkspaceDto` |
 | `PUT /api/admin/site/workspace` | `{ expectedVersion, workspace: SiteWorkspaceDto }` | `SiteWorkspaceDto` |
 | `GET /api/admin/projects` | none | `ProjectWorkspaceDto[]` |
-| `POST /api/admin/projects` | `ProjectWorkspaceDto` | `ProjectWorkspaceDto` |
+| `POST /api/admin/projects` | `CreateProjectWorkspaceRequest { workspace }` | `ProjectWorkspaceDto` |
 | `GET /api/admin/projects/{projectId}/workspace` | none | `ProjectWorkspaceDto` |
 | `PUT /api/admin/projects/{projectId}/workspace` | `{ expectedVersion, workspace: ProjectWorkspaceDto }` | `ProjectWorkspaceDto` |
 | `GET /api/admin/tags` | none | `TaxonomyWorkspaceDto[]` |
@@ -155,6 +155,7 @@ The frontend fixes these management endpoints so backend and browser work can pr
 | `GET /api/admin/skills` | none | `TaxonomyWorkspaceDto[]` |
 | `PUT /api/admin/skills/{skillId}` | `UpdateTaxonomyRequest` | `TaxonomyWorkspaceDto` |
 | `GET /api/admin/media` | query `page,size,status=READY` | `MediaPageView` |
+| `GET /api/admin/media/{id}` | none | exact `MediaAssetView`; `404` for missing/pending-delete |
 | `POST /api/admin/media` | multipart part `file` | `MediaAssetView` |
 | `PUT /api/admin/media/{id}/translations` | `MediaTranslationInput[]` | `MediaAssetView` |
 | `GET /api/admin/media/{id}/preview/{variant}` | none | authenticated stream or `302` signed URL |
@@ -532,6 +533,7 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 **Files:**
 - Modify: `admin-web/vite.config.ts`
 - Modify: `admin-web/src/router/index.ts`
+- Test: `admin-web/src/router/index.spec.ts`
 - Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/router/redirect.ts`
 - Create: `admin-web/src/views/auth/LoginView.vue`
@@ -888,22 +890,29 @@ git commit -m "feat(admin): add bilingual conflict-safe autosave"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Modify: `admin-web/src/types/content.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.spec.ts`
 - Create: `admin-web/src/api/siteApi.ts`
+- Test: `admin-web/src/api/siteApi.spec.ts`
 - Create: `admin-web/src/api/mediaApi.ts`
+- Test: `admin-web/src/api/mediaApi.spec.ts`
 - Create: `admin-web/src/components/media/MediaPickerDialog.vue`
 - Create: `admin-web/src/components/site/SiteIdentityForm.vue`
 - Create: `admin-web/src/components/site/SiteTranslationForm.vue`
 - Create: `admin-web/src/components/site/OrderedLocalizedList.vue`
+- Create: `admin-web/src/tests/fixtures/siteWorkspace.ts`
 - Create: `admin-web/src/views/site/SiteEditorView.vue`
 - Test: `admin-web/src/components/media/MediaPickerDialog.spec.ts`
+- Test: `admin-web/src/components/site/*.spec.ts`
 - Test: `admin-web/src/views/site/SiteEditorView.spec.ts`
 
 **Interfaces:**
 - Consumes: UI-only `VersionedDraft<T>`, `useVersionedDraft`, locale tabs, conflict banner, plan-03 `GET/PUT /api/admin/site/workspace`, and plan-02 READY media search.
 - Produces: `SiteWorkspaceDto`, `MediaAssetSummaryDto`, `siteApi`, `mediaApi`, and a complete editor for the approved `SITE` aggregate workspace.
 
-- [ ] **Step 1: Write failing tests for every SITE content group and READY-only selection**
+- [x] **Step 1: Write failing tests for every SITE content group and READY-only selection**
 
 ```ts
 // admin-web/src/views/site/SiteEditorView.spec.ts
@@ -941,13 +950,13 @@ it('returns only a READY compatible asset', async () => {
 })
 ```
 
-- [ ] **Step 2: Run focused tests and verify the editor contracts are absent**
+- [x] **Step 2: Run focused tests and verify the editor contracts are absent**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/site src/components/media`
 
 Expected: FAIL because SITE/media DTOs and components do not exist.
 
-- [ ] **Step 3: Define the SITE/media DTOs and clients**
+- [x] **Step 3: Define the SITE/media DTOs and clients**
 
 Append these exact TypeScript mirrors of plan 03's `SiteWorkspaceDto` records to `types/content.ts`; every ordered item uses its backend field name `sortOrder`:
 
@@ -957,7 +966,7 @@ export interface SeoCopy { title: string; description: string }
 export interface AccessibilityCopy { skip: string; primaryNav: string; mobileNav: string; openMenu: string; closeMenu: string; language: string; backToTop: string; projectTags: string }
 export interface NavigationItem { id: string; target: string; sortOrder: number; visible: boolean; labels: Localized<string> }
 export interface HeroCopy { eyebrow: string; displayName: string; secondaryName: string; role: string; headline: string; introduction: string; availability: string; primaryCta: string; secondaryCta: string; visualLabel: string; stageLabel: string }
-export interface Hero { id: string; version: number; mediaAssetId: string; objectPosition: string; credit: string; sourceUrl: string; copy: Localized<HeroCopy> }
+export interface Hero { id: string; version: number; mediaAssetId: string | null; objectPosition: string | null; credit: string | null; sourceUrl: string | null; copy: Localized<HeroCopy> }
 export interface AboutCopy { label: string; title: string; statement: string; focusLabel: string; focusTitle: string; focusIntro: string }
 export interface LabelValueCopy { label: string; value: string }
 export interface ProfileFact { id: string; externalKey: string; sortOrder: number; copy: Localized<LabelValueCopy> }
@@ -1007,7 +1016,7 @@ export const siteApi = {
 
 `mediaApi.search` always sends `status=READY`, normalizes the plan-02 `MediaPageView` into `Page<MediaAssetSummaryDto>`, and filters `kind`/text locally because the backend list contract exposes only `page`, `size`, and `status`. It constructs authenticated previews exclusively as `/api/admin/media/{encodeURIComponent(id)}/preview/{encodeURIComponent(variant)}`. `MediaPickerDialog` rejects a returned asset if its status is not `READY` or its kind is outside `accept`, even if a faulty response includes it.
 
-- [ ] **Step 4: Implement and verify the complete SITE form**
+- [x] **Step 4: Implement and verify the complete SITE form**
 
 `SiteEditorView.vue` must:
 
@@ -1028,10 +1037,12 @@ Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0; every SITE field is typed and no `any` is introduced.
 
-- [ ] **Step 5: Commit the SITE editor slice**
+Verification (2026-07-18): focused tests first failed for the missing SITE editor and for the invalid-draft autosave recovery defect. The completed slice passed the full Node 22.18 admin suite with 160/160 tests across 21 files, strict `vue-tsc`, the Vite production build, and npm audit with zero vulnerabilities. The production build keeps `SiteEditorView` in an independent lazy chunk (18.68 kB gzip). Coverage includes exact Java DTO and Jackson `non_null` wire normalization, all-or-none Hero media attribution, bilingual completion and language-of-parts, contiguous ordered lists, nested accessible field errors, complete reload/409 states, local-validation autosave recovery, save/media races, strict READY/MIME/UUID selection, preview path binding, malformed pagination, focus trapping/restoration, idempotent close, and late-request invalidation. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the SITE editor slice**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/content.ts admin-web/src/api/siteApi.ts admin-web/src/api/mediaApi.ts admin-web/src/components/media admin-web/src/components/site admin-web/src/views/site
+git add admin-web/src/router admin-web/src/types/content.ts admin-web/src/composables/useVersionedDraft.ts admin-web/src/composables/useVersionedDraft.spec.ts admin-web/src/api/siteApi.ts admin-web/src/api/siteApi.spec.ts admin-web/src/api/mediaApi.ts admin-web/src/api/mediaApi.spec.ts admin-web/src/components/media admin-web/src/components/site admin-web/src/tests/fixtures/siteWorkspace.ts admin-web/src/views/site docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add bilingual site workspace editor"
 ```
 
@@ -1039,21 +1050,29 @@ git commit -m "feat(admin): add bilingual site workspace editor"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/types/blocks.ts`
 - Modify: `admin-web/src/types/content.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.spec.ts`
 - Create: `admin-web/src/api/projectApi.ts`
+- Test: `admin-web/src/api/projectApi.spec.ts`
 - Create: `admin-web/src/views/projects/ProjectListView.vue`
 - Create: `admin-web/src/views/projects/ProjectEditorView.vue`
 - Create: `admin-web/src/components/projects/ProjectMetadataForm.vue`
+- Create: `admin-web/src/tests/fixtures/projectWorkspace.ts`
 - Test: `admin-web/src/types/blocks.spec.ts`
+- Test: `admin-web/src/components/projects/ProjectMetadataForm.spec.ts`
 - Test: `admin-web/src/views/projects/ProjectListView.spec.ts`
 - Test: `admin-web/src/views/projects/ProjectEditorView.spec.ts`
+- Modify: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/content/api/ContentBlockDto.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/web/AdminContentControllerSliceTest.java`
 
 **Interfaces:**
 - Consumes: media summaries, locale/completion components, and versioned autosave.
 - Produces: `ProjectWorkspaceDto`, `ProjectListItemDto`, `ContentBlockDto`, `projectApi`, and editor metadata into which Task 8 mounts `BlockEditor`.
 
-- [ ] **Step 1: Write failing tests for discriminated blocks and project ordering**
+- [x] **Step 1: Write failing tests for discriminated blocks and project ordering**
 
 ```ts
 // admin-web/src/types/blocks.spec.ts
@@ -1072,15 +1091,15 @@ describe('createBlock', () => {
 })
 ```
 
-Project list tests must assert client-side status/search filtering over the exact plan-03 `ProjectWorkspaceDto[]`, accessible empty state, deterministic `sortOrder`, and edit navigation by stable UUID rather than slug. Catalog reorder is a publishing mutation and is wired with its exact CAS command in Task 9.
+Project API/list tests must assert that `GET /api/admin/projects` returns the complete plan-03 `ProjectWorkspaceDto[]`, including every translation, taxonomy reference, project-media row, and existing content block. `ProjectListView` derives display rows without mutating that source array, sorts a defensive copy by `sortOrder` with stable UUID tie-breaking, and applies status/search filters locally without making another request. Tests also cover an accessible true-empty state separately from a no-filter-match state, and edit navigation by stable project UUID rather than slug. Catalog reorder is a publishing mutation and is wired with its exact CAS command in Task 9.
 
-- [ ] **Step 2: Run project/block tests and observe missing-contract failures**
+- [x] **Step 2: Run project/block tests and observe missing-contract failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/types/blocks.spec.ts src/views/projects`
 
 Expected: FAIL because the project and block modules do not exist.
 
-- [ ] **Step 3: Define the complete typed block and project workspace contracts**
+- [x] **Step 3: Define the complete typed block and project workspace contracts**
 
 ```ts
 // admin-web/src/types/blocks.ts
@@ -1093,7 +1112,7 @@ export interface BlockCopy { title: string; description: string }
 export interface ActionCopy { label: string; description: string }
 export interface QuoteCopy { quote: string; source: string }
 export interface MetricCopy { label: string; value: string; suffix: string }
-export interface MetricDto { id: string; sortOrder: number; numericValue: number | null; copy: Localized<MetricCopy> }
+export interface MetricDto { id: string; sortOrder: number; numericValue: string | null; copy: Localized<MetricCopy> }
 export type ContentBlockPayload =
   | { type: 'MARKDOWN'; markdown: Localized<string> }
   | { type: 'IMAGE'; mediaAssetId: string | null }
@@ -1153,7 +1172,8 @@ const draft = (workspace: ProjectWorkspaceDto): VersionedDraft<ProjectWorkspaceD
 export const projectApi = {
   async list(): Promise<ProjectWorkspaceDto[]> { return (await http.get<ProjectWorkspaceDto[]>('/api/admin/projects')).data },
   async create(workspace: ProjectWorkspaceDto): Promise<VersionedDraft<ProjectWorkspaceDto>> {
-    return draft((await http.post<ProjectWorkspaceDto>('/api/admin/projects', workspace)).data)
+    const body = { workspace }
+    return draft((await http.post<ProjectWorkspaceDto>('/api/admin/projects', body)).data)
   },
   async get(projectId: string): Promise<VersionedDraft<ProjectWorkspaceDto>> {
     const id = encodeURIComponent(projectId)
@@ -1176,22 +1196,32 @@ export const projectApi = {
 }
 ```
 
-- [ ] **Step 4: Implement list and metadata editor, then verify**
+`projectApi` treats all successful payloads as untrusted wire data. It validates exact UUID, safe-integer/version, enum, HTTPS, locale, taxonomy, media, and discriminated-block shapes before exposing them to Vue. Because production Jackson uses `NON_NULL`, normalization restores omitted nullable block fields such as `VIDEO.coverAssetId`, `Metric.numericValue`, and the unselected `DOWNLOAD` target to explicit `null`; malformed or partial success responses fail closed with a safe client problem. The admin DTO serializes `Metric.numericValue` as an exact decimal string while retaining Java `BigDecimal` and the database numeric type internally, so values beyond JavaScript's safe integer range survive load-edit-save without precision loss. GET/PUT responses must retain the requested project identity, while POST accepts the server-generated replacement project UUID and version. The create request body is exactly `{ workspace }`, matching `CreateProjectWorkspaceRequest`; no mutation is retried automatically.
 
-`projectApi` uses `GET /api/admin/projects`, `POST /api/admin/projects`, `GET/PUT /api/admin/projects/{projectId}/workspace`, and the exact taxonomy endpoints without client mutation retries. It maps each version-bearing workspace to/from UI-only `VersionedDraft<ProjectWorkspaceDto>` exactly as `siteApi` does; PUT sends `{ expectedVersion, workspace }`. Global taxonomy editing uses versioned `TaxonomyWorkspaceDto` plus `{ expectedVersion, names }`; the project DTO separately embeds `ProjectTaxonomyRefDto` with `sortOrder`, and the UI never substitutes one shape for the other. `ProjectListView` maps the returned array into display rows and applies status/search filters locally. `ProjectEditorView` loads by `projectId`, or creates a complete plan-03 `ProjectWorkspaceDto` only after slug (`^[a-z0-9]+(?:-[a-z0-9]+)*$`) and number are valid. It mounts exact bilingual `translations`, `media`, `tags`, `skills`, autosave status, conflict handling, and an initially empty block region that Task 8 replaces with `BlockEditor`; media alt/caption remains the selected plan-02 media translation, not a duplicate project field. Replace the `projects`, `project-new`, and `project-edit` temporary route destinations only after both views exist.
+- [x] **Step 4: Implement list and metadata editor, then verify**
 
-Run: `npm --prefix admin-web run test:unit -- src/types/blocks.spec.ts src/views/projects src/components/projects`
+`projectApi` uses `GET /api/admin/projects`, `POST /api/admin/projects`, `GET/PUT /api/admin/projects/{projectId}/workspace`, and the exact taxonomy endpoints without client mutation retries. It maps each version-bearing workspace to/from UI-only `VersionedDraft<ProjectWorkspaceDto>` exactly as `siteApi` does; POST sends `{ workspace }` and PUT sends `{ expectedVersion, workspace }`. Global taxonomy editing uses versioned `TaxonomyWorkspaceDto` plus `{ expectedVersion, names }`; the project DTO separately embeds `ProjectTaxonomyRefDto` with `sortOrder`, and the UI never substitutes one shape for the other.
 
-Expected: PASS for create/edit paths, ASCII slug validation, locale completion, stable UUID navigation, client-side status filtering, deterministic `sortOrder`, taxonomy loading, and READY project-media selection.
+`ProjectListView` receives the complete workspace array, maps it into display rows, sorts a defensive copy deterministically, and applies status/search filters locally. The filtered row count or visible index is never used to invent catalog order; a new project's `sortOrder` comes from the complete unfiltered catalog. Replace the `projects`, `project-new`, and `project-edit` temporary route destinations only after both views exist, and navigate edit links with stable UUIDs rather than slugs.
+
+`ProjectEditorView` has two deliberately separate modes. The new-project route builds a structurally complete plan-03 `ProjectWorkspaceDto`, validates slug (`^[a-z0-9]+(?:-[a-z0-9]+)*$`) and number, and performs one explicit user-triggered POST. New-project drafts do not use the autosave timer; duplicate clicks are locked, controls cannot accept unsaved edits while the POST is pending, and a failed create keeps the complete local draft. On success, route replacement uses the server-returned UUID (`router.replace({ name: 'project-edit', params: { projectId: saved.value.id } })`), never the client placeholder ID or slug. Only the persisted edit route uses versioned GET/PUT autosave.
+
+Edit mode mounts exact bilingual `translations`, `media`, `tags`, and `skills`, plus autosave status and conflict handling. Task 7 renders only a block-editor placeholder, but it must keep every loaded `workspace.blocks` entry byte-for-byte through metadata edits and PUT requests; only a newly created workspace starts with `blocks: []`. Media alt/caption remains the selected plan-02 media translation and is never duplicated into the project DTO.
+
+Extend `useVersionedDraft` with an explicit project conflict classifier while retaining its existing default for SITE. `ProjectEditorView` classifies only `problem.body.code === 'CONTENT_VERSION_CONFLICT'` as the reload-required version conflict shown by `ConflictBanner`. Slug, external-key, catalog-order, taxonomy, and media uniqueness `409` responses remain normal safe field/general errors that preserve the draft and can be corrected; they must never be relabeled as a newer server workspace. Tests cover this override, autosave suspension, and explicit recovery.
+
+Run: `npm --prefix admin-web run test:unit -- src/types/blocks.spec.ts src/api/projectApi.spec.ts src/composables/useVersionedDraft.spec.ts src/router/index.spec.ts src/views/projects src/components/projects`
+
+Expected: PASS for exact create/save envelopes, Jackson `NON_NULL` normalization, explicit single-create versus edit autosave, server-UUID route replacement, exact preservation of existing blocks, code-specific version conflicts, create/edit paths, ASCII slug validation, locale completion/error association, stable UUID navigation, local status/search filtering over complete workspaces, deterministic `sortOrder`, taxonomy loading, and READY project-media selection.
 
 Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0; `switch (block.payload.type)` is exhaustive.
 
-- [ ] **Step 5: Commit the project workspace contracts and metadata UI**
+- [x] **Step 5: Commit the project workspace contracts and metadata UI**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/blocks.ts admin-web/src/types/content.ts admin-web/src/api/projectApi.ts admin-web/src/views/projects admin-web/src/components/projects
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/blocks.ts admin-web/src/types/blocks.spec.ts admin-web/src/types/content.ts admin-web/src/composables/useVersionedDraft.ts admin-web/src/composables/useVersionedDraft.spec.ts admin-web/src/api/projectApi.ts admin-web/src/api/projectApi.spec.ts admin-web/src/tests/fixtures/projectWorkspace.ts admin-web/src/views/projects admin-web/src/components/projects backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/content/api/ContentBlockDto.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/web/AdminContentControllerSliceTest.java docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add bilingual project workspace editor"
 ```
 
@@ -1199,6 +1229,7 @@ git commit -m "feat(admin): add bilingual project workspace editor"
 
 **Files:**
 - Create: `admin-web/src/components/editor/blockOrder.ts`
+- Create: `admin-web/src/components/editor/blockValidation.ts`
 - Create: `admin-web/src/components/editor/BlockEditor.vue`
 - Create: `admin-web/src/components/editor/BlockCard.vue`
 - Create: `admin-web/src/components/editor/blocks/MarkdownBlockEditor.vue`
@@ -1210,16 +1241,26 @@ git commit -m "feat(admin): add bilingual project workspace editor"
 - Create: `admin-web/src/components/editor/blocks/MetricsBlockEditor.vue`
 - Create: `admin-web/src/components/editor/blocks/DownloadBlockEditor.vue`
 - Create: `admin-web/src/components/editor/blocks/LinkBlockEditor.vue`
+- Modify: `admin-web/src/components/common/TranslationTabs.vue`
 - Modify: `admin-web/src/views/projects/ProjectEditorView.vue`
+- Modify: `admin-web/src/api/mediaApi.ts`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java`
 - Test: `admin-web/src/components/editor/blockOrder.spec.ts`
+- Test: `admin-web/src/components/editor/blockValidation.spec.ts`
 - Test: `admin-web/src/components/editor/BlockEditor.spec.ts`
 - Test: `admin-web/src/components/editor/BlockCard.spec.ts`
+- Test: focused `*.spec.ts` beside all nine block editors and their media helpers
+- Test: `admin-web/src/components/common/TranslationTabs.spec.ts`
+- Test: `admin-web/src/api/mediaApi.spec.ts`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaManagementServiceTest.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/web/AdminMediaControllerTest.java`
 
 **Interfaces:**
-- Consumes: `ContentBlockDto`, `createBlock`, current `Locale`, and `MediaPickerDialog`.
-- Produces: `BlockEditor` with `v-model:blocks`, stable ordering, keyboard controls, pointer drag/drop, exhaustive typed child editors, and no raw HTML input.
+- Consumes: `ContentBlockDto`, `createBlock`, current `Locale`, `MediaPickerDialog`, and exact media detail lookup.
+- Produces: `BlockEditor` with `v-model:blocks`, stable ordering, keyboard controls, dedicated-handle drag/drop, exhaustive typed child editors, lossless decimal editing, media translation completion, and no raw HTML input.
 
-- [ ] **Step 1: Write failing reorder and exhaustive-render tests**
+- [x] **Step 1: Write failing reorder and exhaustive-render tests**
 
 ```ts
 // admin-web/src/components/editor/blockOrder.spec.ts
@@ -1262,13 +1303,13 @@ it('adds every approved block type and emits ordered blocks', async () => {
 
 Add a parameterized `BlockCard.spec.ts` that mounts each union member and asserts the matching editor is visible, then assert unsafe `javascript:` and `data:` URLs produce an inline error before save.
 
-- [ ] **Step 2: Run block tests and observe missing editor failures**
+- [x] **Step 2: Run block tests and observe missing editor failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/editor`
 
 Expected: FAIL because the ordering utility and block components do not exist.
 
-- [ ] **Step 3: Implement immutable ordering and the block list**
+- [x] **Step 3: Implement immutable ordering and the block list**
 
 ```ts
 // admin-web/src/components/editor/blockOrder.ts
@@ -1326,36 +1367,40 @@ const remove = (id: string) => emit('update:blocks', props.blocks.filter((block)
 
 `BlockCard.vue` uses an exhaustive `switch` over `block.payload.type`, passes the narrowed payload plus shared block layout and current locale to the matching editor, and emits a complete `ContentBlockDto`. A final `never` assertion guarantees a new backend payload type cannot compile without an editor.
 
-- [ ] **Step 4: Implement all nine focused editors and media rules**
+- [x] **Step 4: Implement all nine focused editors and media rules**
 
 Each editor must bind the following complete fields and emit a new object rather than mutating props:
 
 | Editor | Required controls |
 |---|---|
 | `MarkdownBlockEditor` | exact `payload.markdown` bilingual textareas; no HTML mode and no rendered editable DOM |
-| `ImageBlockEditor` | exact `payload.mediaAssetId` READY image picker; show selected media's bilingual alt/caption completeness from plan-02 media translations without copying it into the block DTO |
-| `GalleryBlockEditor` | exact ordered `payload.mediaAssetIds` with at least two READY images; show per-asset media-translation completeness without adding per-item objects |
+| `ImageBlockEditor` | exact `payload.mediaAssetId` READY image picker; resolve selected/existing media by ID and show bilingual alt/caption completeness from plan-02 media translations without copying it into the block DTO |
+| `GalleryBlockEditor` | exact ordered, duplicate-free `payload.mediaAssetIds` with at least two READY images; repeatedly use the hardened single picker, resolve each ID, and show per-asset media-translation completeness without adding per-item objects |
 | `VideoBlockEditor` | exact `provider`, HTTPS `url`, optional READY `coverAssetId`, and bilingual `copy`; no upload or embed field |
 | `CodeBlockEditor` | code textarea, language identifier, line-number toggle, bilingual title/description; preview uses text content, never `v-html` |
 | `QuoteBlockEditor` | exact bilingual `copy.quote/source` |
 | `MetricsBlockEditor` | exact ordered `metrics` with stable IDs, `sortOrder`, optional `numericValue`, and bilingual `copy.label/value/suffix` |
-| `DownloadBlockEditor` | exact `mediaAssetId`/`externalUrl` choice plus bilingual `copy`; require one READY PDF/FILE or one allowlisted HTTPS URL |
+| `DownloadBlockEditor` | exact `mediaAssetId`/`externalUrl` choice plus bilingual `copy`; atomically require one READY PDF (the current backend has no reachable generic FILE MIME) or one safe HTTPS URL |
 | `LinkBlockEditor` | exact HTTPS `url`, `openNewTab`, and bilingual `copy` |
 
-Shared layout controls bind only the exact `width`, `alignment`, `emphasis`, and integer `columns` fields from plan 03. Client URL validation is `new URL(value).protocol === 'https:'`; the backend remains authoritative and returns path-specific `422` errors. Integrate `<BlockEditor v-model:blocks="draft.blocks" :locale="activeLocale" />` into `ProjectEditorView` and include the exact nested `payload` union in the existing autosave request.
+Shared layout controls bind only the exact `visible`, `width`, `alignment`, `emphasis`, and integer `columns` fields from plan 03. Safe URL validation requires the untrimmed value to start with lowercase `https://`, parse to an absolute host, omit userinfo and fragments, use no port other than 443, contain no literal or percent-encoded CR/LF, reject malformed percent escapes, and reject raw characters that WHATWG would silently normalize but Java `URI` cannot persist. The backend remains authoritative and returns path-specific `422` errors. `VideoBlockEditor` additionally keeps the provider enum explicit so Task 9's authoritative preview can report provider/host canonicalization errors.
+
+`GET /api/admin/media/{id}` returns the exact authenticated, no-store `MediaAssetView` and treats missing or `PENDING_DELETE` assets as `404`; `mediaApi.get` validates the complete response and never retries. Media translations are legitimately zero, one, or two unique locale rows, so the editor reports each alt/caption field as complete, missing, loading, or unreadable without inventing copy. Every picker handler independently rechecks READY status, UUID, kind, and MIME before writing only the asset ID into a payload.
+
+Integrate `<BlockEditor v-model:blocks="draft.blocks" :locale="activeLocale" />` into `ProjectEditorView` and include the exact nested `payload` union in the existing autosave request. Before either manual or automatic save, merge `validateBlocks` into the workspace gate. It blocks only structures the backend necessarily rejects (identity/order uniqueness, column range, required media, gallery cardinality/uniqueness, safe URLs, non-empty metrics, decimal syntax, and exclusive download targets); incomplete publish copy remains a valid persisted draft. A later edit clears `CLIENT_PROJECT_VALIDATION` and resumes autosave.
 
 Run: `npm --prefix admin-web run test:unit -- src/components/editor src/views/projects/ProjectEditorView.spec.ts`
 
-Expected: PASS for all types, locale switching without losing the other locale, pointer and keyboard ordering, media constraints, URL protocol rejection, deletion renumbering, and autosave payload preservation.
+Expected: PASS for all types, locale switching without losing the other locale, dedicated-handle and keyboard ordering, media constraints and resolver races, strict URL rejection, deletion renumbering, invalid-draft save suspension/recovery, lossless BigDecimal strings, and autosave payload preservation.
 
 Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0 with no unhandled `BlockType` branch.
 
-- [ ] **Step 5: Commit the block-editor slice**
+- [x] **Step 5: Commit the block-editor slice**
 
 ```bash
-git add admin-web/src/components/editor admin-web/src/views/projects/ProjectEditorView.vue
+git add admin-web/src/components/editor admin-web/src/components/common/TranslationTabs.vue admin-web/src/components/common/TranslationTabs.spec.ts admin-web/src/views/projects/ProjectEditorView.vue admin-web/src/views/projects/ProjectEditorView.spec.ts admin-web/src/api/mediaApi.ts admin-web/src/api/mediaApi.spec.ts backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaManagementServiceTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/web/AdminMediaControllerTest.java docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add typed sortable project blocks"
 ```
 
@@ -1370,14 +1415,17 @@ git commit -m "feat(admin): add typed sortable project blocks"
 - Modify: `admin-web/src/views/site/SiteEditorView.vue`
 - Modify: `admin-web/src/views/projects/ProjectListView.vue`
 - Modify: `admin-web/src/views/projects/ProjectEditorView.vue`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/web/AdminPublishingController.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/application/PublicationService.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/publishing/api/PublicationStateDto.java`
 - Test: `admin-web/src/components/publishing/PublishPanel.spec.ts`
 - Test: `admin-web/src/views/publishing/PublishingHistoryView.spec.ts`
 
 **Interfaces:**
 - Consumes: current workspace versions, exact plan-03 publishing commands/results, and client-side translation completion.
-- Produces: `publishingApi`, 10-minute preview-token handling, SITE/PROJECT publish, catalog reorder, immutable history, and restore-to-current-editor behavior.
+- Produces: `publishingApi`, an explicit current-publication state read model, 10-minute preview-token handling, SITE/PROJECT publish, catalog reorder, immutable history, and restore-to-current-editor behavior.
 
-- [ ] **Step 1: Write failing validation/publish/history tests**
+- [x] **Step 1: Write failing validation/publish/history tests**
 
 ```ts
 // admin-web/src/components/publishing/PublishPanel.spec.ts
@@ -1403,19 +1451,19 @@ it('blocks publish when local bilingual completeness contains errors', async () 
 
 Add a second test where completion is full, `publish` rejects with plan-03 `422` field errors, and the panel renders every returned path plus the safe problem title/trace ID. History tests assert immutable revision IDs, versions, schema versions, timestamps, and checksums; restore posts the current workspace version to the selected revision path, receives `204`, reloads the same editor, and leaves the historical row unchanged.
 
-- [ ] **Step 2: Run publishing tests and observe missing-module failures**
+- [x] **Step 2: Run publishing tests and observe missing-module failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/publishing src/views/publishing`
 
 Expected: FAIL because publishing contracts and components do not exist.
 
-- [ ] **Step 3: Implement typed publication contracts and client**
+- [x] **Step 3: Implement typed publication contracts and client**
 
 ```ts
 // admin-web/src/types/publishing.ts
-import type { Locale } from './content'
 export type AggregateType = 'SITE' | 'PROJECT' | 'PROJECT_CATALOG'
-export interface PreviewTokenRequest { aggregateType: 'SITE' | 'PROJECT'; aggregateId: string; workspaceVersion: number; locale: Locale }
+export type PublicationStatus = 'UNPUBLISHED' | 'PUBLISHED' | 'ARCHIVED'
+export interface PreviewTokenRequest { aggregateType: 'SITE' | 'PROJECT'; aggregateId: string; workspaceVersion: number }
 export interface PreviewTokenResponse { token: string; expiresAt: string }
 export interface PublishSiteCommand { expectedWorkspaceVersion: number; expectedPublicationVersion: number }
 export interface PublishProjectCommand { projectId: string; expectedWorkspaceVersion: number; expectedProjectPublicationVersion: number; expectedCatalogVersion: number }
@@ -1424,6 +1472,7 @@ export interface ReorderCatalogCommand { expectedCatalogVersion: number; project
 export interface PublicationResultDto { revisionId: string; aggregateVersion: number; catalogRevisionId: string | null; catalogVersion: number | null; checksum: string }
 export interface RevisionSummaryDto { id: string; type: AggregateType; aggregateId: string; version: number; schemaVersion: number; checksum: string; publishedBy: string; publishedAt: string }
 export interface RestoreRevisionRequest { expectedWorkspaceVersion: number }
+export interface PublicationStateDto { aggregateType: AggregateType; aggregateId: string; status: PublicationStatus; version: number; currentRevisionId: string | null; publishedAt: string | null; projectIdsInOrder: readonly string[] }
 export type PublishTarget =
   | ({ aggregateType: 'SITE'; aggregateId: string } & PublishSiteCommand)
   | ({ aggregateType: 'PROJECT'; aggregateId: string } & Omit<PublishProjectCommand, 'projectId'>)
@@ -1436,6 +1485,9 @@ import type { AggregateType, ArchiveProjectCommand, PreviewTokenRequest, Preview
 export const publishingApi = {
   async createPreview(request: PreviewTokenRequest): Promise<PreviewTokenResponse> {
     return (await http.post<PreviewTokenResponse>('/api/admin/publishing/preview-tokens', request)).data
+  },
+  async preflightPreview(token: string): Promise<void> {
+    await http.get(this.previewUrl(token))
   },
   previewUrl(token: string): string {
     return `/api/admin/publishing/previews/${encodeURIComponent(token)}`
@@ -1459,19 +1511,28 @@ export const publishingApi = {
     const id = encodeURIComponent(aggregateId)
     return (await http.get<RevisionSummaryDto[]>(`/api/admin/publishing/${type}/${id}/history`)).data
   },
+  async state(aggregateType: AggregateType, aggregateId: string): Promise<PublicationStateDto> {
+    const type = encodeURIComponent(aggregateType)
+    const id = encodeURIComponent(aggregateId)
+    return (await http.get<PublicationStateDto>(`/api/admin/publishing/${type}/${id}/state`)).data
+  },
   async restore(revisionId: string, request: RestoreRevisionRequest): Promise<void> {
     await http.post(`/api/admin/publishing/revisions/${encodeURIComponent(revisionId)}/restore`, request)
   },
 }
 ```
 
-- [ ] **Step 4: Implement publish and history behavior, then verify**
+- [x] **Step 4: Implement publish and history behavior, then verify**
 
-`PublishPanel.vue` renders both locale completion counts before enabling preview or publish. Preview sends exact `{ aggregateType, aggregateId, workspaceVersion, locale }`, verifies that the token is nonblank and not already expired, constructs the same-origin URL only through `publishingApi.previewUrl`, and opens it with `window.open(url, '_blank', 'noopener,noreferrer')`. Publication reconfirms immediately, dispatches either `publishSite` or `publishProject`, disables all actions while active, and emits the exact `PublicationResultDto`. There is no invented validation endpoint: a `409` shows `ConflictBanner`, while authoritative preview/publish `422 fieldErrors` render without discarding the draft.
+`PublishPanel.vue` renders both locale completion counts before enabling publication; incomplete translations do not block structural preview. Preview sends exact `{ aggregateType, aggregateId, workspaceVersion }`, verifies that the token is nonblank and not already expired, performs `GET` against the exact preview URL so authoritative preview validation runs before opening a tab, rechecks expiry, constructs the same-origin URL only through `publishingApi.previewUrl`, and opens it with `window.open(url, '_blank', 'noopener,noreferrer')`. Publication reconfirms immediately, dispatches either `publishSite` or `publishProject`, disables all actions while active, and emits the exact `PublicationResultDto`. A `409` remains a manual-reload conflict; authoritative preview/publish `422 fieldErrors` render without discarding the draft. Mutations are never retried automatically.
 
 `PublishingHistoryView.vue` validates route params (`SITE|PROJECT|PROJECT_CATALOG`, UUID), loads the exact revision array, sorts a defensive copy by descending `version`, and displays immutable revision metadata. SITE/PROJECT rows offer restore only after explicit confirmation; they post `{ expectedWorkspaceVersion }` to the selected `revisionId`, receive `204`, then call the editor's reload callback and route back to `/admin/site` or `/admin/projects/{aggregateId}` constructed locally. PROJECT_CATALOG history is read-only because plan 03 rejects catalog restore.
 
-Site and project editors load their expected publication versions from the first history row (or `0`), retain the workspace DTO's own version for `expectedWorkspaceVersion`, and replace publication/catalog CAS values from each successful result. `ProjectListView` also loads `PROJECT_CATALOG` history using aggregate ID `00000000-0000-0000-0000-000000000002`; reorder sends exact `{ expectedCatalogVersion, projectIdsInOrder }`, uses the returned `catalogVersion`, and on `409` reloads projects plus history instead of retrying. This plan does not expose archive UI, so it never attempts to infer a post-archive project pointer from revision count.
+History cannot represent the current pointer after archive, so editors must load `GET /api/admin/publishing/{aggregateType}/{aggregateId}/state`. Its exact seven-field response is `{ aggregateType, aggregateId, status, version, currentRevisionId, publishedAt, projectIdsInOrder }`; missing aggregates are `UNPUBLISHED` version `0`, and only `PROJECT_CATALOG` may return an ordered project-ID list. Site and project editors retain the workspace DTO's own version for `expectedWorkspaceVersion`, use state versions for publication/catalog CAS, and reload workspace plus state after success. Project publication also reloads its workspace because the backend advances that workspace version. The project editor exposes a confirmed archive action only for `PUBLISHED` projects and submits the exact project/catalog CAS pair. If publish, archive, restore, or reorder has been dispatched and its outcome or refresh is uncertain, the UI latches the mutation and offers GET-only reconciliation so it cannot repeat the write.
+
+`ProjectListView` loads the fixed catalog state identity `00000000-0000-0000-0000-000000000002`. Reorder operates only on the authoritative `projectIdsInOrder` set, sends exact `{ expectedCatalogVersion, projectIdsInOrder }`, validates the returned catalog revision through `aggregateVersion`, and then reloads projects plus state. The latch clears only after GET proves the returned successor (exact version plus submitted order) or a higher monotonic catalog version; a successful but stale GET remains GET-only. A `409` also reloads both without retrying the PUT. Filtering disables reorder controls so a filtered subset can never be submitted as the full catalog.
+
+Before any revision insert or pointer CAS, the backend maps the candidate snapshot through the same public projection for both locales. This publish-time renderability gate prevents accepting a revision that the public API cannot render (for example an unsupported video target) and must fail with zero writes.
 
 Replace the temporary `publishing-history` route destination only after `PublishingHistoryView.vue` exists. Add `PublishPanel` to SITE/PROJECT editors and exact reorder wiring to the project list.
 
@@ -1479,7 +1540,7 @@ Run: `npm --prefix admin-web run test:unit -- src/components/publishing src/view
 
 Expected: PASS for incomplete translation, server `422`, expired preview token, safe preview URL construction, SITE publish with `expectedPublicationVersion`, PROJECT publish with both publication/catalog versions, catalog reorder CAS, `409`, descending history, and restore/reload navigation.
 
-- [ ] **Step 5: Commit the publication workflow**
+- [x] **Step 5: Commit the publication workflow**
 
 ```bash
 git add admin-web/src/router/index.ts admin-web/src/types/publishing.ts admin-web/src/api/publishingApi.ts admin-web/src/components/publishing admin-web/src/views/publishing admin-web/src/views/site/SiteEditorView.vue admin-web/src/views/projects/ProjectListView.vue admin-web/src/views/projects/ProjectEditorView.vue
@@ -1495,12 +1556,16 @@ git commit -m "feat(admin): add preview publish and history workflow"
 - Create: `admin-web/src/views/media/MediaLibraryView.vue`
 - Test: `admin-web/src/views/media/MediaLibraryView.spec.ts`
 - Test: `admin-web/src/api/mediaApi.spec.ts`
+- Modify: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/StrictHttpsSourceUrl.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/UpdateMediaTranslationsRequest.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java`
 
 **Interfaces:**
 - Consumes: exact plan-02 media management endpoints, `MediaPickerDialog`, and `AsyncPanel`.
 - Produces: complete media library search/status pages, upload, bilingual metadata editing, authenticated preview, reference-safe archive, and the real `media` route.
 
-- [ ] **Step 1: Write failing media-management tests**
+- [x] **Step 1: Write failing media-management tests**
 
 Test loading/error/empty/retry, then upload and archive boundaries:
 
@@ -1522,13 +1587,13 @@ it('uploads the selected file as multipart and refreshes processing state', asyn
 })
 ```
 
-- [ ] **Step 2: Run the media test and observe the missing mutation UI**
+- [x] **Step 2: Run the media test and observe the missing mutation UI**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/media/MediaLibraryView.spec.ts src/components/media`
 
 Expected: FAIL because `MediaLibraryView` and management methods do not exist.
 
-- [ ] **Step 3: Extend the exact plan-02 media contract and client**
+- [x] **Step 3: Extend the exact plan-02 media contract and client**
 
 ```ts
 // append to admin-web/src/types/content.ts
@@ -1536,9 +1601,9 @@ export interface MediaTranslationInput { locale: Locale; altText: string; captio
 export interface MediaAssetView extends MediaAssetSummaryDto { translations: MediaTranslationInput[]; variants: Array<{ name: string; width: number | null; height: number | null; status: string }> }
 ```
 
-Extend `mediaApi` with `upload(file)` using a new `FormData` and multipart key `file` without manually setting the boundary; `updateTranslations(id, input)` using exact locale/altText/caption/credit/sourceUrl fields; `previewUrl(id, variant)` using encoded path segments; and `archive(id)`. Search continues to send only plan-02 `page`, `size`, and `status`, applying kind/text locally. Mutations are never retried.
+Extend `mediaApi` with `upload(file)` using a new `FormData` and multipart key `file` without manually setting the boundary; `updateTranslations(id, { expectedVersion, translations })` using an atomic optimistic-lock envelope plus exact locale/altText/caption/credit/sourceUrl fields; `previewUrl(id, variant)` using encoded path segments; and `archive(id)`. Search continues to send only plan-02 `page`, `size`, and `status`, applying kind/text locally. Mutations are never retried.
 
-- [ ] **Step 4: Implement the complete media library and verify boundaries**
+- [x] **Step 4: Implement the complete media library and verify boundaries**
 
 - `MediaLibraryView` paginates every status, filters kind/text locally, polls a just-uploaded PROCESSING asset no faster than every five seconds while the page is visible, and stops polling at READY/FAILED or unmount.
 - The file control accepts only the approved image/PDF/file MIME set, displays server size/signature failures through safe `ApiProblem`, and never previews SVG/HTML/script bytes.
@@ -1550,10 +1615,12 @@ Run: `npm --prefix admin-web run test:unit -- src/views/media src/components/med
 
 Expected: PASS for four-state rendering, multipart upload, status polling/cleanup, bilingual translation save, authenticated preview, READY-only selection, confirmed archive, and referenced-asset `409`.
 
-- [ ] **Step 5: Commit complete media management**
+Verification (2026-07-18): under exact Node 22.18, the final media API, picker, library, and route suites passed 111/111. The expanded Java media gate passed 115/115 across strict attribution URLs, upload signature inspection, authenticated preview, transactional media management, and controller security/contracts. The Vite production bundle, `git diff --check`, and both full and production npm audits exited 0 with zero vulnerabilities. Coverage includes bounded pagination fallback, fair visible-page polling, late-response and unmount isolation, mutation uncertainty latches with GET-only reconciliation, SPA/browser leave protection, PDF non-embedding, reference-safe archive, strict Java/browser URL parity, repeatable-read list/detail snapshots, and atomic `expectedVersion` translation updates returning `MEDIA_VERSION_CONFLICT` without overwriting. An independent final audit found no remaining P1, P2, or P3 issues; the protected PostgreSQL container remained `0 running healthy` and was never accessed by these gates.
+
+- [x] **Step 5: Commit complete media management**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/content.ts admin-web/src/api/mediaApi.ts admin-web/src/views/media admin-web/src/components/media
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/content.ts admin-web/src/api/mediaApi.ts admin-web/src/api/mediaApi.spec.ts admin-web/src/views/media admin-web/src/components/media backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/api/admin/media/StrictHttpsSourceUrlTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaManagementServiceTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/web/AdminMediaControllerTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/CatalogPublicationConcurrencyTest.java docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): complete media management"
 ```
 
@@ -1574,7 +1641,7 @@ git commit -m "feat(admin): complete media management"
 - Consumes: the exact plan-06 admin message and analytics endpoints; execute this task only after plan 06's controllers are available.
 - Produces: complete cursor inbox/detail/status/retry/delete behavior and summary/timeseries/breakdown analytics with definitions and delay.
 
-- [ ] **Step 1: Write failing inbox mutation and analytics-definition tests**
+- [x] **Step 1: Write failing inbox mutation and analytics-definition tests**
 
 ```ts
 // admin-web/src/views/messages/MessagesView.spec.ts
@@ -1615,19 +1682,21 @@ it('labels PV, anonymous daily UV, definitions, zone, and data delay', async () 
 })
 ```
 
-- [ ] **Step 2: Run focused tests and observe missing complete pages**
+- [x] **Step 2: Run focused tests and observe missing complete pages**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/messages src/views/analytics src/api/operationsApi.spec.ts`
 
 Expected: FAIL because the complete views and clients do not exist.
 
-- [ ] **Step 3: Define exact plan-06 DTOs and clients**
+- [x] **Step 3: Define exact plan-06 DTOs and clients**
 
 ```ts
 // admin-web/src/types/operations.ts
 export type MessageStatus = 'UNREAD' | 'READ' | 'ARCHIVED' | 'SPAM'
-export interface MessageSummaryDto { id: string; visitorName: string; visitorEmail: string; subject: string; status: MessageStatus; emailStatus: string; createdAt: string; version: number }
-export interface EmailDeliveryView { status: string; attempts: number; nextAttemptAt: string | null; sentAt: string | null; updatedAt: string; errorCategory: string | null }
+export type EmailDeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'DEAD' | 'CANCELED'
+export type EmailErrorCategory = 'SMTP_AUTHENTICATION_FAILED' | 'SMTP_CONNECTION_FAILED' | 'MESSAGE_PREPARATION_FAILED' | 'SMTP_DELIVERY_FAILED' | 'UNEXPECTED_DELIVERY_FAILURE' | 'DELIVERY_INTERRUPTED'
+export interface MessageSummaryDto { id: string; visitorName: string; visitorEmail: string; subject: string; status: MessageStatus; emailStatus: EmailDeliveryStatus; createdAt: string; version: number }
+export interface EmailDeliveryView { status: EmailDeliveryStatus; attempts: number; nextAttemptAt: string; sentAt: string | null; updatedAt: string; errorCategory: EmailErrorCategory | null }
 export interface MessageDetailDto { id: string; visitorName: string; visitorEmail: string; subject: string; body: string; status: MessageStatus; email: EmailDeliveryView; privacyAcceptedAt: string; createdAt: string; updatedAt: string; version: number }
 export interface UpdateMessageStatusRequest { status: MessageStatus; version: number }
 export interface AnalyticsSummaryDto { pageViews: number; dailyUniqueVisitors: number; projectViews: number; resumeDownloads: number; demoDownloads: number; outboundClicks: number; dataCompleteThrough: string | null; zone: string; definitions: Record<string, string> }
@@ -1638,7 +1707,7 @@ export interface AnalyticsBreakdownItemDto { dimensionValue: string; value: numb
 
 `operationsApi` implements every fixed message path from Cross-Task Interfaces: cursor list with `limit=30`, detail GET, versioned status PATCH, email retry POST, and delete. It also implements the exact analytics queries: summary sends `from,to,locale,zone`; timeseries sends `from,to,metric,eventType,zone`; breakdown sends `from,to,metric,eventType,dimension,limit,zone`. The zone is always `Asia/Hong_Kong`; range is at most 366 days; mutations never retry.
 
-- [ ] **Step 4: Implement the complete inbox and analytics UX**
+- [x] **Step 4: Implement the complete inbox and analytics UX**
 
 - Inbox status changes reset the cursor; “load more” appends without duplicates by UUID. Selecting a row loads full detail, renders subject/body only by Vue text interpolation, and moves focus to the detail heading.
 - Status actions send the detail's current version and replace both detail/list row from the response. A `409 MESSAGE_VERSION_CONFLICT` reloads that message and asks the operator to retry explicitly.
@@ -1650,10 +1719,12 @@ Run: `npm --prefix admin-web run test:unit -- src/views/messages src/views/analy
 
 Expected: PASS for cursor reset/append, escaped detail, all six email-delivery fields, safe error category/next-attempt display, all status transitions, version conflict, retry/delete confirmation, exact analytics queries, definitions, delay, empty data, and retry.
 
-- [ ] **Step 5: Commit complete inbox and analytics**
+Verification (2026-07-18): under exact Node 22.18, the final operations API, inbox, analytics, and route suites passed 89/89; the complete admin unit gate passed 664/664 across 49 files. TypeScript checking and the Vite production build exited 0, `git diff --check` was clean, and both full and production npm audits reported zero vulnerabilities. Coverage includes strict wire normalization, Java `INTEGER` version boundaries, cursor reset/append and monotonic dedupe, late-response isolation, GET-only mutation reconciliation, concurrent deletion tombstones without PATCH/POST replay, pure-text PII rendering, route/browser leave protection, atomic three-endpoint analytics snapshots, fixed Hong Kong dates, metric/event coupling, duplicate-label-safe breakdown keys, six KPI cards, exact definitions, accessible trend tables, and the null aggregation watermark. Independent inbox and analytics audits found one P2 and one P3 respectively; both were regression-tested, remediated, and independently rechecked with no remaining P1/P2/P3 findings. The protected PostgreSQL container remained `0 running healthy` and was never accessed by these frontend gates.
+
+- [x] **Step 5: Commit complete inbox and analytics**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/operations.ts admin-web/src/api/operationsApi.ts admin-web/src/views/messages admin-web/src/views/analytics
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/operations.ts admin-web/src/api/operationsApi.ts admin-web/src/api/operationsApi.spec.ts admin-web/src/views/messages admin-web/src/views/analytics docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): complete inbox and analytics"
 ```
 
@@ -1661,6 +1732,7 @@ git commit -m "feat(admin): complete inbox and analytics"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/types/settings.ts`
 - Create: `admin-web/src/api/settingsApi.ts`
 - Create: `admin-web/src/views/settings/SettingsView.vue`
@@ -1673,13 +1745,24 @@ git commit -m "feat(admin): complete inbox and analytics"
 - Test: `admin-web/src/views/settings/SettingsView.spec.ts`
 - Test: `admin-web/src/components/settings/SecuritySettings.spec.ts`
 - Test: `admin-web/src/components/settings/SessionTable.spec.ts`
+- Test: `admin-web/src/components/settings/AuditTable.spec.ts`
+- Test: `admin-web/src/components/settings/OperationsStatus.spec.ts`
 - Test: `admin-web/src/api/settingsApi.spec.ts`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsController.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapper.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceView.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatus.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusService.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsControllerTest.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapperTest.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusServiceTest.java`
+- Modify: `docs/superpowers/plans/2026-07-14-portfolio-07-deployment-recovery.md`
 
 **Interfaces:**
-- Consumes: the exact plan-01 credential/session/audit contracts and the single fixed plan-07 system endpoint in Cross-Task Interfaces; the matching auth/system backend slice must land before this task.
+- Consumes: the exact plan-01 credential/session/audit contracts and the single fixed plan-07 system endpoint in Cross-Task Interfaces. The previously scheduled plan-07 read-only operations slice is deliberately delivered in this task so the settings route never lands against a missing production endpoint.
 - Produces: complete password/TOTP/recovery forms, local-only TOTP QR rendering, acknowledged one-time recovery-code handling, current/other-session revocation, immutable cursor audit browsing, plan-07 backup/maintenance/deployment status, and links to SITE SEO/resume editors.
 
-- [ ] **Step 1: Write failing one-time-secret and session-revocation tests**
+- [x] **Step 1: Write failing one-time-secret and session-revocation tests**
 
 ```ts
 // admin-web/src/components/settings/SecuritySettings.spec.ts
@@ -1712,13 +1795,13 @@ Add tests that:
 - `SessionTable` marks `current`, a selected other ACTIVE session uses normal confirmation, selected current ACTIVE session uses stronger confirmation and redirects to login after `204`, and the exact mutation is POST `/{metadataId}/revoke`;
 - audit cursor/filter append/reset has no mutation control, and operations status never displays secret/config values.
 
-- [ ] **Step 2: Run focused settings tests and observe missing modules**
+- [x] **Step 2: Run focused settings tests and observe missing modules**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/settings src/components/settings src/api/settingsApi.spec.ts`
 
 Expected: FAIL because settings contracts, API, and components are absent.
 
-- [ ] **Step 3: Define exact security and system contracts**
+- [x] **Step 3: Define exact security and system contracts**
 
 ```ts
 // admin-web/src/types/settings.ts
@@ -1727,8 +1810,8 @@ export interface PasswordChangeRequest { currentPassword: string; currentTotp: s
 export interface ReauthenticationRequest { currentPassword: string; currentTotp: string }
 export interface TotpConfirmRequest { enrollmentId: string; newTotp: string }
 export interface TotpEnrollmentResponse { enrollmentId: string; provisioningUri: string; expiresAt: string }
-export interface RecoveryCodesResponse { recoveryCodes: string[] }
-export interface AdminAuditItem { id: string; actorAdminId: string; action: string; targetType: string; targetId: string | null; outcome: string; traceId: string; metadata: Record<string, string>; timestamp: string }
+export interface RecoveryCodesResponse { recoveryCodes: readonly string[] }
+export interface AdminAuditItem { id: string; actorAdminId: string | null; action: string; targetType: string; targetId: string | null; outcome: string; traceId: string; metadata: Readonly<Record<string, string>>; timestamp: string }
 export interface AdminAuditPage { items: AdminAuditItem[]; nextCursor: string | null }
 export interface MaintenanceView { type: string; status: string; startedAt: string; finishedAt: string | null; artifactChecksum: string | null; errorCategory: string | null }
 export interface OperationsStatus { databaseBackup: MaintenanceView | null; mediaBackup: MaintenanceView | null; analyticsAggregation: MaintenanceView | null; contactRetention: MaintenanceView | null; mediaCleanup: MaintenanceView | null; deployment: MaintenanceView | null; restoreDrill: MaintenanceView | null; serverTime: string }
@@ -1738,11 +1821,11 @@ export interface OperationsStatus { databaseBackup: MaintenanceView | null; medi
 
 `getAudit({ cursor, action, outcome, from, to, limit })` returns exact `AdminAuditPage`, omits blank query values, enforces limit 1–100, and resets cursor whenever a filter changes. Credential, provisioning, and recovery responses remain only in component memory and are cleared by overwriting reactive fields before dismissal/unmount; none enters a store, URL, storage, logger, toast payload, analytics, error report, or screenshot.
 
-`getOperations(): Promise<OperationsStatus>` calls only `GET /api/admin/system/operations`, validates the seven named maintenance keys plus `serverTime`, and sends no action. No second system-status shape or host-action API is defined.
+`getOperations(): Promise<OperationsStatus>` calls only `GET /api/admin/system/operations`, requires exact HTTP 200 plus all seven named maintenance keys and `serverTime`, and sends no action. Every non-null maintenance view requires all six stable keys, including explicit nullable fields. No second system-status shape or host-action API is defined.
 
-- [ ] **Step 4: Implement complete settings behavior and verify**
+- [x] **Step 4: Implement complete settings behavior and verify**
 
-- `SecuritySettings` has three isolated forms. Password change requires current password/current TOTP, a 14–128 character new password, and an equal local confirmation; only the three backend fields are sent. TOTP enrollment reauthenticates, renders the QR locally plus a guarded copyable provisioning URI, shows the exact expiry countdown, and confirms only `enrollmentId/newTotp`. Recovery regeneration reauthenticates and requires a destructive confirmation. Disable duplicate submit and clear every password/TOTP field in `finally`.
+- `SecuritySettings` has three isolated forms. Password change requires current password/current TOTP, a well-formed 14–128 Unicode-code-point new password with uppercase/lowercase Unicode properties, Unicode `Nd`, punctuation or symbol, and an equal local confirmation; only the three backend fields are sent. The Java 17 backend remains authoritative for the rare code points whose Unicode property assignment differs from the browser runtime. TOTP enrollment reauthenticates, renders the QR locally plus a guarded copyable provisioning URI, shows the exact expiry countdown, and confirms only `enrollmentId/newTotp`. Recovery regeneration reauthenticates and requires a destructive confirmation. Disable duplicate submit and clear every password/TOTP field in `finally`.
 - `OneTimeRecoveryCodes` receives only `recoveryCodes`, labels them one-use, supports explicit clipboard copy and print without network/storage, and requires a “saved offline” checkbox before Dismiss. While unacknowledged it warns on in-app navigation and `beforeunload`; regardless of path, unmount clears the array. Confirmation/regeneration cannot replay the one-time response. After acknowledgement, clear codes before closing and return focus to the originating control.
 - Map safe errors per form: local `401 AUTHENTICATION_FAILED` does not clear authenticated app state; global `401 AUTHENTICATION_REQUIRED` does. A `409 TOTP_ENROLLMENT_EXPIRED` immediately blanks URI/ID/canvas and offers a fresh reauthenticated start. `422` attaches `fieldErrors` to named fields/summary. `429` uses server retry seconds with a maximum displayed one-hour countdown; other failures show trace ID plus explicit retry without resending automatically.
 - Every successful credential action renders “All other sessions were revoked; this session remains active,” then refreshes the session list. Do not claim this before a success response.
@@ -1755,10 +1838,12 @@ Run: `npm --prefix admin-web run test:unit -- src/views/settings src/components/
 
 Expected: PASS for exact security bodies/responses, local-only QR generation, password clearing, TOTP expiry/confirm, saved-offline acknowledgement and one-time code clearing, current/other-session revoke behavior, audit cursor/filter immutability, SEO/resume links, all seven redacted plan-07 operation statuses, safe 401/409/422/429 handling, and explicit retry states.
 
-- [ ] **Step 5: Commit complete settings**
+Verification (2026-07-18): exact Node 22.18 focused settings/API/router coverage passed 122/122; the complete admin unit gate passed 770/770 across 55 files. TypeScript checking, the Vite production build, full npm audit, and production-only npm audit all exited clean with zero vulnerabilities. Review-driven regressions prove late one-time responses cannot repopulate an unmounted component, pending security/current-revoke mutations block route and unload loss, stale QR work renders only offscreen and cannot overwrite a newer secret, recovery codes use a native modal plus acknowledgement and codes-only print treatment, the shared security limiter disables every security action, audit filters fail locally, session millisecond values remain renderable, and exact operations/status HTTP and JSON shapes fail closed. The isolated Java 17/Maven operations suite passed 10/10 with all four reactor modules successful; it verifies global admin authentication, `no-store`, stable explicit nulls, minimum-column allowlisted SQL, read-only `REPEATABLE_READ`, CGLIB proxying, and zero raw error/details leakage. No database was connected or modified by these gates.
+
+- [x] **Step 5: Commit complete settings**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/settings.ts admin-web/src/api/settingsApi.ts admin-web/src/views/settings admin-web/src/components/settings
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/settings.ts admin-web/src/api/settingsApi.ts admin-web/src/api/settingsApi.spec.ts admin-web/src/views/settings admin-web/src/components/settings backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md docs/superpowers/plans/2026-07-14-portfolio-07-deployment-recovery.md
 git commit -m "feat(admin): complete security and operations settings"
 ```
 
@@ -1766,6 +1851,7 @@ git commit -m "feat(admin): complete security and operations settings"
 
 **Files:**
 - Create: `admin-web/playwright.config.ts`
+- Modify: `admin-web/tsconfig.node.json` (add the DOM library required by Playwright's config types)
 - Create: `admin-web/tests/e2e/mockAdminApi.ts`
 - Create: `admin-web/tests/e2e/auth.spec.ts`
 - Create: `admin-web/tests/e2e/edit-publish.spec.ts`
@@ -1778,14 +1864,15 @@ git commit -m "feat(admin): complete security and operations settings"
 - Consumes: all named routes, DTOs, and API clients from Tasks 1–12.
 - Produces: deterministic browser evidence for authentication, editing/publishing, complete media/inbox/analytics/settings behavior, keyboard navigation, and protected routes.
 
-- [ ] **Step 1: Write browser tests against a deterministic mock API**
+- [x] **Step 1: Write browser tests against a deterministic mock API**
 
 ```ts
 // admin-web/playwright.config.ts
 import { defineConfig } from '@playwright/test'
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1'
 export default defineConfig({
   testDir: './tests/e2e',
-  use: { baseURL: 'http://127.0.0.1:4174', trace: 'retain-on-failure' },
+  use: { baseURL: 'http://127.0.0.1:4174', trace: 'off', screenshot: 'off', video: 'off' },
   webServer: { command: 'npm run dev -- --host 127.0.0.1 --port 4174', url: 'http://127.0.0.1:4174/admin/', reuseExistingServer: false },
 })
 ```
@@ -1812,15 +1899,15 @@ test('password then TOTP reaches the protected dashboard', async ({ page }) => {
 
 `mockAdminApi.ts` maintains in-memory auth phase, exact SITE/project workspace DTO versions, publication/catalog versions, immutable revision arrays, synthetic messages, analytics, plan-01 `SessionView` rows (including `current`), opaque-cursor `AdminAuditPage`, and system status. Auth mocks the exact plan-01 `/csrf`, `/password`, `/second-factor`, `/me`, and `/logout` behavior. Security settings validate the exact four request DTOs, return `204`, `TotpEnrollmentResponse`, or `RecoveryCodesResponse` as specified, mark every non-current session revoked after each success, and script local `401 AUTHENTICATION_FAILED`, global `401 AUTHENTICATION_REQUIRED`, enrollment `409`, validation `422`, and rate-limit `429`. Session revoke accepts only POST `/{metadataId}/revoke`; current revoke flips the mock to anonymous.
 
-The mock checks every non-GET request for `X-XSRF-TOKEN` and returns `403` when missing; returns one scripted `409` in `conflict.spec.ts`; and returns `{ token: 'ticket-1', expiresAt: '2026-07-14T12:10:00Z' }` from `/api/admin/publishing/preview-tokens`, then an exact preview snapshot from `/api/admin/publishing/previews/ticket-1`. Message fixtures are synthetic and contain no real PII. `auth.spec.ts` and `security-settings.spec.ts` set `test.use({ trace: 'off' })`, never attach screenshots/HTML, and use synthetic credentials/codes because Playwright trace network records would otherwise retain request or one-time response bodies.
+The mock checks every non-GET request for `X-XSRF-TOKEN` and returns `403` when missing; returns one scripted `409` in `conflict.spec.ts`; and returns a valid two-segment synthetic token such as `ticket-1.<43 base64url characters>` with a dynamic ten-minute expiry from `/api/admin/publishing/preview-tokens`, then an exact preview snapshot only for that issued token. Message fixtures are synthetic and contain no real PII. Artifact capture is disabled globally because even otherwise non-sensitive admin flows can render visitor messages or session identifiers. `PLAYWRIGHT_NO_COPY_PROMPT=1` also prevents Playwright 1.58's automatic failure-time `error-context.md` page snapshot. Authentication/security specs additionally declare the off policy locally and use only synthetic credentials/codes.
 
-- [ ] **Step 2: Run the browser tests and observe failures before missing details are corrected**
+- [x] **Step 2: Run the browser tests and observe failures before missing details are corrected**
 
 Run: `npm --prefix admin-web run test:e2e -- auth.spec.ts edit-publish.spec.ts conflict.spec.ts operations.spec.ts security-settings.spec.ts`
 
 Expected: initial FAIL pinpoints any incomplete labels, routes, CSRF behavior, or editor wiring; do not relax assertions.
 
-- [ ] **Step 3: Complete browser-visible details required by the tests**
+- [x] **Step 3: Complete browser-visible details required by the tests**
 
 Make the smallest changes in existing admin files so these exact flows pass:
 
@@ -1840,7 +1927,7 @@ Make the smallest changes in existing admin files so these exact flows pass:
 14. a source/route assertion proves no production route still imports `FeatureShellView` and every approved destination renders its complete owning view;
 15. logout invalidates the browser session and the next protected navigation returns to login.
 
-- [ ] **Step 4: Run the complete admin quality gate**
+- [x] **Step 4: Run the complete admin quality gate**
 
 Run: `npm --prefix admin-web run test:unit`
 
@@ -1848,17 +1935,19 @@ Expected: all Vitest suites pass with zero unhandled promise rejection.
 
 Run: `npm --prefix admin-web run test:e2e`
 
-Expected: all Chromium Playwright tests pass; sensitive auth/security specs produce no trace artifact, and non-sensitive traces contain no password, TOTP/provisioning/recovery value, session identifier, or message body.
+Expected: all Chromium Playwright tests pass; no test produces trace, screenshot, video, HAR, HTML, or automatic error-context artifacts containing a password, TOTP/provisioning/recovery value, session identifier, or message body.
 
 Run: `npm --prefix admin-web run type-check && npm --prefix admin-web run build`
 
 Expected: exit 0; `admin-web/dist/index.html` uses `/admin/assets/*`, and no public-site or backend source changed.
 
+Verification (2026-07-18): targeted browser runs and two independent audits exposed strict locator, mock-state, and false-positive evidence gaps; they were corrected without weakening assertions or changing production behavior. The deterministic API now proves CSRF issuance precedes mutations and rejects a missing header, a real winning server edit advances the version before `409`, reload adopts it, publish succeeds and refreshes exact rendered versions, destructive dialogs really appear, cursors remain opaque, and only the signed synthetic preview token is accepted. The final gate used the SHA-256-verified official Node 22.18.0 Windows runtime, Playwright 1.58.2, and bundled Chromium v1208; all 16 browser workflows passed. All six E2E TypeScript files passed an independent strict/noUncheckedIndexedAccess compile. Trace, screenshot, video, and automatic error-context capture are disabled globally. A deliberate failure probe rendered synthetic `otpauth:`, recovery-code, and session-ID markers, then proved failure retained only `.last-run.json`—no ZIP, PNG, WebM, HAR, HTML, or Markdown artifact; the subsequent successful full run left the same safe result. The complete Vitest gate passed 770/770 across 55 files, the Vite production build transformed 212 modules, full and production-only npm audits reported zero vulnerabilities, and built asset URLs use `/admin/assets/*`. Task 13 changed only `admin-web` test/configuration files plus this plan; no public-site or backend source was changed, and no database was accessed.
+
 Deployment handoff: copy the complete `admin-web/dist/` contents without reshaping into `/opt/portfolio/releases/{releaseId}/admin/`, where `releaseId` is the same Git-plus-public-manifest value injected as `PORTFOLIO_RELEASE_ID` for that release; atomically point `/opt/portfolio/current-admin` to that directory. Do not copy admin assets into shared `/opt/portfolio/assets/`, do not hand an admin manifest to Spring, and do not construct a second admin-only release identifier.
 
-- [ ] **Step 5: Commit the verified admin application**
+- [x] **Step 5: Commit the verified admin application**
 
 ```bash
-git add admin-web/playwright.config.ts admin-web/tests admin-web/src admin-web/package.json admin-web/package-lock.json
+git add admin-web/playwright.config.ts admin-web/tsconfig.node.json admin-web/tests/e2e docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "test(admin): cover secure edit and publish flows"
 ```

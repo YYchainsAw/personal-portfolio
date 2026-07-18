@@ -15,6 +15,10 @@ class StrictHttpsSourceUrlTest {
         assertThat(StrictHttpsSourceUrl.requireValidNullable(null)).isNull();
         assertThat(StrictHttpsSourceUrl.requireValidNullable(sourceUrl))
                 .isEqualTo(sourceUrl);
+        assertThat(StrictHttpsSourceUrl.requireValidNullable("https://1.2.3.4/"))
+                .isEqualTo("https://1.2.3.4/");
+        assertThat(StrictHttpsSourceUrl.requireValidNullable("https://example.com./source"))
+                .isEqualTo("https://example.com./source");
     }
 
     @Test
@@ -26,7 +30,16 @@ class StrictHttpsSourceUrlTest {
                 "https://example.com:0/path",
                 "https://example.com:65536/path",
                 "https://example.com:/path",
+                "https://example.com:000443/",
+                "https://example.com:000001/",
+                "https://[fe80::1%25eth0]/",
+                "https://01.02.03.04/",
+                "https://" + "a".repeat(64) + ".example/",
+                "https://" + ("a".repeat(63) + ".").repeat(3)
+                        + "a".repeat(63) + "/",
                 "https://example.com/path#private",
+                "https://example.com/#",
+                "https://example.com#",
                 " https://example.com/path")) {
             assertThatThrownBy(
                             () -> StrictHttpsSourceUrl.requireValidNullable(sourceUrl))

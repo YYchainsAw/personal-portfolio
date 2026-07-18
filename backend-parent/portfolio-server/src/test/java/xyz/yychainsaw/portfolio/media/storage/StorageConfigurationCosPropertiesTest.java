@@ -12,7 +12,9 @@ import java.util.Comparator;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 
 class StorageConfigurationCosPropertiesTest {
     private static final String REGION = "ap-guangzhou";
@@ -66,6 +68,60 @@ class StorageConfigurationCosPropertiesTest {
         assertThat(adapterProperties).hasNullValue();
     }
 
+    @Test
+    void explicitLocalOnlyProductionDoesNotCreateOrRequireCosBeans() {
+        localOnlyRunner().run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(LocalStorageService.class);
+            assertThat(context).doesNotHaveBean(TencentCosProperties.class);
+            assertThat(context).doesNotHaveBean(QcloudCosClientAdapter.class);
+            assertThat(context).doesNotHaveBean(TencentCosStorageService.class);
+            assertThat(context).doesNotHaveBean(CosSdkLogSilencer.class);
+
+            StorageRouter router = context.getBean(StorageRouter.class);
+            assertThat(router.defaultWriter().provider()).isEqualTo(StorageProvider.LOCAL);
+        });
+    }
+
+    @Test
+    void explicitCosAdapterKeepsMixedProductionAvailableWithLocalDefault() {
+        AtomicReference<TencentCosProperties> adapterProperties = new AtomicReference<>();
+
+        canonicalRunner(adapterProperties)
+                .withPropertyValues(
+                        "portfolio.storage.default-provider=LOCAL",
+                        "portfolio.storage.cos.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(LocalStorageService.class);
+                    assertThat(context).hasSingleBean(TencentCosStorageService.class);
+                    assertThat(adapterProperties).doesNotHaveNullValue();
+
+                    StorageRouter router = context.getBean(StorageRouter.class);
+                    assertThat(router.defaultWriter().provider())
+                            .isEqualTo(StorageProvider.LOCAL);
+                    assertThat(router.require(StorageProvider.TENCENT_COS).provider())
+                            .isEqualTo(StorageProvider.TENCENT_COS);
+                });
+    }
+
+    @Test
+    void cosDefaultCreatesItsRequiredAdapterEvenWhenOptionalFlagIsFalse() {
+        AtomicReference<TencentCosProperties> adapterProperties = new AtomicReference<>();
+
+        canonicalRunner(adapterProperties)
+                .withPropertyValues("portfolio.storage.cos.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(TencentCosStorageService.class);
+                    assertThat(adapterProperties).doesNotHaveNullValue();
+                    assertThat(context.getBean(StorageRouter.class)
+                                    .defaultWriter()
+                                    .provider())
+                            .isEqualTo(StorageProvider.TENCENT_COS);
+                });
+    }
+
     private ApplicationContextRunner canonicalRunner(
             AtomicReference<TencentCosProperties> adapterProperties) {
         return baseRunner(adapterProperties).withPropertyValues(
@@ -98,6 +154,22 @@ class StorageConfigurationCosPropertiesTest {
                         "portfolio.storage.default-provider=TENCENT_COS",
                         "portfolio.storage.local.root=" + localRoot,
                         "portfolio.storage.cos.staging-root=" + scratchRoot);
+    }
+
+    private ApplicationContextRunner localOnlyRunner() {
+        Path boundary = safeBoundary();
+        return new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withUserConfiguration(StorageConfiguration.class)
+                .withPropertyValues(
+                        "spring.profiles.active=prod",
+                        "PORTFOLIO_RELEASE_ID=local-only-test",
+                        "PORTFOLIO_STORAGE_DEFAULT_PROVIDER=LOCAL",
+                        "PORTFOLIO_COS_ENABLED=false",
+                        "PORTFOLIO_LOCAL_STORAGE=" + boundary.resolve("local-media"),
+                        "PORTFOLIO_JOBS_WORKER_ENABLED=false",
+                        "PORTFOLIO_STAGING_CLEANUP_ENABLED=false",
+                        "PORTFOLIO_MEDIA_CLEANUP_ENABLED=false");
     }
 
     private Path safeBoundary() {

@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,6 +21,9 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionOperations;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaPageView;
@@ -135,14 +139,61 @@ class MediaManagementServiceTest {
     }
 
     @Test
+    void getReturnsTheCompleteMediaAssetView() {
+        MediaAssetRecord ready = asset(MediaStatus.READY, 1, null);
+        when(assets.findById(ASSET_ID)).thenReturn(Optional.of(ready));
+        when(translations.findByAssetId(ASSET_ID)).thenReturn(List.of(
+                new MediaTranslationRecord(
+                        ASSET_ID, "zh-CN", "Gameplay zh", "Caption zh", "Credit zh", null),
+                new MediaTranslationRecord(
+                        ASSET_ID, "en", "Gameplay", "Caption", "Credit", "https://example.com/en")));
+        when(variants.findByAssetId(ASSET_ID)).thenReturn(List.of(variant()));
+
+        var view = service.get(ASSET_ID);
+
+        assertThat(view.id()).isEqualTo(ASSET_ID);
+        assertThat(view.originalFilename()).isEqualTo("work.png");
+        assertThat(view.status()).isEqualTo("READY");
+        assertThat(view.translations()).extracting(value -> value.locale())
+                .containsExactly("zh-CN", "en");
+        assertThat(view.translations().get(1).sourceUrl())
+                .isEqualTo("https://example.com/en");
+        assertThat(view.variants()).singleElement().satisfies(value -> {
+            assertThat(value.name()).isEqualTo("w640");
+            assertThat(value.width()).isEqualTo(640);
+            assertThat(value.height()).isEqualTo(360);
+            assertThat(value.status()).isEqualTo("READY");
+        });
+    }
+
+    @Test
+    void getTreatsMissingAndPendingDeleteAssetsAsNotFound() {
+        when(assets.findById(ASSET_ID))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(asset(MediaStatus.PENDING_DELETE, 2, NOW)));
+
+        assertDomainFailure(
+                () -> service.get(ASSET_ID),
+                "MEDIA_NOT_FOUND",
+                HttpStatus.NOT_FOUND);
+        assertDomainFailure(
+                () -> service.get(ASSET_ID),
+                "MEDIA_NOT_FOUND",
+                HttpStatus.NOT_FOUND);
+
+        verify(translations, never()).findByAssetId(ASSET_ID);
+        verify(variants, never()).findByAssetId(ASSET_ID);
+    }
+
+    @Test
     void translationUpdateRequiresExactlyBothLocalesAndStrictHttps() {
         assertDomainFailure(
-                () -> service.updateTranslations(ASSET_ID, List.of(
+                () -> service.updateTranslations(ASSET_ID, 1, List.of(
                         translation("en", "Gameplay", null))),
                 "MEDIA_TRANSLATIONS_INVALID",
                 HttpStatus.UNPROCESSABLE_ENTITY);
         assertDomainFailure(
-                () -> service.updateTranslations(ASSET_ID, List.of(
+                () -> service.updateTranslations(ASSET_ID, 1, List.of(
                         translation("en", "Gameplay", null),
                         translation("en", "Duplicate", null))),
                 "MEDIA_TRANSLATIONS_INVALID",
@@ -152,9 +203,11 @@ class MediaManagementServiceTest {
                 "https://user:secret@example.com/path#private",
                 "https://example.com:0/path",
                 "https://example.com:65536/path",
+                "https://[fe80::1%25eth0]/",
+                "https://01.02.03.04/",
                 "https://example.com/path#private")) {
             assertDomainFailure(
-                    () -> service.updateTranslations(ASSET_ID, List.of(
+                    () -> service.updateTranslations(ASSET_ID, 1, List.of(
                             translation("zh-CN", "游戏截图", sourceUrl),
                             translation("en", "Gameplay", null))),
                     "MEDIA_TRANSLATIONS_INVALID",
@@ -182,7 +235,7 @@ class MediaManagementServiceTest {
                         ASSET_ID, "zh-CN", "游戏截图", "", "", "https://example.com/zh")));
         when(variants.findByAssetId(ASSET_ID)).thenReturn(List.of(variant()));
 
-        var result = service.updateTranslations(ASSET_ID, input);
+        var result = service.updateTranslations(ASSET_ID, 1, input);
 
         assertThat(result.version()).isEqualTo(2);
         assertThat(result.translations()).hasSize(2);
@@ -202,6 +255,28 @@ class MediaManagementServiceTest {
         assertThat(captured.getValue().actorAdminId()).isEqualTo(ADMIN_ID);
         assertThat(captured.getValue().action()).isEqualTo("MEDIA_TRANSLATIONS_UPDATE");
         assertThat(captured.getValue().metadata()).isEmpty();
+    }
+
+    @Test
+    void staleTranslationUpdateIsRejectedWhileHoldingTheAssetWriteLock() {
+        MediaAssetRecord current = asset(MediaStatus.READY, 2, null);
+        List<MediaTranslationInput> input = List.of(
+                translation("zh-CN", "Gameplay zh", null),
+                translation("en", "Gameplay", null));
+        when(currentAdmin.requireAdminId()).thenReturn(ADMIN_ID);
+        when(assets.findByIdForUpdate(ASSET_ID)).thenReturn(Optional.of(current));
+
+        assertDomainFailure(
+                () -> service.updateTranslations(ASSET_ID, 1, input),
+                "MEDIA_VERSION_CONFLICT",
+                HttpStatus.CONFLICT);
+
+        verify(assets).findByIdForUpdate(ASSET_ID);
+        verify(translations, never()).replaceAll(any(), any());
+        verify(assets, never()).incrementVersion(ASSET_ID, 1);
+        verify(firstListener, never()).onMediaChanged(any(), any());
+        verify(secondListener, never()).onMediaChanged(any(), any());
+        verify(audit, never()).record(any());
     }
 
     @Test
@@ -242,6 +317,62 @@ class MediaManagementServiceTest {
         assertThat(captured.getValue().action()).isEqualTo("MEDIA_ARCHIVE");
         assertThat(captured.getValue().targetId()).isEqualTo(ASSET_ID.toString());
         assertThat(captured.getValue().metadata()).isEmpty();
+    }
+
+    @Test
+    void publicConstructorUsesRepeatableReadOnlySnapshotsAndKeepsWritesDefault() {
+        RecordingTransactionManager transactionManager = new RecordingTransactionManager();
+        MediaManagementService configured = new MediaManagementService(
+                currentAdmin,
+                assets,
+                variants,
+                translations,
+                references,
+                List.of(firstListener, secondListener),
+                audit,
+                transactionManager);
+        MediaAssetRecord ready = asset(MediaStatus.READY, 1, null);
+        MediaAssetRecord updated = asset(MediaStatus.READY, 2, null);
+        MediaAssetRecord archived = asset(MediaStatus.ARCHIVED, 2, NOW);
+        when(assets.findPage(0, 24, Optional.empty()))
+                .thenReturn(new MediaAssetPage(List.of(ready), 1));
+        when(assets.findById(ASSET_ID)).thenReturn(Optional.of(ready));
+        when(translations.findByAssetId(ASSET_ID)).thenReturn(List.of());
+        when(variants.findByAssetId(ASSET_ID)).thenReturn(List.of());
+        when(currentAdmin.requireAdminId()).thenReturn(ADMIN_ID);
+        when(assets.findByIdForUpdate(ASSET_ID)).thenReturn(Optional.of(ready));
+        when(assets.incrementVersion(ASSET_ID, 1)).thenReturn(Optional.of(updated));
+        when(references.findReferences(ASSET_ID)).thenReturn(List.of());
+        when(assets.archive(ASSET_ID, 1)).thenReturn(Optional.of(archived));
+
+        configured.list(0, 24, null);
+        configured.get(ASSET_ID);
+        configured.updateTranslations(ASSET_ID, 1, List.of(
+                translation("zh-CN", "Gameplay zh", null),
+                translation("en", "Gameplay", null)));
+        configured.archive(ASSET_ID);
+
+        assertThat(transactionManager.definitions).hasSize(4);
+        assertThat(transactionManager.definitions.subList(0, 2))
+                .allSatisfy(definition -> {
+                    assertThat(definition.name()).isEqualTo("media-management-read");
+                    assertThat(definition.readOnly()).isTrue();
+                    assertThat(definition.isolationLevel())
+                            .isEqualTo(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+                    assertThat(definition.propagationBehavior())
+                            .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRED);
+                });
+        assertThat(transactionManager.definitions.subList(2, 4))
+                .allSatisfy(definition -> {
+                    assertThat(definition.name()).isNull();
+                    assertThat(definition.readOnly()).isFalse();
+                    assertThat(definition.isolationLevel())
+                            .isEqualTo(TransactionDefinition.ISOLATION_DEFAULT);
+                    assertThat(definition.propagationBehavior())
+                            .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRED);
+                });
+        assertThat(transactionManager.commits).isEqualTo(4);
+        assertThat(transactionManager.rollbacks).isZero();
     }
 
     private static MediaTranslationInput translation(
@@ -294,4 +425,37 @@ class MediaManagementServiceTest {
                     assertThat(failure.status()).isEqualTo(status);
                 });
     }
+
+    private static final class RecordingTransactionManager
+            implements PlatformTransactionManager {
+        private final List<TransactionDefinitionSnapshot> definitions = new ArrayList<>();
+        private int commits;
+        private int rollbacks;
+
+        @Override
+        public TransactionStatus getTransaction(TransactionDefinition definition) {
+            definitions.add(new TransactionDefinitionSnapshot(
+                    definition.getName(),
+                    definition.isReadOnly(),
+                    definition.getIsolationLevel(),
+                    definition.getPropagationBehavior()));
+            return new SimpleTransactionStatus();
+        }
+
+        @Override
+        public void commit(TransactionStatus status) {
+            commits++;
+        }
+
+        @Override
+        public void rollback(TransactionStatus status) {
+            rollbacks++;
+        }
+    }
+
+    private record TransactionDefinitionSnapshot(
+            String name,
+            boolean readOnly,
+            int isolationLevel,
+            int propagationBehavior) { }
 }

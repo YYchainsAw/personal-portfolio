@@ -15,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaAssetView;
@@ -54,7 +55,8 @@ public final class MediaManagementService {
     private final MediaReferenceResolver references;
     private final List<MediaChangeListener> listeners;
     private final AuditService audit;
-    private final TransactionOperations transactions;
+    private final TransactionOperations readTransactions;
+    private final TransactionOperations writeTransactions;
 
     @Autowired
     public MediaManagementService(
@@ -74,8 +76,8 @@ public final class MediaManagementService {
                 references,
                 listeners,
                 audit,
-                new TransactionTemplate(Objects.requireNonNull(
-                        transactionManager, "transaction manager is required")));
+                newReadTransactions(transactionManager),
+                newWriteTransactions(transactionManager));
     }
 
     MediaManagementService(
@@ -87,6 +89,28 @@ public final class MediaManagementService {
             List<MediaChangeListener> listeners,
             AuditService audit,
             TransactionOperations transactions) {
+        this(
+                currentAdmin,
+                assets,
+                variants,
+                translations,
+                references,
+                listeners,
+                audit,
+                transactions,
+                transactions);
+    }
+
+    MediaManagementService(
+            CurrentAdminProvider currentAdmin,
+            MediaAssetRepository assets,
+            MediaVariantRepository variants,
+            MediaTranslationRepository translations,
+            MediaReferenceResolver references,
+            List<MediaChangeListener> listeners,
+            AuditService audit,
+            TransactionOperations readTransactions,
+            TransactionOperations writeTransactions) {
         this.currentAdmin = Objects.requireNonNull(
                 currentAdmin, "current administrator provider is required");
         this.assets = Objects.requireNonNull(assets, "media repository is required");
@@ -102,12 +126,21 @@ public final class MediaManagementService {
             throw new IllegalArgumentException("media change listener is invalid");
         }
         this.audit = Objects.requireNonNull(audit, "audit service is required");
-        this.transactions = Objects.requireNonNull(
-                transactions, "transaction operations are required");
+        this.readTransactions = Objects.requireNonNull(
+                readTransactions, "read transaction operations are required");
+        this.writeTransactions = Objects.requireNonNull(
+                writeTransactions, "write transaction operations are required");
     }
 
     public MediaPageView list(int page, int size, String requestedStatus) {
         Optional<MediaStatus> status = requirePageRequest(page, size, requestedStatus);
+        MediaPageView result = readTransactions.execute(transaction -> listSnapshot(
+                page, size, status));
+        return Objects.requireNonNull(result, "media page transaction returned no result");
+    }
+
+    private MediaPageView listSnapshot(
+            int page, int size, Optional<MediaStatus> status) {
         MediaAssetPage result = assets.findPage(page, size, status);
         List<MediaAssetView> items = result.items().stream()
                 .map(this::toDetailedView)
@@ -121,19 +154,40 @@ public final class MediaManagementService {
                 items, page, size, result.totalItems(), (int) pages);
     }
 
+    public MediaAssetView get(UUID assetId) {
+        if (assetId == null) {
+            throw notFound();
+        }
+        MediaAssetView result = readTransactions.execute(transaction -> {
+            MediaAssetRecord record = assets.findById(assetId)
+                    .filter(asset -> asset.status() != MediaStatus.PENDING_DELETE)
+                    .orElseThrow(MediaManagementService::notFound);
+            return toDetailedView(record);
+        });
+        return Objects.requireNonNull(result, "media detail transaction returned no result");
+    }
+
     public MediaAssetView updateTranslations(
-            UUID assetId, List<MediaTranslationInput> input) {
+            UUID assetId,
+            long expectedVersion,
+            List<MediaTranslationInput> input) {
+        if (expectedVersion < 0) {
+            throw translationsInvalid();
+        }
         List<MediaTranslationRecord> replacements = requireTranslations(assetId, input);
         UUID actorId = requireActor();
-        MediaAssetView result = transactions.execute(status -> {
+        MediaAssetView result = writeTransactions.execute(status -> {
             MediaAssetRecord before = assets.findByIdForUpdate(assetId)
                     .orElseThrow(MediaManagementService::notFound);
             if (before.status() == MediaStatus.PENDING_DELETE) {
                 throw notFound();
             }
+            if (before.version() != expectedVersion) {
+                throw versionConflict();
+            }
             translations.replaceAll(assetId, replacements);
-            MediaAssetRecord updated = assets.incrementVersion(assetId, before.version())
-                    .orElseThrow(MediaManagementService::conflict);
+            MediaAssetRecord updated = assets.incrementVersion(assetId, expectedVersion)
+                    .orElseThrow(MediaManagementService::versionConflict);
             for (MediaChangeListener listener : listeners) {
                 listener.onMediaChanged(assetId, MediaChangeType.TRANSLATION_UPDATED);
             }
@@ -155,7 +209,7 @@ public final class MediaManagementService {
             throw notFound();
         }
         UUID actorId = requireActor();
-        transactions.execute(status -> {
+        writeTransactions.execute(status -> {
             MediaAssetRecord current = assets.findByIdForUpdate(assetId)
                     .orElseThrow(MediaManagementService::notFound);
             if (current.status() == MediaStatus.PENDING_DELETE) {
@@ -310,5 +364,27 @@ public final class MediaManagementService {
 
     private static DomainException conflict() {
         return new DomainException("MEDIA_CONFLICT", HttpStatus.CONFLICT, Map.of());
+    }
+
+    private static DomainException versionConflict() {
+        return new DomainException(
+                "MEDIA_VERSION_CONFLICT", HttpStatus.CONFLICT, Map.of());
+    }
+
+    private static TransactionOperations newReadTransactions(
+            PlatformTransactionManager transactionManager) {
+        TransactionTemplate transactions = new TransactionTemplate(Objects.requireNonNull(
+                transactionManager, "transaction manager is required"));
+        transactions.setName("media-management-read");
+        transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+        transactions.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        transactions.setReadOnly(true);
+        return transactions;
+    }
+
+    private static TransactionOperations newWriteTransactions(
+            PlatformTransactionManager transactionManager) {
+        return new TransactionTemplate(Objects.requireNonNull(
+                transactionManager, "transaction manager is required"));
     }
 }

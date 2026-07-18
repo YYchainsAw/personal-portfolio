@@ -289,7 +289,7 @@ git commit -m "build: create traceable portfolio releases"
 - Consumes: plan-01 application profiles, plan-02 Local/COS configuration, plan-06 SMTP/HMAC configuration.
 - Produces: two-container production topology and `127.0.0.1:18080` API boundary.
 
-- [ ] **Step 1: Write the failing Compose contract**
+- [x] **Step 1: Write the failing Compose contract**
 
 ```bash
 #!/usr/bin/env bash
@@ -304,7 +304,7 @@ jq -e '.services["portfolio-api"].depends_on.postgres.condition == "service_heal
 
 Create a test env containing dummy non-secret values, run `bash deploy/tests/compose-contract.sh`, and expect failure because the Compose file is missing.
 
-- [ ] **Step 2: Create production Compose**
+- [x] **Step 2: Create production Compose**
 
 ```yaml
 name: portfolio
@@ -365,7 +365,7 @@ volumes:
 
 The Task-1 runtime stage installs `curl`, so the health check validates the local readiness response rather than only testing that a TCP port is open. The rendered Compose contract requires `java.io.tmpdir` and `PORTFOLIO_COS_STAGING_ROOT` to remain under this size-limited ephemeral tmpfs, rejects persistent/unbounded process temporary storage, and verifies no scratch path resolves inside the durable Local media volume. Provision `local-media` once with an owner-only, no-follow `.portfolio-volume-id` containing a random opaque value stored separately as protected `PORTFOLIO_LOCAL_VOLUME_ID`; a new or wrong empty volume must not be accepted merely because it is writable.
 
-- [ ] **Step 3: Add production configuration safeguards**
+- [x] **Step 3: Add production configuration safeguards**
 
 `application-prod.yml` must disable Hibernate/schema initialization, expose only Actuator health, trust native forwarded headers only under the loopback proxy policy, emit structured JSON logs, reject blank encryption/HMAC secrets, keep SQL/session/media initialization under Flyway, and set the administrator session cookie to `Secure`, `HttpOnly`, and `SameSite=Strict` exactly as plan 01 specifies.
 
@@ -379,7 +379,13 @@ The Task-1 runtime stage installs `curl`, so the health check validates the loca
 
 Generate passwords with `openssl rand -base64 32` and application secrets with `openssl rand -base64 48`; never print generated values after writing protected files.
 
-- [ ] **Step 4: Run config checks**
+- [x] **Step 4: Run config checks**
+
+Verification (2026-07-18): the production Compose contract passed after a real
+Compose v2 JSON render without starting either service. Java 17/Maven 3.9.11
+focused suites passed 70/70 across production profile safeguards, Local-only,
+COS-default, mixed Local/COS bean selection, and COS staging behavior. No
+database connection or container data mutation occurred.
 
 ```bash
 bash deploy/tests/compose-contract.sh
@@ -388,7 +394,7 @@ docker compose --env-file /etc/portfolio/release.env -f deploy/docker-compose.pr
 
 Expected: PASS, exactly two services, no PostgreSQL port, API loopback only.
 
-- [ ] **Step 5: Commit the topology**
+- [x] **Step 5: Commit the topology**
 
 ```bash
 git add deploy/docker-compose.prod.yml deploy/.env.example deploy/tests/compose-contract.sh backend-parent/portfolio-server/src/main/resources/application-prod.yml
@@ -411,7 +417,7 @@ git commit -m "ops: define private production topology"
 - Consumes: shared `/opt/portfolio/assets`, `/opt/portfolio/current-admin`, API loopback port, explicit media origin, Tencent region/jurisdiction, and ICP state.
 - Produces: TLS host routing for `yychainsaw.xyz` and `www.yychainsaw.xyz` after approval.
 
-- [ ] **Step 1: Write failing Nginx and ICP gate checks**
+- [x] **Step 1: Write failing Nginx and ICP gate checks**
 
 The test renders a config and asserts:
 
@@ -429,7 +435,7 @@ The test renders a config and asserts:
 
 Run with `SERVER_JURISDICTION=MAINLAND_CN ICP_APPROVED=false` and expect the preflight to fail with `ICP approval required for mainland public cutover`.
 
-- [ ] **Step 2: Define `http`-scope rate zones**
+- [x] **Step 2: Define `http`-scope rate zones**
 
 ```nginx
 limit_req_zone $binary_remote_addr zone=portfolio_login:10m rate=5r/m;
@@ -439,7 +445,7 @@ limit_req_zone $binary_remote_addr zone=portfolio_events:10m rate=60r/m;
 
 Install this once through BaoTa's Nginx `http` include mechanism. Application limits remain mandatory because Nginx limits are only the outer layer.
 
-- [ ] **Step 3: Create the site routing contract**
+- [x] **Step 3: Create the site routing contract**
 
 The rendered `server` configuration must include these location semantics:
 
@@ -490,13 +496,13 @@ location / {
 
 The proxy include sets `Host $host`, `X-Real-IP $remote_addr`, `X-Forwarded-For $remote_addr`, `X-Forwarded-Proto $scheme`, timeouts, request size, and buffering without using `$proxy_add_x_forwarded_for`. Preserve `Range`/`If-Range` for LocalStorage media.
 
-- [ ] **Step 4: Add strict headers and render allowlists**
+- [x] **Step 4: Add strict headers and render allowlists**
 
 Render HSTS only in the HTTPS server after TLS is verified. Add CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, a restricted `Permissions-Policy`, and frame denial. The render script accepts a single validated HTTPS `MEDIA_ORIGIN` and an allowlist of external video frame origins; it rejects whitespace, semicolons, quotes, paths, HTTP, and wildcard hosts.
 
 Do not duplicate headers inconsistently between nested locations. Put the generated security headers in one included file and use `always`.
 
-- [ ] **Step 5: Implement jurisdiction and approval preflight**
+- [x] **Step 5: Implement jurisdiction and approval preflight**
 
 Require the operator to record:
 
@@ -521,7 +527,16 @@ Resolve all four Nginx paths with `realpath`, require absolute values beneath th
 
 Until review completes, use `PUBLIC_DOMAIN_ENABLED=false`; run private smoke tests through `curl --resolve yychainsaw.xyz:443:127.0.0.1` only after a local test certificate is configured, or use direct loopback API checks.
 
-- [ ] **Step 6: Validate and commit**
+- [x] **Step 6: Validate and commit**
+
+Verification (2026-07-18): the isolated Nginx contract passed in Ubuntu 22.04,
+ShellCheck reported zero findings, and a real temporary Nginx instance passed
+syntax validation plus request-level checks for the shared public asset alias,
+administrator asset alias, administrator SPA fallback, and missing-asset 404.
+The contract uses only fixtures/stubs and does not contact public DNS, Tencent
+COS, BaoTa, or a database. The mainland public-cutover branch remains fail
+closed until the final ICP approval, record number, DNS answers, and TLS/runtime
+evidence are installed on the production host.
 
 ```bash
 bash deploy/tests/nginx-contract.sh
@@ -778,18 +793,21 @@ git commit -m "ops: back up database and media independently"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusService.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatus.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapper.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceView.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsController.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsControllerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapperTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusServiceTest.java`
 
 **Interfaces:**
 - Consumes: plan-02 `maintenance_run` and plan-01 admin authentication.
 - Produces: the sole `GET /api/admin/system/operations` status contract, consumed only by plan 04's admin `SettingsView` operations section (`OperationsStatus.vue`); the dashboard makes no operations request.
 
-- [ ] **Step 1: Write the failing status API test**
+- [x] **Step 1: Write the failing status API test**
 
 Seed successful/failed maintenance rows and verify the endpoint returns the latest database backup, media backup, analytics aggregation, contact retention, media cleanup, deployment, and restore drill. Assert `401` when logged out and prove that artifact paths, bucket names, object keys, credentials, exception messages, PII, and raw job payloads are absent.
 
-- [ ] **Step 2: Run the focused test and verify failure**
+- [x] **Step 2: Run the focused test and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AdminOperationsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -797,7 +815,7 @@ Seed successful/failed maintenance rows and verify the endpoint returns the late
 
 Expected: FAIL because the operations endpoint does not exist.
 
-- [ ] **Step 3: Implement a redacted status model**
+- [x] **Step 3: Implement a redacted status model**
 
 ```java
 public record OperationsStatus(
@@ -819,15 +837,17 @@ public record MaintenanceView(
 
 Return only allowlisted run types and a mapped error category. Set `Cache-Control: no-store`. The endpoint is read-only; backup scripts remain host-owned and no web endpoint may start restore, shell, backup, deployment, or key rotation.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS and no operational secret/path appears.
 
+Verification (2026-07-18): this endpoint was delivered early with plan-04 Task 12 so the complete settings route has no missing backend dependency. The isolated suite passed 10/10 under Java 17 and Maven 3.9.11. It covers authenticated 200/no-store and anonymous 401/no-store behavior, all eight stable root keys and six nested keys including explicit nulls, seven exact allowlisted run types, latest-row ordering, safe failure categories, lowercase SHA-256, read-only `REPEATABLE_READ`, real CGLIB proxy creation, and source/SQL scans proving `error_summary`, `details`, paths, buckets, object keys, credentials, and payloads are never read or exposed. No database was connected by the suite.
+
 ```powershell
 git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations
-git commit -m "feat(system): report redacted maintenance status"
+git commit -m "feat(admin): complete security and operations settings"
 ```
 
 ---

@@ -23,6 +23,7 @@ import xyz.yychainsaw.portfolio.publishing.api.ArchiveProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PreviewTokenRequest;
 import xyz.yychainsaw.portfolio.publishing.api.PreviewTokenResponse;
 import xyz.yychainsaw.portfolio.publishing.api.PublicationResult;
+import xyz.yychainsaw.portfolio.publishing.api.PublicationStateDto;
 import xyz.yychainsaw.portfolio.publishing.api.PublishProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublishSiteCommand;
 import xyz.yychainsaw.portfolio.publishing.api.ReorderCatalogCommand;
@@ -98,6 +99,13 @@ public final class AdminPublishingController {
                 .map(AdminPublishingController::summary)
                 .toList();
         return ok(summaries);
+    }
+
+    @GetMapping("/{aggregateType}/{aggregateId}/state")
+    public ResponseEntity<PublicationStateDto> state(
+            @PathVariable AggregateType aggregateType,
+            @PathVariable UUID aggregateId) {
+        return ok(publishing.state(aggregateType, aggregateId));
     }
 
     @PostMapping("/preview-tokens")

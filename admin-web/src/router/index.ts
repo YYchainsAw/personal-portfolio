@@ -26,7 +26,14 @@ export interface SessionGuardPort {
 
 const adminShell = () => import('@/components/layout/AdminShell.vue')
 const dashboard = () => import('@/views/DashboardView.vue')
-const feature = () => import('@/views/FeatureShellView.vue')
+const siteEditor = () => import('@/views/site/SiteEditorView.vue')
+const projectList = () => import('@/views/projects/ProjectListView.vue')
+const projectEditor = () => import('@/views/projects/ProjectEditorView.vue')
+const mediaLibrary = () => import('@/views/media/MediaLibraryView.vue')
+const publishingHistory = () => import('@/views/publishing/PublishingHistoryView.vue')
+const messages = () => import('@/views/messages/MessagesView.vue')
+const analytics = () => import('@/views/analytics/AnalyticsView.vue')
+const settings = () => import('@/views/settings/SettingsView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
   return typeof value === 'string' ? value : ''
@@ -80,42 +87,38 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'site',
             name: 'site',
-            component: feature,
-            props: { title: '站点内容' },
+            component: siteEditor,
           },
           {
             path: 'projects',
             name: 'projects',
-            component: feature,
-            props: { title: '项目' },
+            component: projectList,
           },
           {
             path: 'projects/new',
             name: 'project-new',
-            component: feature,
-            props: { title: '新建项目' },
+            component: projectEditor,
+            props: { mode: 'create' },
           },
           {
             path: 'projects/:projectId',
             name: 'project-edit',
-            component: feature,
+            component: projectEditor,
             props: (route) => ({
-              title: '编辑项目',
+              mode: 'edit',
               projectId: singleParam(route.params.projectId),
             }),
           },
           {
             path: 'media',
             name: 'media',
-            component: feature,
-            props: { title: '媒体库' },
+            component: mediaLibrary,
           },
           {
             path: 'publishing/:aggregateType/:aggregateId/history',
             name: 'publishing-history',
-            component: feature,
+            component: publishingHistory,
             props: (route) => ({
-              title: '发布历史',
               aggregateType: singleParam(route.params.aggregateType),
               aggregateId: singleParam(route.params.aggregateId),
             }),
@@ -123,20 +126,17 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'messages',
             name: 'messages',
-            component: feature,
-            props: { title: '留言' },
+            component: messages,
           },
           {
             path: 'analytics',
             name: 'analytics',
-            component: feature,
-            props: { title: '访问统计' },
+            component: analytics,
           },
           {
             path: 'settings',
             name: 'settings',
-            component: feature,
-            props: { title: '设置' },
+            component: settings,
           },
         ],
       },

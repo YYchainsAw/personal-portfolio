@@ -27,6 +27,7 @@ describe('TranslationTabs', () => {
     expect(tabs[0]?.text()).toContain('中文')
     expect(tabs[0]?.text().replace(/\s/g, '')).toContain('2/2')
     expect(tabs[0]?.attributes('aria-selected')).toBe('true')
+    expect(tabs[0]?.attributes('aria-label')).toContain('翻译完成度 2/2')
     expect(tabs[0]?.attributes('tabindex')).toBe('0')
     expect(tabs[1]?.attributes('type')).toBe('button')
     expect(tabs[1]?.text()).toContain('English')

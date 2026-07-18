@@ -23,6 +23,7 @@ import xyz.yychainsaw.portfolio.publishing.application.PreviewTokenService.Previ
 import xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType;
 import xyz.yychainsaw.portfolio.publishing.snapshot.ProjectSnapshotMapper;
 import xyz.yychainsaw.portfolio.publishing.snapshot.SiteSnapshotMapper;
+import xyz.yychainsaw.portfolio.publishing.snapshot.v1.ProjectSnapshotV1;
 
 /** Creates an ephemeral snapshot from the current editable workspace. */
 @Service
@@ -33,6 +34,7 @@ public class PreviewService {
     private final WorkspaceValidator validator;
     private final SiteSnapshotMapper siteSnapshots;
     private final ProjectSnapshotMapper projectSnapshots;
+    private final PublicProjectionMapper projections;
     private final MediaQueryAccessGuard mediaAccess;
 
     public PreviewService(
@@ -41,6 +43,7 @@ public class PreviewService {
             WorkspaceValidator validator,
             SiteSnapshotMapper siteSnapshots,
             ProjectSnapshotMapper projectSnapshots,
+            PublicProjectionMapper projections,
             MediaQueryAccessGuard mediaAccess) {
         this.sites = Objects.requireNonNull(sites, "site workspace repository is required");
         this.projects = Objects.requireNonNull(
@@ -50,6 +53,8 @@ public class PreviewService {
                 siteSnapshots, "site snapshot mapper is required");
         this.projectSnapshots = Objects.requireNonNull(
                 projectSnapshots, "project snapshot mapper is required");
+        this.projections = Objects.requireNonNull(
+                projections, "public projection mapper is required");
         this.mediaAccess = Objects.requireNonNull(
                 mediaAccess, "media query access guard is required");
     }
@@ -103,10 +108,13 @@ public class PreviewService {
         }
         requireCurrentVersion(workspace.version(), claims.workspaceVersion());
         validator.validateProject(workspace);
+        ProjectSnapshotV1 snapshot;
         try (MediaQueryAccessGuard.Scope ignored = mediaAccess.openScope(
                 discoverProjectMedia(workspace), Set.of())) {
-            return projectSnapshots.toSnapshot(workspace);
+            snapshot = projectSnapshots.toSnapshot(workspace);
         }
+        projections.validateProjectSafetyTargets(snapshot);
+        return snapshot;
     }
 
     private static PreviewClaims requireClaims(PreviewClaims claims) {

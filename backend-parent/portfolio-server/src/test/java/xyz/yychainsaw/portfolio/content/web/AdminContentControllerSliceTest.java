@@ -1,5 +1,6 @@
 package xyz.yychainsaw.portfolio.content.web;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -16,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.hamcrest.Matchers.containsString;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +45,7 @@ import xyz.yychainsaw.portfolio.auth.web.SecurityProblemWriter;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.common.ratelimit.RateLimitProperties;
 import xyz.yychainsaw.portfolio.config.SecurityConfiguration;
+import xyz.yychainsaw.portfolio.content.api.ContentBlockDto;
 import xyz.yychainsaw.portfolio.content.api.CreateProjectWorkspaceRequest;
 import xyz.yychainsaw.portfolio.content.api.LocaleCode;
 import xyz.yychainsaw.portfolio.content.api.ProjectWorkspaceDto;
@@ -248,6 +251,29 @@ class AdminContentControllerSliceTest {
                                 999, WorkspaceFixtures.site(0))))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("CONTENT_VERSION_CONFLICT"));
+    }
+
+    @Test
+    void metricNumericValueUsesLosslessDecimalStringOnTheAdminWire() throws Exception {
+        String decimal = "9007199254740993.12345678901234567890";
+        String request = """
+                {
+                  "id": "91000000-0000-4000-8000-000000000021",
+                  "sortOrder": 1,
+                  "numericValue": "%s",
+                  "copy": {}
+                }
+                """.formatted(decimal);
+
+        ContentBlockDto.Metric decoded =
+                json.readValue(request, ContentBlockDto.Metric.class);
+
+        assertEquals(new BigDecimal(decimal), decoded.numericValue());
+        byte[] response = json.writeValueAsBytes(decoded);
+        assertEquals(decimal, json.readTree(response).required("numericValue").textValue());
+        assertEquals(
+                new BigDecimal(decimal),
+                json.readValue(response, ContentBlockDto.Metric.class).numericValue());
     }
 
     private org.springframework.test.web.servlet.ResultActions assertOkNoStore(

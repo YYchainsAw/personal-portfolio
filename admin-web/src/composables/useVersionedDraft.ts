@@ -15,6 +15,8 @@ const DEFAULT_AUTOSAVE_INTERVAL_MS = 15_000
 export interface VersionedDraftOptions<T> {
   load(): Promise<VersionedDraft<T>>
   save(request: SaveWorkspaceRequest<T>): Promise<VersionedDraft<T>>
+  retryValidationAfterEdit?(problem: ApiProblem): boolean
+  isConflict?(problem: ApiProblem): boolean
   readonly intervalMs?: number
 }
 
@@ -92,7 +94,9 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
   let disposed = false
   let hydrating = false
   let editRevision = 0
+  let validationBlockedRevision: number | null = null
   let operationGeneration = 0
+  let saveGeneration = 0
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 
   function clearAutosave(): void {
@@ -108,6 +112,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
       !loading.value &&
       !saving.value &&
       error.value === null &&
+      validationBlockedRevision !== editRevision &&
       conflict.value === null
     )
   }
@@ -130,6 +135,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
       dirty.value = false
       error.value = null
       conflict.value = null
+      validationBlockedRevision = null
       editRevision += 1
     } finally {
       hydrating = false
@@ -150,8 +156,10 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
   async function reload(): Promise<void> {
     if (disposed) return
     const operation = ++operationGeneration
+    saveGeneration += 1
     clearAutosave()
     loading.value = true
+    saving.value = false
     error.value = null
     try {
       const result = await options.load()
@@ -179,6 +187,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
     }
 
     clearAutosave()
+    const saveOperation = ++saveGeneration
     saving.value = true
     error.value = null
     const operation = operationGeneration
@@ -200,15 +209,20 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
       if (disposed || operation !== operationGeneration) return
       const problem =
         cause instanceof ApiProblem ? cause : safeProblem('保存失败', 'SAVE_FAILED')
-      if (problem.body.status === 409) {
+      const isConflict = options.isConflict?.(problem) ?? problem.body.status === 409
+      if (isConflict) {
         conflict.value = problem
+        error.value = null
+      } else if (options.retryValidationAfterEdit?.(problem) === true) {
+        validationBlockedRevision = savedRevision
         error.value = null
       } else {
         error.value = problem
       }
     } finally {
+      if (disposed || saveOperation !== saveGeneration) return
       saving.value = false
-      if (!disposed) scheduleAutosave()
+      scheduleAutosave()
     }
   }
 
@@ -221,6 +235,27 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
     event.preventDefault()
   }
 
+  function reset(): void {
+    if (disposed) return
+    operationGeneration += 1
+    saveGeneration += 1
+    clearAutosave()
+    hydrating = true
+    try {
+      draft.value = null
+      version.value = 0
+      loading.value = false
+      saving.value = false
+      dirty.value = false
+      error.value = null
+      conflict.value = null
+      validationBlockedRevision = null
+      editRevision += 1
+    } finally {
+      hydrating = false
+    }
+  }
+
   if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', beforeUnload)
   }
@@ -229,6 +264,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
     if (disposed) return
     disposed = true
     operationGeneration += 1
+    saveGeneration += 1
     clearAutosave()
     stopDraftWatch()
     loading.value = false
@@ -250,6 +286,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
     conflict,
     reload,
     saveNow,
+    reset,
     stop,
   }
 }

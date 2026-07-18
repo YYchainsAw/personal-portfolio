@@ -4,6 +4,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -48,6 +49,7 @@ import xyz.yychainsaw.portfolio.publishing.api.ArchiveProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PreviewTokenRequest;
 import xyz.yychainsaw.portfolio.publishing.api.PreviewTokenResponse;
 import xyz.yychainsaw.portfolio.publishing.api.PublicationResult;
+import xyz.yychainsaw.portfolio.publishing.api.PublicationStateDto;
 import xyz.yychainsaw.portfolio.publishing.api.PublishProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublishSiteCommand;
 import xyz.yychainsaw.portfolio.publishing.api.ReorderCatalogCommand;
@@ -294,6 +296,43 @@ class AdminPublishingControllerTest {
                 .andExpect(jsonPath("$").isArray());
 
         verify(publishing).history(AggregateType.SITE, PROJECT_ID);
+    }
+
+    @Test
+    void publicationStateRequiresAuthenticationAndReturnsAllSevenFieldsNoStore()
+            throws Exception {
+        PublicationStateDto state = new PublicationStateDto(
+                AggregateType.PROJECT,
+                PROJECT_ID,
+                "UNPUBLISHED",
+                0,
+                null,
+                null,
+                List.of());
+        given(publishing.state(AggregateType.PROJECT, PROJECT_ID)).willReturn(state);
+
+        mvc.perform(get(
+                        "/api/admin/publishing/{aggregateType}/{aggregateId}/state",
+                        AggregateType.PROJECT,
+                        PROJECT_ID))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
+                .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+
+        assertOkNoStore(get(
+                        "/api/admin/publishing/{aggregateType}/{aggregateId}/state",
+                        AggregateType.PROJECT,
+                        PROJECT_ID))
+                .andExpect(jsonPath("$.length()").value(7))
+                .andExpect(jsonPath("$.aggregateType").value("PROJECT"))
+                .andExpect(jsonPath("$.aggregateId").value(PROJECT_ID.toString()))
+                .andExpect(jsonPath("$.status").value("UNPUBLISHED"))
+                .andExpect(jsonPath("$.version").value(0))
+                .andExpect(jsonPath("$.currentRevisionId").value(nullValue()))
+                .andExpect(jsonPath("$.publishedAt").value(nullValue()))
+                .andExpect(jsonPath("$.projectIdsInOrder").isEmpty());
+
+        verify(publishing).state(AggregateType.PROJECT, PROJECT_ID);
     }
 
     @Test

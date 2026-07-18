@@ -261,6 +261,33 @@ public class PublicProjectionMapper {
                 blocks);
     }
 
+    /**
+     * Validates externally navigable block targets without requiring complete
+     * localized copy, so draft previews share the public URL policy.
+     */
+    public void validateProjectSafetyTargets(ProjectSnapshotV1 snapshot) {
+        ProjectSnapshotV1 source = required(snapshot, PROJECT_ERROR, "snapshot");
+        List<PublishedBlockV1> blocks = required(
+                source.blocks(), PROJECT_ERROR, "blocks");
+        for (PublishedBlockV1 candidate : blocks) {
+            PublishedBlockV1 block = required(candidate, PROJECT_ERROR, "blocks[]");
+            if (!block.visible()) {
+                continue;
+            }
+            String path = "blocks." + uuidText(block.id()) + ".payload";
+            PublishedBlockV1.PayloadV1 payload = required(
+                    block.payload(), PROJECT_ERROR, path);
+            if (payload instanceof PublishedBlockV1.VideoPayloadV1 video) {
+                canonicalVideo(video.provider(), video.url(), path + ".url");
+            } else if (payload instanceof PublishedBlockV1.DownloadPayloadV1 download
+                    && download.externalUrl() != null) {
+                https(download.externalUrl(), PROJECT_ERROR, path + ".externalUrl");
+            } else if (payload instanceof PublishedBlockV1.LinkPayloadV1 link) {
+                https(link.url(), PROJECT_ERROR, path + ".url");
+            }
+        }
+    }
+
     private PublicProjectCardDto projectCard(
             ProjectCatalogSnapshotV1.Card card, LocaleV1 locale) {
         UUID projectId = required(card.projectId(), CATALOG_ERROR, "projects.projectId");
