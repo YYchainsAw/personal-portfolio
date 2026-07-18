@@ -332,10 +332,15 @@ describe('MediaPickerDialog', () => {
     expect(wrapper.find('[data-asset-grid]').exists()).toBe(false)
   })
 
-  it('rejects an out-of-range page returned after navigation', async () => {
+  it('falls back with GET only when concurrent archive makes a page out of range', async () => {
     const firstId = uuid(17)
+    let initialPage = true
     const load = vi.fn(async (request: MediaPickerPageRequest) => {
-      if (request.page === 0) return page([asset(firstId, 'IMAGE')], 0, 2)
+      if (request.page === 0) {
+        const totalPages = initialPage ? 2 : 1
+        initialPage = false
+        return page([asset(firstId, 'IMAGE')], 0, totalPages)
+      }
       return {
         items: [],
         page: 1,
@@ -350,8 +355,11 @@ describe('MediaPickerDialog', () => {
     await wrapper.get('[data-action="next"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('无法加载媒体资源')
-    expect(wrapper.text()).not.toContain('第 2 / 1 页')
+    expect(load).toHaveBeenCalledTimes(3)
+    expect(load).toHaveBeenLastCalledWith({ page: 0, size: 24 })
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.find(`[data-asset-id="${firstId}"]`).exists()).toBe(true)
+    expect(wrapper.text()).toContain('第 1 / 1 页')
   })
 
   it('uses an accurate current-page empty state when other pages may contain compatible media', async () => {
@@ -401,6 +409,9 @@ describe('MediaPickerDialog', () => {
       await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Escape' })
       expect(wrapper.emitted('close')).toEqual([[]])
       expect(wrapper.emitted('update:open')).toEqual([[false]])
+      expect(second.attributes()).toHaveProperty('disabled')
+      await second.trigger('click')
+      expect(wrapper.emitted('select')).toBeUndefined()
 
       await wrapper.setProps({ open: false })
       await flushPromises()

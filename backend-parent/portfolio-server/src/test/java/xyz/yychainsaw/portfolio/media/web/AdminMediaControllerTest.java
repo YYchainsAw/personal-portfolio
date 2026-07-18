@@ -28,6 +28,7 @@ import java.io.InputStream;
 import java.net.URI;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,7 @@ import xyz.yychainsaw.portfolio.auth.session.AdminSessionService.ActiveSession;
 import xyz.yychainsaw.portfolio.auth.web.AdminPrincipal;
 import xyz.yychainsaw.portfolio.auth.web.LoginSubjectHasher;
 import xyz.yychainsaw.portfolio.auth.web.SecurityProblemWriter;
+import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.common.ratelimit.RateLimitProperties;
 import xyz.yychainsaw.portfolio.config.SecurityConfiguration;
 import xyz.yychainsaw.portfolio.media.application.AdminMediaPreviewService;
@@ -141,7 +143,7 @@ class AdminMediaControllerTest {
                         .session(session)
                         .with(admin())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(validTranslationsJson()))
+                        .content(validTranslationsRequestJson()))
                 .andExpect(status().isForbidden())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
                 .andExpect(jsonPath("$.code").value("CSRF_INVALID"));
@@ -245,21 +247,21 @@ class AdminMediaControllerTest {
 
     @Test
     void translationsValidateElementsAndReturnTheUpdatedJsonNoStore() throws Exception {
-        given(media.updateTranslations(eq(ASSET_ID), any())).willReturn(asset());
+        given(media.updateTranslations(eq(ASSET_ID), eq(2L), any())).willReturn(asset());
 
         mvc.perform(put("/api/admin/media/{id}/translations", ASSET_ID)
                         .session(session)
                         .with(admin())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(validTranslationsJson()))
+                        .content(validTranslationsRequestJson()))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(ASSET_ID.toString()))
                 .andExpect(jsonPath("$.sha256").value(SHA256));
 
-        verify(media).updateTranslations(eq(ASSET_ID), any());
+        verify(media).updateTranslations(eq(ASSET_ID), eq(2L), any());
     }
 
     @Test
@@ -269,11 +271,81 @@ class AdminMediaControllerTest {
                         .with(admin())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("[{\"locale\":\"fr\",\"altText\":\"Invalid\"}]"))
+                        .content("""
+                                {"expectedVersion":2,"translations":[
+                                  {"locale":"fr","altText":"Invalid"},
+                                  {"locale":"en","altText":"Valid"}
+                                ]}
+                                """))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
 
         verifyNoInteractions(media);
+    }
+
+    @Test
+    void translationsRequireAnExplicitExpectedVersionBeforeTheService() throws Exception {
+        mvc.perform(put("/api/admin/media/{id}/translations", ASSET_ID)
+                        .session(session)
+                        .with(admin())
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"translations":[
+                                  {"locale":"zh-CN","altText":"Gameplay zh"},
+                                  {"locale":"en","altText":"Gameplay"}
+                                ]}
+                                """))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fieldErrors.expectedVersion")
+                        .value("must be provided"));
+
+        verifyNoInteractions(media);
+    }
+
+    @Test
+    void translationsExposeTheStableNestedSourceUrlValidationPath() throws Exception {
+        mvc.perform(put("/api/admin/media/{id}/translations", ASSET_ID)
+                        .session(session)
+                        .with(admin())
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expectedVersion":2,"translations":[
+                                  {"locale":"zh-CN","sourceUrl":"https://01.02.03.04/"},
+                                  {"locale":"en","sourceUrl":null}
+                                ]}
+                                """))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath(
+                                "$.fieldErrors['translations[0].sourceUrl']")
+                        .value("must be an HTTPS URL"));
+
+        verifyNoInteractions(media);
+    }
+
+    @Test
+    void staleTranslationVersionReturnsARecognizableConflictProblem() throws Exception {
+        given(media.updateTranslations(eq(ASSET_ID), eq(2L), any()))
+                .willThrow(new DomainException(
+                        "MEDIA_VERSION_CONFLICT", HttpStatus.CONFLICT, Map.of()));
+
+        mvc.perform(put("/api/admin/media/{id}/translations", ASSET_ID)
+                        .session(session)
+                        .with(admin())
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validTranslationsRequestJson()))
+                .andExpect(status().isConflict())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
+                .andExpect(content().contentTypeCompatibleWith(
+                        MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.code").value("MEDIA_VERSION_CONFLICT"))
+                .andExpect(jsonPath("$.fieldErrors").isEmpty());
+
+        verify(media).updateTranslations(eq(ASSET_ID), eq(2L), any());
     }
 
     @Test
@@ -393,14 +465,17 @@ class AdminMediaControllerTest {
         return authentication(authenticated);
     }
 
-    private static String validTranslationsJson() {
+    private static String validTranslationsRequestJson() {
         return """
-                [
-                  {"locale":"zh-CN","altText":"作品截图","caption":"战斗场景",
-                   "credit":"易嘉轩","sourceUrl":"https://example.com/zh"},
-                  {"locale":"en","altText":"Gameplay","caption":"Combat scene",
-                   "credit":"Yi Jiaxuan","sourceUrl":"https://example.com/en"}
-                ]
+                {
+                  "expectedVersion": 2,
+                  "translations": [
+                    {"locale":"zh-CN","altText":"Gameplay zh","caption":"Scene zh",
+                     "credit":"Yi Jiaxuan","sourceUrl":"https://example.com/zh"},
+                    {"locale":"en","altText":"Gameplay","caption":"Combat scene",
+                     "credit":"Yi Jiaxuan","sourceUrl":"https://example.com/en"}
+                  ]
+                }
                 """;
     }
 

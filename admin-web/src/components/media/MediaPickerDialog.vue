@@ -99,7 +99,7 @@ function isPage(
   const totalItems = value.totalItems as number
   const totalPages = value.totalPages as number
   const calculatedTotalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / size)
-  const pageIsInRange = totalPages === 0 ? page === 0 : page < totalPages
+  const pageIsInRange = totalPages > 0 && page < totalPages
   const remainingItems = pageIsInRange ? Math.max(0, totalItems - page * size) : 0
   const maximumPageItems = Math.min(size, remainingItems)
 
@@ -107,7 +107,6 @@ function isPage(
     page === expectedPage &&
     size === expectedSize &&
     totalPages === calculatedTotalPages &&
-    pageIsInRange &&
     value.items.length <= maximumPageItems
   )
 }
@@ -193,7 +192,11 @@ function safePreviewUrl(asset: MediaAssetSummaryDto): string | null {
   return IMAGE_PREVIEW_VARIANT_PATTERN.test(variant) ? asset.previewUrl : null
 }
 
-async function loadPage(page: number, manageFocus = false): Promise<void> {
+async function loadPage(
+  page: number,
+  manageFocus = false,
+  allowOutOfRangeFallback = true,
+): Promise<void> {
   if (!props.open || loading.value || !Number.isSafeInteger(page) || page < 0) return
   const pageSize = normalizedPageSize()
   const ownsFocus =
@@ -207,6 +210,13 @@ async function loadPage(page: number, manageFocus = false): Promise<void> {
     const result = await props.load({ page, size: pageSize })
     if (operation !== requestGeneration || !props.open) return
     if (!isPage(result, page, pageSize)) throw new Error('invalid media page')
+    const fallbackPage = result.totalPages === 0 ? 0 : result.totalPages - 1
+    if (result.page !== fallbackPage && result.page >= result.totalPages) {
+      if (!allowOutOfRangeFallback) throw new Error('media page remained out of range')
+      loading.value = false
+      await loadPage(fallbackPage, manageFocus, false)
+      return
+    }
     items.value = [...result.items]
     currentPage.value = result.page
     totalPages.value = result.totalPages
@@ -233,6 +243,7 @@ async function loadPage(page: number, manageFocus = false): Promise<void> {
 function requestClose(): void {
   if (!props.open || closing) return
   closing = true
+  selectionLocked.value = true
   requestGeneration += 1
   loading.value = false
   emit('close')
@@ -240,7 +251,7 @@ function requestClose(): void {
 }
 
 function selectAsset(asset: unknown): void {
-  if (selectionLocked.value || !isSelectable(asset)) return
+  if (selectionLocked.value || closing || !isSelectable(asset)) return
   selectionLocked.value = true
   emit('select', asset)
   requestClose()

@@ -29,7 +29,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaAssetView;
 import xyz.yychainsaw.portfolio.api.admin.media.MediaPageView;
-import xyz.yychainsaw.portfolio.api.admin.media.MediaTranslationInput;
+import xyz.yychainsaw.portfolio.api.admin.media.UpdateMediaTranslationsRequest;
 import xyz.yychainsaw.portfolio.media.application.AdminMediaPreviewService;
 import xyz.yychainsaw.portfolio.media.application.MediaManagementService;
 import xyz.yychainsaw.portfolio.media.application.MediaRangeNotSatisfiableException;
@@ -96,10 +96,11 @@ public final class AdminMediaController {
     @PutMapping("/{id}/translations")
     public ResponseEntity<MediaAssetView> translations(
             @PathVariable UUID id,
-            @Valid @RequestBody List<MediaTranslationInput> input) {
+            @Valid @RequestBody UpdateMediaTranslationsRequest input) {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(media.updateTranslations(id, input));
+                .body(media.updateTranslations(
+                        id, input.expectedVersion(), input.translations()));
     }
 
     @GetMapping("/{id}/preview/{variant}")

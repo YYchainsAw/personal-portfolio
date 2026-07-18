@@ -272,7 +272,7 @@ class CatalogPublicationConcurrencyTest extends PostgresIntegrationTestBase {
 
             Future<Operation<MediaAssetView>> translationFuture = executor.submit(() ->
                     capture(() -> mediaManagement.updateTranslations(
-                            assetId, translationsBefore)));
+                            assetId, mediaVersionBefore, translationsBefore)));
             int mediaUpdaterPid = awaitUniqueDirectWaiter(
                     publisherPid,
                     "media updater did not block directly on the publisher's asset lock");

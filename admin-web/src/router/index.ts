@@ -29,6 +29,7 @@ const dashboard = () => import('@/views/DashboardView.vue')
 const siteEditor = () => import('@/views/site/SiteEditorView.vue')
 const projectList = () => import('@/views/projects/ProjectListView.vue')
 const projectEditor = () => import('@/views/projects/ProjectEditorView.vue')
+const mediaLibrary = () => import('@/views/media/MediaLibraryView.vue')
 const publishingHistory = () => import('@/views/publishing/PublishingHistoryView.vue')
 const feature = () => import('@/views/FeatureShellView.vue')
 
@@ -109,8 +110,7 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'media',
             name: 'media',
-            component: feature,
-            props: { title: '媒体库' },
+            component: mediaLibrary,
           },
           {
             path: 'publishing/:aggregateType/:aggregateId/history',

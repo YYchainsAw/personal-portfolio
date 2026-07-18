@@ -1555,12 +1555,16 @@ git commit -m "feat(admin): add preview publish and history workflow"
 - Create: `admin-web/src/views/media/MediaLibraryView.vue`
 - Test: `admin-web/src/views/media/MediaLibraryView.spec.ts`
 - Test: `admin-web/src/api/mediaApi.spec.ts`
+- Modify: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/StrictHttpsSourceUrl.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media/UpdateMediaTranslationsRequest.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java`
 
 **Interfaces:**
 - Consumes: exact plan-02 media management endpoints, `MediaPickerDialog`, and `AsyncPanel`.
 - Produces: complete media library search/status pages, upload, bilingual metadata editing, authenticated preview, reference-safe archive, and the real `media` route.
 
-- [ ] **Step 1: Write failing media-management tests**
+- [x] **Step 1: Write failing media-management tests**
 
 Test loading/error/empty/retry, then upload and archive boundaries:
 
@@ -1582,13 +1586,13 @@ it('uploads the selected file as multipart and refreshes processing state', asyn
 })
 ```
 
-- [ ] **Step 2: Run the media test and observe the missing mutation UI**
+- [x] **Step 2: Run the media test and observe the missing mutation UI**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/media/MediaLibraryView.spec.ts src/components/media`
 
 Expected: FAIL because `MediaLibraryView` and management methods do not exist.
 
-- [ ] **Step 3: Extend the exact plan-02 media contract and client**
+- [x] **Step 3: Extend the exact plan-02 media contract and client**
 
 ```ts
 // append to admin-web/src/types/content.ts
@@ -1596,9 +1600,9 @@ export interface MediaTranslationInput { locale: Locale; altText: string; captio
 export interface MediaAssetView extends MediaAssetSummaryDto { translations: MediaTranslationInput[]; variants: Array<{ name: string; width: number | null; height: number | null; status: string }> }
 ```
 
-Extend `mediaApi` with `upload(file)` using a new `FormData` and multipart key `file` without manually setting the boundary; `updateTranslations(id, input)` using exact locale/altText/caption/credit/sourceUrl fields; `previewUrl(id, variant)` using encoded path segments; and `archive(id)`. Search continues to send only plan-02 `page`, `size`, and `status`, applying kind/text locally. Mutations are never retried.
+Extend `mediaApi` with `upload(file)` using a new `FormData` and multipart key `file` without manually setting the boundary; `updateTranslations(id, { expectedVersion, translations })` using an atomic optimistic-lock envelope plus exact locale/altText/caption/credit/sourceUrl fields; `previewUrl(id, variant)` using encoded path segments; and `archive(id)`. Search continues to send only plan-02 `page`, `size`, and `status`, applying kind/text locally. Mutations are never retried.
 
-- [ ] **Step 4: Implement the complete media library and verify boundaries**
+- [x] **Step 4: Implement the complete media library and verify boundaries**
 
 - `MediaLibraryView` paginates every status, filters kind/text locally, polls a just-uploaded PROCESSING asset no faster than every five seconds while the page is visible, and stops polling at READY/FAILED or unmount.
 - The file control accepts only the approved image/PDF/file MIME set, displays server size/signature failures through safe `ApiProblem`, and never previews SVG/HTML/script bytes.
@@ -1610,10 +1614,12 @@ Run: `npm --prefix admin-web run test:unit -- src/views/media src/components/med
 
 Expected: PASS for four-state rendering, multipart upload, status polling/cleanup, bilingual translation save, authenticated preview, READY-only selection, confirmed archive, and referenced-asset `409`.
 
-- [ ] **Step 5: Commit complete media management**
+Verification (2026-07-18): under exact Node 22.18, the final media API, picker, library, and route suites passed 111/111. The expanded Java media gate passed 115/115 across strict attribution URLs, upload signature inspection, authenticated preview, transactional media management, and controller security/contracts. The Vite production bundle, `git diff --check`, and both full and production npm audits exited 0 with zero vulnerabilities. Coverage includes bounded pagination fallback, fair visible-page polling, late-response and unmount isolation, mutation uncertainty latches with GET-only reconciliation, SPA/browser leave protection, PDF non-embedding, reference-safe archive, strict Java/browser URL parity, repeatable-read list/detail snapshots, and atomic `expectedVersion` translation updates returning `MEDIA_VERSION_CONFLICT` without overwriting. An independent final audit found no remaining P1, P2, or P3 issues; the protected PostgreSQL container remained `0 running healthy` and was never accessed by these gates.
+
+- [x] **Step 5: Commit complete media management**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/content.ts admin-web/src/api/mediaApi.ts admin-web/src/views/media admin-web/src/components/media
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/content.ts admin-web/src/api/mediaApi.ts admin-web/src/api/mediaApi.spec.ts admin-web/src/views/media admin-web/src/components/media backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/api/admin/media backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/api/admin/media/StrictHttpsSourceUrlTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaManagementServiceTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/web/AdminMediaControllerTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/publishing/application/CatalogPublicationConcurrencyTest.java docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): complete media management"
 ```
 

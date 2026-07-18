@@ -203,6 +203,15 @@ describe('admin route guard', () => {
     expect(edit.params.projectId).toBe('20000000-0000-4000-8000-000000000001')
   })
 
+  it('routes the authenticated media destination to its complete view', () => {
+    const router = createTestRouter(createGuardSession('AUTHENTICATED'))
+    const media = router.resolve('/admin/media')
+
+    expect(media.name).toBe('media')
+    expect(media.matched.at(-1)?.path).toBe('/admin/media')
+    expect(media.matched.at(-1)?.props.default).toBe(false)
+  })
+
   it('keeps the admin root and not-found destination behind authentication', async () => {
     const authenticatedRouter = createTestRouter(createGuardSession('AUTHENTICATED'))
     await authenticatedRouter.push('/admin')

@@ -222,6 +222,15 @@ export interface MediaTranslationView {
   sourceUrl: string | null
 }
 
+/** Exact plan-02 bilingual mutation row. Both locales must be submitted together. */
+export interface MediaTranslationInput {
+  locale: Locale
+  altText: string
+  caption: string
+  credit: string
+  sourceUrl: string | null
+}
+
 export interface MediaVariantView {
   name: string
   width: number | null

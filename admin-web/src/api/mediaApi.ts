@@ -6,6 +6,8 @@ import type {
   MediaAssetView,
   MediaKind,
   MediaMimeType,
+  MediaStatus,
+  MediaTranslationInput,
   MediaTranslationView,
   MediaVariantView,
 } from '@/types/content'
@@ -14,6 +16,10 @@ import { http } from './http'
 
 const DEFAULT_PAGE_SIZE = 24
 const MAXIMUM_PAGE_SIZE = 100
+const MAXIMUM_PAGE = 2_147_483_647
+const IMAGE_UPLOAD_BYTE_LIMIT = 25 * 1024 * 1024
+const PDF_UPLOAD_BYTE_LIMIT = 30 * 1024 * 1024
+const MEDIA_UPLOAD_TIMEOUT_MS = 180_000
 const UUID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
 const IMAGE_PREVIEW_VARIANT_PATTERN = /^w[1-9][0-9]{0,9}$/
 const PREVIEW_VARIANT_PATTERN = /^(?:document|w[1-9][0-9]{0,9})$/
@@ -31,6 +37,7 @@ const MEDIA_STATUSES = new Set<MediaAssetSummaryDto['status']>([
   'PROCESSING',
   'FAILED',
   'ARCHIVED',
+  'PENDING_DELETE',
 ])
 const DETAILED_MEDIA_STATUSES = new Set<MediaAssetView['status']>([
   'PROCESSING',
@@ -38,6 +45,7 @@ const DETAILED_MEDIA_STATUSES = new Set<MediaAssetView['status']>([
   'FAILED',
   'ARCHIVED',
 ])
+const LIST_MEDIA_STATUSES = new Set<MediaAssetView['status']>(MEDIA_STATUSES)
 const MEDIA_VARIANT_STATUSES = new Set<MediaVariantView['status']>([
   'PROCESSING',
   'READY',
@@ -67,6 +75,7 @@ const MEDIA_TRANSLATION_VIEW_KEYS = [
   'sourceUrl',
 ] as const
 const MEDIA_VARIANT_VIEW_KEYS = ['name', 'width', 'height', 'status'] as const
+const MEDIA_PAGE_VIEW_KEYS = ['items', 'page', 'size', 'totalItems', 'totalPages'] as const
 
 export interface MediaSearchOptions {
   readonly page?: number
@@ -75,9 +84,27 @@ export interface MediaSearchOptions {
   readonly text?: string
 }
 
+export interface MediaListOptions {
+  readonly page?: number
+  readonly size?: number
+  readonly status?: MediaStatus
+}
+
+export interface UpdateMediaTranslationsRequest {
+  readonly expectedVersion: number
+  readonly translations: readonly MediaTranslationInput[]
+}
+
 export interface MediaApi {
   search(options?: Readonly<MediaSearchOptions>): Promise<Page<MediaAssetSummaryDto>>
+  list(options?: Readonly<MediaListOptions>): Promise<Page<MediaAssetView>>
   get(id: string): Promise<MediaAssetView>
+  upload(file: File): Promise<MediaAssetView>
+  updateTranslations(
+    id: string,
+    request: Readonly<UpdateMediaTranslationsRequest>,
+  ): Promise<MediaAssetView>
+  archive(id: string): Promise<void>
   previewUrl(id: string, variant: string): string
 }
 
@@ -108,7 +135,7 @@ function invalidServerResponse(): ApiProblem {
 
 function requirePage(value: number | undefined): number {
   const page = value ?? 0
-  if (!Number.isSafeInteger(page) || page < 0) {
+  if (!Number.isSafeInteger(page) || page < 0 || page > MAXIMUM_PAGE) {
     throw new RangeError('media page must be a non-negative safe integer')
   }
   return page
@@ -120,6 +147,14 @@ function requireSize(value: number | undefined): number {
     throw new RangeError('media page size is invalid')
   }
   return size
+}
+
+function requireStatus(value: MediaStatus | undefined): MediaStatus | undefined {
+  if (value === undefined) return undefined
+  if (!LIST_MEDIA_STATUSES.has(value)) {
+    throw new TypeError('media status is invalid')
+  }
+  return value
 }
 
 function isMediaId(value: unknown): value is string {
@@ -155,7 +190,18 @@ function isStrictHttpsSourceUrl(value: unknown): value is string | null {
   }
 
   const authority = value.slice('https://'.length).split(/[/?#]/u, 1)[0] ?? ''
-  if (authority.length === 0 || authority.endsWith(':')) return false
+  if (
+    authority.length === 0 ||
+    authority.endsWith(':') ||
+    authority.includes('@') ||
+    authority.includes('%') ||
+    /[^\x21-\x7e]/u.test(authority) ||
+    value.includes('\\') ||
+    value.includes('#') ||
+    !hasBackendCompatibleHost(authority)
+  ) {
+    return false
+  }
 
   try {
     const parsed = new URL(value)
@@ -176,6 +222,52 @@ function isStrictHttpsSourceUrl(value: unknown): value is string | null {
   } catch {
     return false
   }
+}
+
+function hasBackendCompatibleHost(authority: string): boolean {
+  let host = authority
+  if (authority.startsWith('[')) {
+    const closingBracket = authority.indexOf(']')
+    if (closingBracket < 2) return false
+    host = authority.slice(0, closingBracket + 1)
+    const suffix = authority.slice(closingBracket + 1)
+    if (suffix.length > 0 && !/^:[0-9]{1,5}$/u.test(suffix)) return false
+    return /^\[[0-9a-f:.]+\]$/iu.test(host)
+  }
+
+  const colon = authority.lastIndexOf(':')
+  if (colon >= 0) {
+    if (authority.indexOf(':') !== colon || !/^:[0-9]{1,5}$/u.test(authority.slice(colon))) {
+      return false
+    }
+    host = authority.slice(0, colon)
+  }
+  if (host.length === 0 || host.length > 253) return false
+
+  if (/^[0-9.]+$/u.test(host)) {
+    const octets = host.split('.')
+    return (
+      octets.length === 4 &&
+      octets.every(
+        (octet) =>
+          /^(?:0|[1-9][0-9]{0,2})$/u.test(octet) && Number(octet) <= 255,
+      )
+    )
+  }
+
+  const domain = host.endsWith('.') ? host.slice(0, -1) : host
+  if (domain.length === 0) return false
+  return domain.split('.').every(
+    (label) =>
+      label.length > 0 &&
+      label.length <= 63 &&
+      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/iu.test(label),
+  )
+}
+
+/** Form helper: an empty field maps to null; every non-empty value must match the backend rule. */
+export function isValidMediaSourceUrl(value: string): boolean {
+  return value.length === 0 || isStrictHttpsSourceUrl(value)
 }
 
 function normalizeTranslation(value: unknown): MediaTranslationView | null {
@@ -266,12 +358,17 @@ function normalizeVariants(value: unknown): MediaVariantView[] | null {
   return result
 }
 
-function normalizeDetailedAsset(value: unknown, requestedId: string): MediaAssetView | null {
+function normalizeDetailedAsset(
+  value: unknown,
+  requestedId?: string,
+  allowPendingDelete = false,
+): MediaAssetView | null {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, MEDIA_ASSET_VIEW_KEYS) ||
     !isMediaId(value.id) ||
-    value.id.toLocaleLowerCase() !== requestedId.toLocaleLowerCase() ||
+    (requestedId !== undefined &&
+      value.id.toLocaleLowerCase() !== requestedId.toLocaleLowerCase()) ||
     typeof value.originalFilename !== 'string' ||
     value.originalFilename.trim() !== value.originalFilename ||
     value.originalFilename.length === 0 ||
@@ -282,7 +379,9 @@ function normalizeDetailedAsset(value: unknown, requestedId: string): MediaAsset
     typeof value.sha256 !== 'string' ||
     !SHA256_PATTERN.test(value.sha256) ||
     typeof value.status !== 'string' ||
-    !DETAILED_MEDIA_STATUSES.has(value.status as MediaAssetView['status']) ||
+    !(allowPendingDelete ? LIST_MEDIA_STATUSES : DETAILED_MEDIA_STATUSES).has(
+      value.status as MediaAssetView['status'],
+    ) ||
     !Number.isSafeInteger(value.version) ||
     (value.version as number) < 0 ||
     !isInstant(value.createdAt) ||
@@ -295,9 +394,8 @@ function normalizeDetailedAsset(value: unknown, requestedId: string): MediaAsset
   const hasValidDimensions =
     mimeType === 'application/pdf'
       ? value.width === null && value.height === null
-      : (value.width === null && value.height === null) ||
-        (isPositiveSafeInteger(value.width, MAXIMUM_DIMENSION) &&
-          isPositiveSafeInteger(value.height, MAXIMUM_DIMENSION))
+      : isPositiveSafeInteger(value.width, MAXIMUM_DIMENSION) &&
+        isPositiveSafeInteger(value.height, MAXIMUM_DIMENSION)
   if (!hasValidDimensions) return null
 
   const translations = normalizeTranslations(value.translations)
@@ -318,6 +416,143 @@ function normalizeDetailedAsset(value: unknown, requestedId: string): MediaAsset
     updatedAt: value.updatedAt,
     translations,
     variants,
+  }
+}
+
+function normalizeDetailedPage(
+  value: unknown,
+  expectedPage: number,
+  expectedSize: number,
+  expectedStatus: MediaStatus | undefined,
+): Page<MediaAssetView> {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, MEDIA_PAGE_VIEW_KEYS) ||
+    !Array.isArray(value.items) ||
+    !Number.isSafeInteger(value.page) ||
+    (value.page as number) < 0 ||
+    !Number.isSafeInteger(value.size) ||
+    (value.size as number) < 1 ||
+    !Number.isSafeInteger(value.totalItems) ||
+    (value.totalItems as number) < 0 ||
+    !Number.isSafeInteger(value.totalPages) ||
+    (value.totalPages as number) < 0
+  ) {
+    throw invalidServerResponse()
+  }
+
+  const page = value.page as number
+  const size = value.size as number
+  const totalItems = value.totalItems as number
+  const totalPages = value.totalPages as number
+  const calculatedTotalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / size)
+  const pageIsInRange = totalPages > 0 && page < totalPages
+  const remainingItems = pageIsInRange ? Math.max(0, totalItems - page * size) : 0
+  const maximumPageItems = Math.min(size, remainingItems)
+
+  if (
+    page !== expectedPage ||
+    size !== expectedSize ||
+    totalPages !== calculatedTotalPages ||
+    value.items.length > maximumPageItems
+  ) {
+    throw invalidServerResponse()
+  }
+
+  const items: MediaAssetView[] = []
+  const ids = new Set<string>()
+  for (const candidate of value.items) {
+    const asset = normalizeDetailedAsset(candidate, undefined, true)
+    const normalizedId = asset?.id.toLocaleLowerCase()
+    if (
+      asset === null ||
+      normalizedId === undefined ||
+      ids.has(normalizedId) ||
+      (expectedStatus !== undefined && asset.status !== expectedStatus)
+    ) {
+      throw invalidServerResponse()
+    }
+    ids.add(normalizedId)
+    items.push(asset)
+  }
+
+  return { items, page, size, totalItems, totalPages }
+}
+
+function requireUpload(file: File): File {
+  if (
+    typeof File === 'undefined' ||
+    !(file instanceof File) ||
+    file.size <= 0 ||
+    file.name.trim().length === 0 ||
+    !MEDIA_MIME_TYPES.has(file.type as MediaMimeType) ||
+    file.size >
+      (file.type === 'application/pdf' ? PDF_UPLOAD_BYTE_LIMIT : IMAGE_UPLOAD_BYTE_LIMIT)
+  ) {
+    throw new TypeError('media upload file is invalid')
+  }
+  return file
+}
+
+function translationsMatch(
+  actual: readonly MediaTranslationView[],
+  expected: readonly MediaTranslationInput[],
+): boolean {
+  if (actual.length !== expected.length) return false
+  const expectedByLocale = new Map(expected.map((value) => [value.locale, value]))
+  return actual.every((value) => {
+    const target = expectedByLocale.get(value.locale)
+    return (
+      target !== undefined &&
+      value.altText === target.altText &&
+      value.caption === target.caption &&
+      value.credit === target.credit &&
+      value.sourceUrl === target.sourceUrl
+    )
+  })
+}
+
+function normalizeTranslationInput(
+  input: readonly MediaTranslationInput[],
+): MediaTranslationInput[] {
+  if (!Array.isArray(input) || input.length !== 2) {
+    throw new TypeError('both media translations are required')
+  }
+
+  const translations = new Map<MediaTranslationView['locale'], MediaTranslationInput>()
+  for (const candidate of input) {
+    const normalized = normalizeTranslation(candidate)
+    if (normalized === null || translations.has(normalized.locale)) {
+      throw new TypeError('media translations are invalid')
+    }
+    translations.set(normalized.locale, { ...normalized })
+  }
+
+  const zh = translations.get('zh-CN')
+  const en = translations.get('en')
+  if (zh === undefined || en === undefined) {
+    throw new TypeError('both media translations are required')
+  }
+  return [zh, en]
+}
+
+function normalizeTranslationUpdateRequest(
+  request: Readonly<UpdateMediaTranslationsRequest>,
+): { expectedVersion: number; translations: MediaTranslationInput[] } {
+  if (
+    !isRecord(request) ||
+    !hasExactKeys(request, ['expectedVersion', 'translations']) ||
+    !Number.isSafeInteger(request.expectedVersion) ||
+    (request.expectedVersion as number) < 0 ||
+    (request.expectedVersion as number) >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new TypeError('media expectedVersion is invalid')
+  }
+  return {
+    expectedVersion: request.expectedVersion as number,
+    translations: normalizeTranslationInput(
+      request.translations as readonly MediaTranslationInput[],
+    ),
   }
 }
 
@@ -445,7 +680,7 @@ function normalizePage(
   const totalItems = value.totalItems as number
   const totalPages = value.totalPages as number
   const calculatedTotalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / size)
-  const pageIsInRange = totalPages === 0 ? page === 0 : page < totalPages
+  const pageIsInRange = totalPages > 0 && page < totalPages
   const remainingItems = pageIsInRange ? Math.max(0, totalItems - page * size) : 0
   const maximumPageItems = Math.min(size, remainingItems)
 
@@ -453,7 +688,6 @@ function normalizePage(
     page !== expectedPage ||
     size !== expectedSize ||
     totalPages !== calculatedTotalPages ||
-    !pageIsInRange ||
     value.items.length > maximumPageItems
   ) {
     throw invalidServerResponse()
@@ -493,6 +727,19 @@ export function createMediaApi(client: AxiosInstance): MediaApi {
       })
       return normalizePage(response.data, options, previewUrl, page, size)
     },
+    async list(options = {}) {
+      const page = requirePage(options.page)
+      const size = requireSize(options.size)
+      const status = requireStatus(options.status)
+      const response = await client.get<unknown>('/api/admin/media', {
+        params: {
+          page,
+          size,
+          ...(status === undefined ? {} : { status }),
+        },
+      })
+      return normalizeDetailedPage(response.data, page, size, status)
+    },
     async get(id) {
       if (!isMediaId(id)) throw new TypeError('media id must be a UUID')
       const response = await client.get<unknown>(
@@ -501,6 +748,56 @@ export function createMediaApi(client: AxiosInstance): MediaApi {
       const asset = normalizeDetailedAsset(response.data, id)
       if (asset === null) throw invalidServerResponse()
       return asset
+    },
+    async upload(file) {
+      const acceptedFile = requireUpload(file)
+      const form = new FormData()
+      form.append('file', acceptedFile)
+      const response = await client.post<unknown>('/api/admin/media', form, {
+        timeout: MEDIA_UPLOAD_TIMEOUT_MS,
+      })
+      const asset = normalizeDetailedAsset(response.data)
+      if (
+        asset === null ||
+        asset.status !== 'PROCESSING' ||
+        asset.version !== 0 ||
+        asset.byteSize !== acceptedFile.size ||
+        asset.mimeType !== acceptedFile.type ||
+        asset.translations.length !== 0 ||
+        asset.variants.length !== 0
+      ) {
+        throw invalidServerResponse()
+      }
+      return asset
+    },
+    async updateTranslations(id, request) {
+      if (!isMediaId(id)) throw new TypeError('media id must be a UUID')
+      const { expectedVersion, translations } = normalizeTranslationUpdateRequest(request)
+      const response = await client.put<unknown>(
+        `/api/admin/media/${encodeURIComponent(id)}/translations`,
+        { expectedVersion, translations },
+      )
+      const asset = normalizeDetailedAsset(response.data, id)
+      if (
+        asset === null ||
+        asset.version !== expectedVersion + 1 ||
+        !translationsMatch(asset.translations, translations)
+      ) {
+        throw invalidServerResponse()
+      }
+      return asset
+    },
+    async archive(id) {
+      if (!isMediaId(id)) throw new TypeError('media id must be a UUID')
+      const response = await client.delete<unknown>(
+        `/api/admin/media/${encodeURIComponent(id)}`,
+      )
+      if (
+        response.status !== 204 ||
+        !(response.data === undefined || response.data === null || response.data === '')
+      ) {
+        throw invalidServerResponse()
+      }
     },
     previewUrl,
   }
