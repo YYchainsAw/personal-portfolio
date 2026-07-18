@@ -9,6 +9,7 @@ readonly SCRIPT_DIRECTORY
 WORK_DIRECTORY=''
 PUBLIC_CUTOVER=false
 RELOAD_NGINX=false
+PORTFOLIO_API_CONTAINER_ID=''
 
 fail() {
   printf 'Portfolio preflight failed: %s\n' "$1" >&2
@@ -250,7 +251,26 @@ check_release_and_host() {
     fail 'API loopback readiness failed'
 }
 
+resolve_portfolio_api_container() {
+  if [[ -n "$PORTFOLIO_API_CONTAINER_ID" ]]; then
+    printf '%s\n' "$PORTFOLIO_API_CONTAINER_ID"
+    return
+  fi
+  local container="${PORTFOLIO_CONTAINER_NAME:-}"
+  if [[ -z "$container" ]]; then
+    container="$(docker compose \
+      --env-file "$PORTFOLIO_RELEASE_ENV" \
+      -f "$PORTFOLIO_COMPOSE_FILE" \
+      ps -q portfolio-api)" || fail 'running portfolio-api container cannot be resolved'
+  fi
+  [[ "$container" != *[[:space:]]* && -n "$container" ]] ||
+    fail 'running portfolio-api container identity is missing or ambiguous'
+  PORTFOLIO_API_CONTAINER_ID="$container"
+  printf '%s\n' "$PORTFOLIO_API_CONTAINER_ID"
+}
+
 check_local_storage() {
+  require_value PORTFOLIO_LOCAL_VOLUME_NAME
   require_value PORTFOLIO_LOCAL_HOST_ROOT
   require_value PORTFOLIO_LOCAL_VOLUME_ID
   require_true PORTFOLIO_JOBS_WORKER_ENABLED
@@ -259,8 +279,51 @@ check_local_storage() {
 
   PORTFOLIO_LOCAL_HOST_ROOT="$(canonical_existing \
     "$PORTFOLIO_LOCAL_HOST_ROOT" PORTFOLIO_LOCAL_HOST_ROOT)"
+  [[ "$PORTFOLIO_LOCAL_VOLUME_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] ||
+    fail 'PORTFOLIO_LOCAL_VOLUME_NAME is invalid'
   [[ -d "$PORTFOLIO_LOCAL_HOST_ROOT" && -w "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
     fail 'Local storage root is not writable'
+
+  local volume_identity volume_name volume_mountpoint volume_extra
+  volume_identity="$(docker volume inspect \
+    --format '{{.Name}}|{{.Mountpoint}}' \
+    "$PORTFOLIO_LOCAL_VOLUME_NAME")" ||
+    fail 'Local Docker volume cannot be inspected'
+  IFS='|' read -r volume_name volume_mountpoint volume_extra <<<"$volume_identity"
+  [[ "$volume_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" &&
+     -n "$volume_mountpoint" && -z "${volume_extra:-}" ]] ||
+    fail 'Local Docker volume identity is ambiguous or mismatched'
+  volume_mountpoint="$(canonical_existing "$volume_mountpoint" Local-volume-mountpoint)"
+  [[ "$volume_mountpoint" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
+    fail 'Local Docker volume Mountpoint does not match PORTFOLIO_LOCAL_HOST_ROOT'
+
+  local container mount_rows mount_type mount_name mount_source mount_destination mount_rw
+  local mount_extra matching_mounts=0 named_volume_mounts=0
+  container="$(resolve_portfolio_api_container)"
+  mount_rows="$(docker inspect --format \
+    '{{range .Mounts}}{{printf "%s|%s|%s|%s|%t\n" .Type .Name .Source .Destination .RW}}{{end}}' \
+    "$container")" || fail 'running portfolio-api mounts cannot be inspected'
+  while IFS='|' read -r \
+      mount_type mount_name mount_source mount_destination mount_rw mount_extra; do
+    [[ -n "$mount_type" ]] || continue
+    [[ -z "${mount_extra:-}" ]] || fail 'running portfolio-api mount metadata is malformed'
+    if [[ "$mount_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" ]]; then
+      ((named_volume_mounts += 1))
+    fi
+    if [[ "$mount_destination" == '/var/lib/portfolio/media' ]]; then
+      ((matching_mounts += 1))
+      [[ "$mount_type" == volume &&
+         "$mount_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" &&
+         "$mount_rw" == true ]] ||
+        fail 'running durable media mount is not the reviewed read-write named volume'
+      mount_source="$(canonical_existing "$mount_source" running-Local-volume-source)"
+      [[ "$mount_source" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
+        fail 'running durable media source does not match the reviewed volume Mountpoint'
+    fi
+  done <<<"$mount_rows"
+  [[ "$matching_mounts" -eq 1 && "$named_volume_mounts" -eq 1 ]] ||
+    fail 'reviewed Local named volume is missing, duplicated, or mounted at an extra target'
+
   local marker="$PORTFOLIO_LOCAL_HOST_ROOT/.portfolio-volume-id"
   [[ ! -L "$marker" && -f "$marker" ]] ||
     fail 'Local volume identity marker is missing, replaced, or linked'
@@ -275,22 +338,17 @@ check_local_storage() {
   constant_time_equal "$recorded_marker" "$PORTFOLIO_LOCAL_VOLUME_ID" ||
     fail 'Local volume identity does not match the protected value'
 
-  local mount_line mount_target mount_source mount_type mount_options extra
+  local mount_line mount_target mount_source mount_filesystem mount_options extra
   mount_line="$(findmnt -rn -T "$PORTFOLIO_LOCAL_HOST_ROOT" \
     -o TARGET,SOURCE,FSTYPE,OPTIONS)" || fail 'Local storage mount cannot be inspected'
-  read -r mount_target mount_source mount_type mount_options extra <<<"$mount_line"
-  [[ -n "$mount_target" && -n "$mount_source" && -n "$mount_type" &&
+  read -r mount_target mount_source mount_filesystem mount_options extra <<<"$mount_line"
+  [[ -n "$mount_target" && -n "$mount_source" && -n "$mount_filesystem" &&
      -n "$mount_options" && -z "${extra:-}" ]] ||
     fail 'Local storage has an ambiguous mount'
-  mount_target="$(realpath -e -- "$mount_target")"
-  [[ "$mount_target" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
-    fail 'Local storage root is not its own reviewed mount target'
-  local source_targets
-  source_targets="$(findmnt -rn -S "$mount_source" -o TARGET)" ||
-    fail 'Local storage source mounts cannot be inspected'
-  [[ "$(printf '%s\n' "$source_targets" | sed '/^$/d' | wc -l)" -eq 1 &&
-     "$(printf '%s' "$source_targets" | tr -d '\r\n')" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
-    fail 'Local storage source is mounted at an extra or replaced root'
+  [[ "$mount_filesystem" != tmpfs && "$mount_filesystem" != ramfs ]] ||
+    fail 'Local storage is backed by an ephemeral filesystem'
+  has_csv_option "$mount_options" rw ||
+    fail 'Local storage backing filesystem is not read-write'
 
   local free_kib minimum_local_kib="${PORTFOLIO_LOCAL_MIN_FREE_KIB:-1048576}"
   [[ "$minimum_local_kib" =~ ^[1-9][0-9]*$ ]] ||
@@ -452,15 +510,8 @@ check_tmpfs() {
   grep -E 'PORTFOLIO_COS_STAGING_ROOT: /tmp/' "$compose" >/dev/null ||
     fail 'rendered COS scratch is not beneath /tmp'
 
-  local container="${PORTFOLIO_CONTAINER_NAME:-}"
-  if [[ -z "$container" ]]; then
-    container="$(docker compose \
-      --env-file "$PORTFOLIO_RELEASE_ENV" \
-      -f "$PORTFOLIO_COMPOSE_FILE" \
-      ps -q portfolio-api)" || fail 'running portfolio-api container cannot be resolved'
-  fi
-  [[ "$container" != *[[:space:]]* && -n "$container" ]] ||
-    fail 'running portfolio-api container identity is missing or ambiguous'
+  local container
+  container="$(resolve_portfolio_api_container)"
   local options
   options="$(docker inspect --format '{{index .HostConfig.Tmpfs "/tmp"}}' "$container")" ||
     fail 'running /tmp tmpfs cannot be inspected'

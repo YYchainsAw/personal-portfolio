@@ -81,6 +81,8 @@ assert_contains "$REPOSITORY_ROOT/deploy/nginx/portfolio-http.conf" \
   'limit_req_zone $binary_remote_addr zone=portfolio_events:10m rate=60r/m;'
 assert_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
   'PORTFOLIO_LOCAL_HOST_ROOT=/var/lib/docker/volumes/portfolio-local-media/_data'
+assert_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
+  'PORTFOLIO_LOCAL_VOLUME_NAME=portfolio-local-media'
 assert_not_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
   '/var/lib/docker/volumes/portfolio_local-media/_data'
 
@@ -227,8 +229,24 @@ case "${1:-}:${2:-}" in
       printf '%s\n' 'portfolio-api-resolved'
     fi
     ;;
+  volume:inspect)
+    printf '%s|%s\n' \
+      "${PORTFOLIO_TEST_VOLUME_NAME:-portfolio-local-media}" \
+      "${PORTFOLIO_TEST_VOLUME_MOUNTPOINT:-$PORTFOLIO_TEST_LOCAL_ROOT}"
+    ;;
   inspect:*)
-    if [[ "$*" == *'HostConfig.Tmpfs'* ]]; then
+    if [[ "$*" == *'range .Mounts'* ]]; then
+      printf '%s|%s|%s|%s|%s\n' \
+        "${PORTFOLIO_TEST_MEDIA_MOUNT_TYPE:-volume}" \
+        "${PORTFOLIO_TEST_MEDIA_MOUNT_NAME:-portfolio-local-media}" \
+        "${PORTFOLIO_TEST_MEDIA_MOUNT_SOURCE:-$PORTFOLIO_TEST_LOCAL_ROOT}" \
+        "${PORTFOLIO_TEST_MEDIA_MOUNT_DESTINATION:-/var/lib/portfolio/media}" \
+        "${PORTFOLIO_TEST_MEDIA_MOUNT_RW:-true}"
+      if [[ -n "${PORTFOLIO_TEST_EXTRA_VOLUME_DESTINATION:-}" ]]; then
+        printf 'volume|portfolio-local-media|%s|%s|true\n' \
+          "$PORTFOLIO_TEST_LOCAL_ROOT" "$PORTFOLIO_TEST_EXTRA_VOLUME_DESTINATION"
+      fi
+    elif [[ "$*" == *'HostConfig.Tmpfs'* ]]; then
       printf '%s\n' "${PORTFOLIO_TEST_TMPFS_OPTIONS:-rw,noexec,nosuid,nodev,size=134217728,mode=1777}"
     else
       printf '%s\n' 'JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/tmp'
@@ -330,6 +348,7 @@ base_preflight_environment=(
   PORTFOLIO_DEPLOY_GROUP=root
   PORTFOLIO_ROOT="$portfolio"
   PORTFOLIO_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb
+  PORTFOLIO_LOCAL_VOLUME_NAME=portfolio-local-media
   PORTFOLIO_LOCAL_HOST_ROOT="$fixture/local-media"
   PORTFOLIO_LOCAL_VOLUME_ID=volume-contract-secret
   PORTFOLIO_JOBS_WORKER_ENABLED=true
@@ -418,6 +437,36 @@ expect_failure \
     bash "$PREFLIGHT"
 assert_not_contains "$WORK_DIRECTORY/failure-volume-marker.log" 'do-not-print-this-value'
 assert_not_contains "$WORK_DIRECTORY/failure-volume-marker.log" 'volume-contract-secret'
+
+expect_failure \
+  volume-mountpoint \
+  'Local Docker volume Mountpoint does not match PORTFOLIO_LOCAL_HOST_ROOT' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_VOLUME_MOUNTPOINT="$fixture/tmp" bash "$PREFLIGHT"
+
+expect_failure \
+  volume-bind \
+  'running durable media mount is not the reviewed read-write named volume' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_MEDIA_MOUNT_TYPE=bind bash "$PREFLIGHT"
+
+expect_failure \
+  volume-readonly \
+  'running durable media mount is not the reviewed read-write named volume' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_MEDIA_MOUNT_RW=false bash "$PREFLIGHT"
+
+expect_failure \
+  volume-wrong-destination \
+  'reviewed Local named volume is missing, duplicated, or mounted at an extra target' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_MEDIA_MOUNT_DESTINATION=/var/lib/portfolio/wrong bash "$PREFLIGHT"
+
+expect_failure \
+  volume-extra-target \
+  'reviewed Local named volume is missing, duplicated, or mounted at an extra target' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_EXTRA_VOLUME_DESTINATION=/tmp/duplicate-media bash "$PREFLIGHT"
 
 printf 'bounded-entry\n' >"$fixture/local-media/staging/entry"
 expect_failure \
