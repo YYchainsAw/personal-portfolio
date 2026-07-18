@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly Portfolio encrypted backup schedule
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Hong_Kong
+RandomizedDelaySec=15m
+Persistent=true
+AccuracySec=1m
+Unit=portfolio-backup.service
+
+[Install]
+WantedBy=timers.target
