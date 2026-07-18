@@ -10,6 +10,8 @@ portfolio:
     dedupe-secret: ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=
     owner-email: owner@example.invalid
     mail-id-domain: yychainsaw.xyz
+  analytics:
+    hmac-secret: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
   jobs:
     worker-enabled: false
   storage:

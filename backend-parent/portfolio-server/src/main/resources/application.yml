@@ -96,6 +96,8 @@ portfolio:
     dedupe-secret: ${PORTFOLIO_CONTACT_DEDUPE_SECRET:}
     owner-email: ${PORTFOLIO_OWNER_EMAIL:}
     mail-id-domain: ${PORTFOLIO_MAIL_ID_DOMAIN:yychainsaw.xyz}
+  analytics:
+    hmac-secret: ${PORTFOLIO_ANALYTICS_HMAC_SECRET:}
   email:
     enabled: ${PORTFOLIO_EMAIL_ENABLED:false}
     from: ${PORTFOLIO_EMAIL_FROM:}

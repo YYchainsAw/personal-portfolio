@@ -605,19 +605,30 @@ git commit -m "feat(contact): add inbox and retention controls"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsRules.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsEventDeduplicator.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/config/AnalyticsProperties.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/config/AnalyticsProductionConfigurationValidator.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/persistence/AnalyticsEventRecord.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/persistence/AnalyticsEventMapper.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/AnalyticsRateLimitSubjectHasher.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsBodyReader.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsController.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsBatchRequest.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsEventRequest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsCollectorTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsDeduplicationIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsPrivacyServiceTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsRulesTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/config/AnalyticsPropertiesTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/AnalyticsRateLimitSubjectHasherTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsBodyReaderTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsControllerTest.java`
+- Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
+- Modify: `backend-parent/portfolio-server/src/test/resources/application-test.yml`
 
 **Interfaces:**
 - Consumes: plan-01 CSRF enforcement, `RateLimiter#consume("public-events", subject)`, `CurrentPublicationQuery#isCurrentPublishedProject(UUID)`, request headers in memory, and a base64 HMAC secret.
 - Produces: `POST /api/public/events`, returning `204 No Content` for accepted or consent-suppressed batches.
 
-- [ ] **Step 1: Write failing privacy and allowlist tests**
+- [x] **Step 1: Write failing privacy and allowlist tests**
 
 ```java
 @Test
@@ -642,7 +653,7 @@ void rejectsUnpublishedProjectAndUnknownEventProperties() {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AnalyticsCollectorTest,AnalyticsDeduplicationIntegrationTest,PublicAnalyticsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -650,7 +661,7 @@ void rejectsUnpublishedProjectAndUnknownEventProperties() {
 
 Expected: FAIL because collection has not been implemented.
 
-- [ ] **Step 3: Define a bounded batch request**
+- [x] **Step 3: Define a bounded batch request**
 
 ```java
 public record PublicAnalyticsBatchRequest(
@@ -672,7 +683,7 @@ public record PublicAnalyticsEventRequest(
 
 Reject unknown JSON fields and all extra event properties. The controller deliberately does not run eager bean validation on this outer record: it checks `DNT` and `analyticsConsent` first and returns `204`, then the collector validates nonblank identifiers, a nonempty batch, every nested field, and the 22–64 character identifier bounds for consented requests. This ordering lets a no-consent request contain no identifier. Referrer is the only accepted URL-shaped field and is reduced to a hostname before persistence; do not accept arbitrary labels, page query strings, user text, revenue, screen dimensions, or browser metadata.
 
-- [ ] **Step 4: Add versioned rules and normalize fields**
+- [x] **Step 4: Add versioned rules and normalize fields**
 
 ```yaml
 version: analytics-rules-v1
@@ -695,11 +706,29 @@ crawlerTokens:
   - crawler
   - spider
   - preview
+referrerDomains:
+  - baidu.com
+  - bing.com
+  - bilibili.com
+  - csdn.net
+  - discord.com
+  - duckduckgo.com
+  - gitee.com
+  - github.com
+  - google.com
+  - juejin.cn
+  - linkedin.com
+  - reddit.com
+  - t.co
+  - x.com
+  - youtube.com
+  - zhihu.com
 ```
 
 Normalize referrer to lowercase ASCII hostname only, map empty/same-site referrers to `(direct)`, classify the in-memory User-Agent to `DESKTOP`, `MOBILE`, `TABLET`, or `OTHER`, and discard known crawlers before persistence. Page keys must come from the file; project events require a currently published project ID.
+Reduce allowlisted external subdomains to their configured root domain and map every other valid external hostname to `(none)`, so attacker-controlled subdomains cannot become permanent analytics dimensions.
 
-- [ ] **Step 5: Derive daily privacy keys**
+- [x] **Step 5: Derive daily privacy keys**
 
 ```java
 LocalDate siteDate = receivedAt.atZone(ZoneId.of("Asia/Hong_Kong")).toLocalDate();
@@ -709,19 +738,21 @@ String sessionDayKey = hex(hmac(secret, siteDate + "\nsession\n" + request.sessi
 
 Validate browser IDs as base64url-encoded 128–256 bit random values before HMAC. The raw IDs exist only in method-local values and are never logged. Implement `ContactProperties` and `AnalyticsProperties` as final classes with redacted `toString()` methods; do not use record/Lombok string generation for HMAC secrets or the owner email. Production startup validates decoded secret entropy is at least 256 bits.
 
-- [ ] **Step 6: Enforce exact ten-second duplicate suppression under concurrency**
+- [x] **Step 6: Enforce exact ten-second duplicate suppression under concurrency**
 
 For each normalized `(sessionDayKey,eventType,pageKey,projectId)` tuple, acquire a PostgreSQL transaction advisory lock derived from a keyed 64-bit hash. Then query the newest row for the tuple and skip insertion when `received_at >= currentReceivedAt - interval '10 seconds'`. Keep the lock and query in the same short transaction. `client_event_id` also prevents network retries from inserting twice.
 
 The integration test launches two transactions for the same tuple and proves that only one event persists. Add a boundary test at 9.999 seconds (one row) and 10.001 seconds (two rows).
 
-- [ ] **Step 7: Implement endpoint privacy behavior and rate limit**
+- [x] **Step 7: Implement endpoint privacy behavior and rate limit**
 
 If `analyticsConsent` is false, return `204` without validating identifiers or persisting. Otherwise call `rateLimiter.consume("public-events", hashedSubject)`, return `429` plus `Retry-After` when denied, ignore known crawlers, accept at most 20 events/32 KiB, use server receipt time for day and dedupe decisions, and return `204`. `DNT` behavior remains a browser obligation in plan 05; if a request nevertheless carries `DNT: 1`, also return `204` without persistence as defense in depth.
 
 Controller tests send CSRF for all consent/no-consent/DNT application-path cases and separately prove that a missing/invalid token returns `403 CSRF_INVALID` with zero rows. The no-consent and DNT short-circuits occur after the security filter but before identifier validation or rate-limit consumption. For a consented request, the injected limiter fake records exactly `consume("public-events", hashedSubject)` and never receives a raw IP or any other policy name.
 
-- [ ] **Step 8: Run tests and commit**
+Do not expose this route in production until Task 6 aggregation and 30-day raw-event retention are enabled. The production reverse proxy must also disable access logging for `/api/public/events` or use a dedicated format that omits client IP, User-Agent, Referrer, cookies, and query strings.
+
+- [x] **Step 8: Run tests and commit**
 
 Run the Step 2 command.
 
