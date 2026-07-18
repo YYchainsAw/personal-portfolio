@@ -6,12 +6,12 @@
 
 **Architecture:** Create a standalone `admin-web/` Vite application served from `/admin/`. Route components consume typed domain clients built on one same-origin Axios instance; server session state remains authoritative, all mutations carry CSRF, and versioned editors use one reusable autosave/conflict state machine. Editing UI works only against workspace DTOs, while preview/publish/history use the publishing API and never synthesize public snapshots in the browser.
 
-**Tech Stack:** Node.js 22.18; Vue 3.5.31; Vue Router 4.6.4; Axios 1.15.1; qrcode 1.5.4; Tailwind CSS 4.2.2; Vite 8.0.3; TypeScript 6.0.3; Vitest; Vue Test Utils; Playwright.
+**Tech Stack:** Node.js 22.18; Vue 3.5.31; Vue Router 4.6.4; Axios 1.18.1; qrcode 1.5.4; Tailwind CSS 4.2.2; Vite 8.1.5; TypeScript 6.0.3; Vitest 4.1.10; Vue Test Utils; Playwright.
 
 ## Global Constraints
 
 - The administrator application is mounted at `/admin`; there is one administrator, no public registration, no multi-tenant support, no RBAC matrix, and no approval workflow.
-- Pin Node.js to `22.18.x`, Vue to `3.5.31`, Vue Router to `4.6.4`, Axios to `1.15.1`, qrcode to `1.5.4`, Tailwind CSS to `4.2.2`, Vite to `8.0.3`, and TypeScript to `6.0.3`.
+- Pin Node.js to `22.18.x`, Vue to `3.5.31`, Vue Router to `4.6.4`, Axios to `1.18.1`, qrcode to `1.5.4`, Tailwind CSS to `4.2.2`, Vite to `8.1.5`, Vitest to `4.1.10`, and TypeScript to `6.0.3`.
 - The application and `/api/admin/*` are same-origin. Authentication uses a Spring Security server session in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie; never store a bearer token, password, TOTP code, recovery code, or session identifier in Web Storage.
 - The login sequence is username/password followed by TOTP or a recovery code. All modifying requests use the `XSRF-TOKEN` cookie and `X-XSRF-TOKEN` header. A `401 AUTHENTICATION_REQUIRED` means the session is absent and returns to login, while `401 AUTHENTICATION_FAILED` from login or security reauthentication remains a local form error; `403` means CSRF/access rejection, `409` means state conflict/expired enrollment, `422` means validation, and `429` means a bounded retry delay.
 - Supported locales are exactly `zh-CN` and `en`. Both translations remain visible in completion status and all publish-required fields must be complete before preview or publication succeeds.
@@ -206,7 +206,7 @@ Task 11 consumes the complete plan-06 message and analytics contracts: cursor li
 - Consumes: no application code; local development API target `http://127.0.0.1:18080`.
 - Produces: `npm --prefix admin-web run dev`, `test:unit`, `type-check`, and `build`; Vite base `/admin/`; alias `@ -> admin-web/src`.
 
-- [ ] **Step 1: Add pinned metadata, compiler configuration, and the first failing mount test**
+- [x] **Step 1: Add pinned metadata, compiler configuration, and the first failing mount test**
 
 Create `admin-web/package.json` exactly as follows, then create the listed TypeScript configs with `strict`, `noUncheckedIndexedAccess`, DOM libraries, and `@/* -> ./src/*`:
 
@@ -227,7 +227,7 @@ Create `admin-web/package.json` exactly as follows, then create the listed TypeS
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "axios": "1.15.1",
+    "axios": "1.18.1",
     "qrcode": "1.5.4",
     "vue": "3.5.31",
     "vue-router": "4.6.4"
@@ -243,8 +243,8 @@ Create `admin-web/package.json` exactly as follows, then create the listed TypeS
     "jsdom": "28.0.0",
     "tailwindcss": "4.2.2",
     "typescript": "6.0.3",
-    "vite": "8.0.3",
-    "vitest": "4.0.18",
+    "vite": "8.1.5",
+    "vitest": "4.1.10",
     "vue-tsc": "3.3.7"
   }
 }
@@ -265,7 +265,7 @@ describe('App', () => {
 })
 ```
 
-- [ ] **Step 2: Install dependencies and verify the test fails for the missing application component**
+- [x] **Step 2: Install dependencies and verify the test fails for the missing application component**
 
 Run: `npm --prefix admin-web install`
 
@@ -275,21 +275,26 @@ Run: `npm --prefix admin-web run test:unit -- src/App.spec.ts`
 
 Expected: FAIL because `admin-web/src/App.vue` does not exist.
 
-- [ ] **Step 3: Add the minimal app, Tailwind entry, and Vite configuration**
+- [x] **Step 3: Add the minimal app, Tailwind entry, and Vite configuration**
 
 ```ts
 // admin-web/vite.config.ts
 import { fileURLToPath, URL } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   base: '/admin/',
   plugins: [vue(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   server: { proxy: { '/api': 'http://127.0.0.1:18080' } },
-  test: { environment: 'jsdom', restoreMocks: true, setupFiles: [] },
+  test: {
+    environment: 'jsdom',
+    exclude: [...configDefaults.exclude, 'tests/e2e/**'],
+    restoreMocks: true,
+    setupFiles: [],
+  },
 })
 ```
 
@@ -327,9 +332,9 @@ import router from './router'
 createApp(App).use(router).mount('#app')
 ```
 
-Use a temporary `admin-web/src/router/index.ts` exporting an empty `createRouter({ history: createWebHistory('/admin/'), routes: [] })`; Task 3 replaces it with the guarded graph.
+Use a temporary `admin-web/src/router/index.ts` exporting an empty `createRouter({ history: createWebHistory('/'), routes: [] })`; Task 3 replaces it with the guarded graph. The browser-history base remains `/` because the route records themselves own the `/admin` prefix; Vite's separate `/admin/` base controls asset URLs.
 
-- [ ] **Step 4: Verify mount, compiler, and production build**
+- [x] **Step 4: Verify mount, compiler, and production build**
 
 Run: `npm --prefix admin-web run test:unit -- src/App.spec.ts`
 
@@ -339,7 +344,9 @@ Run: `npm --prefix admin-web run type-check && npm --prefix admin-web run build`
 
 Expected: both commands exit 0 and `admin-web/dist/index.html` references hashed assets below `/admin/assets/`.
 
-- [ ] **Step 5: Commit the isolated scaffold**
+Verification (2026-07-18): the missing-`App.vue` test failed first as required. Under the exact `node:22.18.0-bookworm-slim` image, the final mount test passed, type-check and production build exited 0, the built HTML referenced hashed `/admin/assets/` JavaScript and CSS, and both full and production npm audits reported zero vulnerabilities. Axios, Vite, and Vitest were refreshed to the compatible exact security pins recorded above after npm identified advisories in the originally drafted versions.
+
+- [x] **Step 5: Commit the isolated scaffold**
 
 ```bash
 git add admin-web/package.json admin-web/package-lock.json admin-web/index.html admin-web/vite.config.ts admin-web/tsconfig*.json admin-web/env.d.ts admin-web/src
@@ -359,7 +366,7 @@ git commit -m "build(admin): scaffold pinned Vue admin app"
 - Test: `admin-web/src/stores/session.spec.ts`
 
 **Interfaces:**
-- Consumes: Axios 1.15.1 and the auth endpoints in Cross-Task Interfaces.
+- Consumes: Axios 1.18.1 and the auth endpoints in Cross-Task Interfaces.
 - Produces: `http`, `ApiProblem`, `authApi`, and `createSessionStore(authPort)`; no token persistence.
 
 - [ ] **Step 1: Write failing tests for CSRF configuration, problem conversion, and two-stage state**
@@ -550,7 +557,7 @@ import { createAdminRouter } from './index'
 describe('admin route guard', () => {
   it('redirects an anonymous dashboard request to login', async () => {
     const session = { state: { phase: 'UNKNOWN' }, bootstrap: vi.fn().mockImplementation(function () { this.state.phase = 'ANONYMOUS'; return 'ANONYMOUS' }) }
-    const router = createAdminRouter(session as never, createMemoryHistory('/admin/'))
+    const router = createAdminRouter(session as never, createMemoryHistory('/'))
     await router.push('/admin/dashboard')
     await router.isReady()
     expect(router.currentRoute.value.name).toBe('login')
@@ -632,7 +639,7 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
   return router
 }
 
-export default createAdminRouter(sessionStore, createWebHistory('/admin/'))
+export default createAdminRouter(sessionStore, createWebHistory('/'))
 ```
 
 `FeatureShellView.vue` is a small accessible compile-time route destination with required `title` and optional route-ID props; it exists only so Task 3 type-checks before later slices create their real views. Task 4 replaces the parent `RouteOutlet` and temporary dashboard destination; Tasks 6, 7, 9, and 10 replace every remaining named temporary destination when their files exist.

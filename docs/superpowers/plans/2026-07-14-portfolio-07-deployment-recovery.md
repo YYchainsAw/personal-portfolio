@@ -6,7 +6,7 @@
 
 **Architecture:** Docker builds the public frontend, admin frontend, Spring Boot image, and portable PostgreSQL image archive from one Git commit and one reviewed image lock. Content-addressed public assets are copied into a shared host directory while admin releases remain immutable and switch by symlink. Production Compose runs only `portfolio-api` and PostgreSQL; BaoTa's host Nginx owns public TLS and reverse proxying. A host-side snapshot keeper holds the plan-02 PostgreSQL advisory barrier, exports one MVCC snapshot to the database dump and media-manifest readers, copies a closed set of actual media bytes, and publishes immutable encrypted backup sets through separate uploader/verifier/pruner credentials before recording redacted outcomes.
 
-**Tech Stack:** Ubuntu 22.04, Docker Engine/Compose 26, BaoTa Nginx, Java 17, Spring Boot 3.5.7, Node.js 22.18, admin Vite 8.0.3, existing public Vite 8.1.4, PostgreSQL 17, Bash, systemd, age, rclone, curl, OpenSSL.
+**Tech Stack:** Ubuntu 22.04, Docker Engine/Compose 26, BaoTa Nginx, Java 17, Spring Boot 3.5.7, Node.js 22.18, admin Vite 8.1.5, existing public Vite 8.1.4, PostgreSQL 17, Bash, systemd, age, rclone, curl, OpenSSL.
 
 ## Global Constraints
 

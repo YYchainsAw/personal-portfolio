@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  color: #17202c;
+  background: #f4f6fa;
+  font-family: Inter, "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid #315efb;
+  outline-offset: 2px;
+}
