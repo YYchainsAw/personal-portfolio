@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title th:text="${site.seo.title}">Portfolio</title>
   <meta name="description" th:content="${site.seo.description}" content="Portfolio">
   <link rel="canonical" th:href="${canonical}" href="https://yychainsaw.xyz/zh-CN">
@@ -14,9 +15,10 @@
   <meta property="og:url" th:content="${canonical}" content="https://yychainsaw.xyz/zh-CN">
   <meta property="og:image" th:if="${ogImage != null}" th:content="${ogImage}">
   <link th:each="css : ${assets.css}" rel="stylesheet" th:href="${css}">
-  <script type="application/ld+json" th:utext="${structuredData}"></script>
+  <script type="application/ld+json" data-portfolio-seo th:utext="${structuredData}"></script>
 </head>
 <body>
+  <div id="app">
   <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
 
   <header>
@@ -28,11 +30,10 @@
     </nav>
   </header>
 
-  <main id="app">
-    <div id="main-content" tabindex="-1">
+    <main id="main-content" tabindex="-1">
       <section aria-labelledby="hero-title">
         <p th:text="${site.hero.eyebrow}">Portfolio</p>
-        <h1 id="hero-title" th:text="${site.hero.headline}">Portfolio</h1>
+        <h1 id="hero-title" th:text="${site.hero.displayName}">Portfolio</h1>
         <p th:text="${site.hero.introduction}">Introduction</p>
 
         <figure th:if="${site.hero.media != null}">
@@ -43,28 +44,17 @@
                th:height="${site.hero.media.height}"
                fetchpriority="high">
           <figcaption th:if="${!#strings.isEmpty(site.hero.media.caption)
-              or !#strings.isEmpty(site.hero.credit)
-              or !#strings.isEmpty(site.hero.media.credit)}">
+              or !#strings.isEmpty(site.hero.credit)}">
             <span th:if="${!#strings.isEmpty(site.hero.media.caption)}"
                   th:text="${site.hero.media.caption}"></span>
             <a th:if="${!#strings.isEmpty(site.hero.credit)
-                    and !#strings.isEmpty(site.hero.sourceUrl)}"
+                    and #strings.startsWith(site.hero.sourceUrl, 'https://')}"
                th:href="${site.hero.sourceUrl}"
                th:text="${site.hero.credit}"
                target="_blank" rel="noopener noreferrer"></a>
             <span th:if="${!#strings.isEmpty(site.hero.credit)
-                    and #strings.isEmpty(site.hero.sourceUrl)}"
+                    and !#strings.startsWith(site.hero.sourceUrl, 'https://')}"
                   th:text="${site.hero.credit}"></span>
-            <a th:if="${#strings.isEmpty(site.hero.credit)
-                    and !#strings.isEmpty(site.hero.media.credit)
-                    and !#strings.isEmpty(site.hero.media.sourceUrl)}"
-               th:href="${site.hero.media.sourceUrl}"
-               th:text="${site.hero.media.credit}"
-               target="_blank" rel="noopener noreferrer"></a>
-            <span th:if="${#strings.isEmpty(site.hero.credit)
-                    and !#strings.isEmpty(site.hero.media.credit)
-                    and #strings.isEmpty(site.hero.media.sourceUrl)}"
-                  th:text="${site.hero.media.credit}"></span>
           </figcaption>
         </figure>
       </section>
@@ -111,8 +101,8 @@
           </li>
         </ul>
       </section>
-    </div>
-  </main>
+    </main>
+  </div>
 
   <template id="__PORTFOLIO_DATA__" th:utext="${initialJson}"></template>
   <script type="module" th:src="${assets.entryJs}"></script>

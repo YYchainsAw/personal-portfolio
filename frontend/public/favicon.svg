@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Yi Jiaxuan portfolio</title>
+  <rect width="64" height="64" rx="18" fill="#eef2ff"/>
+  <path d="M16 16l16 17 16-17M32 33v16" fill="none" stroke="#4057d6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="49" cy="48" r="4" fill="#ff875f"/>
+</svg>

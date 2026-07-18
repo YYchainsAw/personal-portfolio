@@ -1,0 +1,26 @@
+.content-block { width: min(100% - 2rem, 900px); margin: 2rem auto; }
+.content-block--narrow { width: min(100% - 2rem, 680px); }
+.content-block--standard { width: min(100% - 2rem, 900px); }
+.content-block--wide { width: min(100% - 2rem, 1100px); }
+.content-block--full { width: min(100% - 2rem, 1400px); }
+.content-block--left { text-align: left; }
+.content-block--center { text-align: center; }
+.content-block--right { text-align: right; }
+.content-block--soft, .content-block--strong { padding: clamp(1rem, 3vw, 2rem); border-radius: 1.25rem; }
+.content-block--soft { border: 1px solid var(--line); background: var(--accent-soft); }
+.content-block--strong { color: #fff; background: #182134; }
+.content-block img { width: 100%; height: auto; border-radius: 1rem; }
+.content-block figcaption, [data-media-credit] { display: block; margin-top: .55rem; color: var(--muted); font-size: .82rem; }
+.content-block--strong [data-media-credit], .content-block--strong figcaption { color: #dbe5f5; }
+.block-gallery { display: grid; grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr)); gap: 1rem; }
+.block-video iframe { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 1rem; }
+.block-code pre { overflow: auto; padding: 1.25rem; border-radius: 1rem; color: #edf4ff; background: #182134; }
+.code-lines { display: block; counter-reset: code-line; }
+.code-lines > span { display: block; min-height: 1.35em; counter-increment: code-line; }
+.code-lines > span::before { display: inline-block; width: 2.5rem; margin-right: 1rem; color: #aebbd0; text-align: right; content: attr(data-line); user-select: none; }
+.block-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 1rem; padding: 0; list-style: none; }
+.block-metrics li { padding: 1.25rem; border: 1px solid var(--line); border-radius: 1rem; background: #fff; }
+.block-metrics strong, .block-metrics span, .block-action strong, .block-action span { display: block; }
+.block-action { display: block; padding: 1.25rem; border: 1px solid var(--line); border-radius: 1rem; color: inherit; background: #fff; }
+.content-block--strong .block-action, .content-block--strong .block-metrics li { color: #182134; }
+@media (max-width: 680px) { .block-gallery { grid-template-columns: 1fr; } }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue'
+import { RouterLink } from 'vue-router'
 import {
   PhArrowDown as ArrowDown,
   PhArrowUpRight as ArrowUpRight,
@@ -9,69 +10,73 @@ import {
   PhX as X,
 } from '@phosphor-icons/vue'
 import { useLocale, type Locale } from '@/composables/useLocale'
-import {
-  getCopy,
-  heroAsset,
-  identity,
-  projectAssets,
-  type ProjectAsset,
-  type ProjectCopy,
-} from '@/data/portfolio'
+import ResponsiveMedia from '@/components/media/ResponsiveMedia.vue'
+import ContactForm from '@/components/contact/ContactForm.vue'
+import type { HomeViewModel } from '@/mappers/homeMapper'
+import { trackAnalytics } from '@/composables/useAnalyticsConsent'
+import type { AnalyticsPageKey } from '@/types/interactions'
 
-type ProjectView = ProjectCopy & { asset: ProjectAsset }
-
-const { locale, setLocale } = useLocale()
-const copy = computed(() => getCopy(locale.value))
-const assetById = new Map(projectAssets.map((asset) => [asset.id, asset]))
-const projects = computed<ProjectView[]>(() =>
-  copy.value.projects.flatMap((project) => {
-    const asset = assetById.get(project.id)
-    return asset ? [{ ...project, asset }] : []
-  }),
-)
+const props = defineProps<{ model: HomeViewModel }>()
+const { setLocale } = useLocale()
+const locale = computed(() => props.model.locale)
+const identity = computed(() => props.model.identity)
+const heroAsset = computed(() => props.model.heroAsset)
+const projects = computed(() => props.model.projects)
+const copy = computed(() => {
+  const navigation = Object.fromEntries(props.model.copy.navigation.map((item) => [item.target.replace(/^#/, ''), item.label]))
+  return {
+    a11y: props.model.copy.accessibility,
+    nav: {
+      about: navigation.about || props.model.copy.about.label,
+      work: navigation.work || props.model.copy.work.label,
+      roadmap: navigation.roadmap || props.model.copy.roadmap.label,
+      contact: navigation.contact || props.model.copy.contact.label,
+    },
+    hero: props.model.copy.hero,
+    about: props.model.copy.about,
+    work: props.model.copy.work,
+    roadmap: props.model.copy.roadmap,
+    contact: props.model.copy.contact,
+  }
+})
 
 const menuOpen = ref(false)
 const menuToggle = ref<HTMLButtonElement | null>(null)
 const mobileMenu = ref<HTMLElement | null>(null)
 const heroVisual = ref<HTMLElement | null>(null)
 const year = new Date().getFullYear()
-const hasRealEmail = computed(() => !identity.email.endsWith('@example.com'))
+const normalizeSafeEmail = (raw: string) => {
+  const value = raw.trim()
+  if (value.length > 254 || !/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}$/i.test(value)) return null
+  if (/@(?:example\.(?:com|org|net)|.+\.(?:example|invalid|test))$/i.test(value)) return null
+  return value
+}
+const contactEmail = computed(() => props.model.contact.email.trim())
+const safeContactEmail = computed(() => normalizeSafeEmail(contactEmail.value))
+const deletionEmail = computed(() => safeContactEmail.value ?? normalizeSafeEmail(identity.value.email) ?? '')
+const hasRealEmail = computed(() => safeContactEmail.value !== null)
 
-let revealObserver: IntersectionObserver | undefined
 let pointerFrame = 0
 let menuFocusTimer: ReturnType<typeof setTimeout> | undefined
+let analyticsObserver: IntersectionObserver | null = null
+const viewedSections = new Set<AnalyticsPageKey>()
 
 const mailto = computed(() => {
   const subject =
     locale.value === 'zh-CN' ? '作品集联系 / 游戏开发交流' : 'Portfolio enquiry / Game development'
   const body = locale.value === 'zh-CN' ? '你好，嘉轩：' : 'Hello Jiaxuan,'
-  return `mailto:${identity.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+  return safeContactEmail.value
+    ? `mailto:${safeContactEmail.value}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    : undefined
 })
 
 const heroVisualStyle = computed(
-  () => ({ '--hero-position': heroAsset.objectPosition }) as CSSProperties,
+  () => ({ '--hero-position': props.model.copy.hero.objectPosition }) as CSSProperties,
 )
 
 const setLanguage = (nextLocale: Locale) => {
   setLocale(nextLocale)
 }
-
-const ensureMeta = (selector: string, attribute: string, value: string) => {
-  const element = document.querySelector<HTMLMetaElement>(selector)
-  element?.setAttribute(attribute, value)
-}
-
-watch(
-  copy,
-  (currentCopy) => {
-    if (typeof document === 'undefined') return
-    document.title = currentCopy.seo.title
-    ensureMeta('meta[name="description"]', 'content', currentCopy.seo.description)
-    ensureMeta('meta[property="og:title"]', 'content', currentCopy.seo.title)
-    ensureMeta('meta[property="og:description"]', 'content', currentCopy.seo.description)
-  },
-  { immediate: true },
-)
 
 const moveHeroVisual = (event: PointerEvent) => {
   if (!heroVisual.value || event.pointerType === 'touch') return
@@ -146,27 +151,38 @@ watch(menuOpen, async (isOpen) => {
   }
 })
 
-onMounted(() => {
-  revealObserver = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return
-        entry.target.classList.add('is-visible')
-        revealObserver?.unobserve(entry.target)
-      })
-    },
-    { rootMargin: '0px 0px -7% 0px', threshold: 0.08 },
-  )
+function installSectionAnalytics() {
+  analyticsObserver?.disconnect()
+  analyticsObserver = null
+  if (!('IntersectionObserver' in window)) return
+  analyticsObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const pageKey = (entry.target as HTMLElement).dataset.analyticsSection as AnalyticsPageKey
+      if (viewedSections.has(pageKey)) continue
+      viewedSections.add(pageKey)
+      trackAnalytics({ type: 'PAGE_VIEW', pageKey, projectId: null, locale: locale.value, referrer: document.referrer || null })
+    }
+  }, { threshold: 0.35 })
+  document.querySelectorAll<HTMLElement>('[data-analytics-section]').forEach((node) => analyticsObserver?.observe(node))
+}
 
-  document.querySelectorAll('[data-reveal]').forEach((element) => revealObserver?.observe(element))
+watch(locale, async () => {
+  viewedSections.clear()
+  await nextTick()
+  installSectionAnalytics()
+})
+
+onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  installSectionAnalytics()
 })
 
 onBeforeUnmount(() => {
-  revealObserver?.disconnect()
   cancelAnimationFrame(pointerFrame)
   if (menuFocusTimer) clearTimeout(menuFocusTimer)
   window.removeEventListener('keydown', handleKeydown)
+  analyticsObserver?.disconnect()
   document.body.style.overflow = ''
 })
 </script>
@@ -176,8 +192,8 @@ onBeforeUnmount(() => {
     <a class="brand" href="#top" :aria-label="copy.a11y.backToTop">
       <span class="brand__mark">{{ identity.monogram }}</span>
       <span class="brand__name">
-        <strong>{{ identity.nameZh }}</strong>
-        <small>{{ identity.nameEn }}</small>
+        <strong>{{ identity.displayName }}</strong>
+        <small>{{ identity.secondaryName }}</small>
       </span>
     </a>
 
@@ -290,69 +306,76 @@ onBeforeUnmount(() => {
     </div>
   </Transition>
 
-  <main id="main-content">
-    <section id="top" class="hero" aria-labelledby="hero-title">
+  <main id="main-content" tabindex="-1">
+    <section id="top" class="hero" :class="{ 'hero--without-media': !heroAsset }" aria-labelledby="hero-title">
       <div class="hero__copy">
-        <p class="eyebrow" data-reveal><span aria-hidden="true"></span>{{ copy.hero.eyebrow }}</p>
-        <div class="hero__identity" data-reveal>
+        <p class="eyebrow" v-reveal><span aria-hidden="true"></span>{{ copy.hero.eyebrow }}</p>
+        <div class="hero__identity" v-reveal>
           <p>{{ copy.hero.secondaryName }}</p>
           <h1 id="hero-title">{{ copy.hero.displayName }}</h1>
         </div>
-        <p class="hero__role" data-reveal>{{ copy.hero.role }}</p>
-        <h2 data-reveal>{{ copy.hero.headline }}</h2>
-        <p class="hero__intro" data-reveal>{{ copy.hero.introduction }}</p>
-        <div class="hero__actions" data-reveal>
+        <p class="hero__role" v-reveal>{{ copy.hero.role }}</p>
+        <h2 v-reveal>{{ copy.hero.headline }}</h2>
+        <p class="hero__intro" v-reveal>{{ copy.hero.introduction }}</p>
+        <div class="hero__actions" v-reveal>
           <a class="button button--primary" href="#work">
             {{ copy.hero.primaryCta }}
             <ArrowDown :size="16" weight="bold" aria-hidden="true" />
           </a>
           <a class="button button--secondary" href="#roadmap">{{ copy.hero.secondaryCta }}</a>
+          <a
+            v-if="model.resume.href"
+            class="button button--secondary"
+            :href="model.resume.href"
+            data-analytics-type="RESUME_DOWNLOAD"
+          >{{ model.resume.label }}</a>
         </div>
-        <p class="availability" data-reveal>
+        <p class="availability" v-reveal>
           <span aria-hidden="true"></span>{{ copy.hero.availability }}
         </p>
       </div>
 
       <figure
+        v-if="heroAsset"
         ref="heroVisual"
         class="hero__visual"
         :style="heroVisualStyle"
-        data-reveal
+        v-reveal
         @pointermove="moveHeroVisual"
         @pointerleave="resetHeroVisual"
       >
-        <img
-          :src="heroAsset.image"
-          :alt="heroAsset.alt[locale]"
-          fetchpriority="high"
-          width="1600"
-          height="900"
+        <ResponsiveMedia
+          :media="heroAsset"
+          sizes="(max-width: 760px) 100vw, 52vw"
+          :object-position="copy.hero.objectPosition"
+          eager
         />
         <figcaption>
           <span>{{ copy.hero.visualLabel }}</span>
           <strong>{{ copy.hero.stageLabel }}</strong>
         </figcaption>
-        <a class="image-credit" :href="heroAsset.sourceUrl" target="_blank" rel="noreferrer">
-          Photo / {{ heroAsset.credit }}
+        <a v-if="copy.hero.credit && copy.hero.sourceUrl.startsWith('https://')" class="image-credit" :href="copy.hero.sourceUrl" target="_blank" rel="noopener noreferrer" data-analytics-type="OUTBOUND_CLICK" data-analytics-page-key="HOME">
+          {{ locale === 'zh-CN' ? '图片' : 'Photo' }} / {{ copy.hero.credit }}
         </a>
+        <span v-else-if="copy.hero.credit" class="image-credit">{{ locale === 'zh-CN' ? '图片' : 'Photo' }} / {{ copy.hero.credit }}</span>
       </figure>
     </section>
 
-    <section id="about" class="section about" aria-labelledby="about-title">
-      <header class="section-heading" data-reveal>
+    <section id="about" class="section about" aria-labelledby="about-title" data-analytics-section="ABOUT">
+      <header class="section-heading" v-reveal>
         <p>{{ copy.about.label }}</p>
         <h2 id="about-title" tabindex="-1">{{ copy.about.title }}</h2>
         <p>{{ copy.about.statement }}</p>
       </header>
 
       <div class="fact-grid">
-        <article v-for="fact in copy.about.facts" :key="fact.label" data-reveal>
+        <article v-for="fact in copy.about.facts" :key="fact.label" v-reveal>
           <p>{{ fact.label }}</p>
           <strong>{{ fact.value }}</strong>
         </article>
       </div>
 
-      <div class="focus-panel" data-reveal>
+      <div class="focus-panel" v-reveal>
         <div class="focus-panel__copy">
           <p class="micro-label">{{ copy.about.focusLabel }}</p>
           <h3>{{ copy.about.focusTitle }}</h3>
@@ -367,8 +390,8 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section id="work" class="section work" aria-labelledby="work-title">
-      <header class="section-heading section-heading--split" data-reveal>
+    <section id="work" class="section work" aria-labelledby="work-title" data-analytics-section="WORK">
+      <header class="section-heading section-heading--split" v-reveal>
         <div>
           <p>{{ copy.work.label }}</p>
           <h2 id="work-title" tabindex="-1">{{ copy.work.title }}</h2>
@@ -379,19 +402,16 @@ onBeforeUnmount(() => {
       <div class="project-grid">
         <article
           v-for="(project, index) in projects"
-          :key="project.id"
+          :key="project.projectId"
           class="project-card"
-          :class="{ 'project-card--wide': project.asset.layout === 'wide' }"
-          data-reveal
+          :class="{ 'project-card--wide': project.featured }"
+          v-reveal
         >
           <figure class="project-card__visual">
-            <img
-              :src="project.asset.image"
-              :alt="project.asset.alt[locale]"
-              :loading="index === 0 ? 'eager' : 'lazy'"
-              width="1600"
-              height="1000"
-              :style="{ objectPosition: project.asset.objectPosition }"
+            <ResponsiveMedia
+              :media="project.cover"
+              sizes="(max-width: 760px) 100vw, 50vw"
+              :eager="index === 0"
             />
             <div class="project-card__visual-top">
               <span>{{ project.number }}</span>
@@ -399,16 +419,22 @@ onBeforeUnmount(() => {
             </div>
             <a
               class="image-credit"
-              :href="project.asset.sourceUrl"
+              v-if="project.cover.credit && project.cover.sourceUrl.startsWith('https://')"
+              :href="project.cover.sourceUrl"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
+              data-analytics-type="OUTBOUND_CLICK"
+              data-analytics-page-key="WORK"
             >
-              Photo / {{ project.asset.credit }}
+              {{ locale === 'zh-CN' ? '图片' : 'Photo' }} / {{ project.cover.credit }}
             </a>
+            <span v-else-if="project.cover.credit" class="image-credit">{{ locale === 'zh-CN' ? '图片' : 'Photo' }} / {{ project.cover.credit }}</span>
           </figure>
           <div class="project-card__body">
             <p class="micro-label">{{ project.eyebrow }}</p>
-            <h3>{{ project.title }}</h3>
+            <h3>
+              <RouterLink :to="{ name: 'project', params: { locale, slug: project.slug } }">{{ project.title }}</RouterLink>
+            </h3>
             <p>{{ project.summary }}</p>
             <ul class="tag-list" :aria-label="copy.a11y.projectTags">
               <li v-for="tag in project.tags" :key="tag">{{ tag }}</li>
@@ -417,7 +443,8 @@ onBeforeUnmount(() => {
           </div>
         </article>
 
-        <article class="project-card project-card--open" data-reveal>
+        <p v-if="projects.length === 0" class="project-empty">{{ locale === 'zh-CN' ? '作品正在整理中，欢迎稍后再来。' : 'Projects are being prepared. Please check back soon.' }}</p>
+        <article class="project-card project-card--open" v-reveal>
           <div class="open-slot__top">
             <p>{{ copy.work.openSlotLabel }}</p>
             <Plus :size="24" weight="bold" aria-hidden="true" />
@@ -431,8 +458,8 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section id="roadmap" class="section roadmap" aria-labelledby="roadmap-title">
-      <header class="section-heading section-heading--split" data-reveal>
+    <section id="roadmap" class="section roadmap" aria-labelledby="roadmap-title" data-analytics-section="ROADMAP">
+      <header class="section-heading section-heading--split" v-reveal>
         <div>
           <p>{{ copy.roadmap.label }}</p>
           <h2 id="roadmap-title" tabindex="-1">{{ copy.roadmap.title }}</h2>
@@ -441,7 +468,7 @@ onBeforeUnmount(() => {
       </header>
 
       <ol class="roadmap-list">
-        <li v-for="stage in copy.roadmap.stages" :key="stage.id" data-reveal>
+        <li v-for="stage in copy.roadmap.stages" :key="stage.id" v-reveal>
           <div class="roadmap-card__number">{{ stage.number }}</div>
           <div class="roadmap-card__copy">
             <p>{{ stage.period }}</p>
@@ -458,13 +485,19 @@ onBeforeUnmount(() => {
       </ol>
     </section>
 
-    <footer id="contact" class="contact" aria-labelledby="contact-title">
-      <div class="contact__top" data-reveal>
+    <footer id="contact" class="contact" aria-labelledby="contact-title" data-analytics-section="CONTACT">
+      <div class="contact__top" v-reveal>
         <p>{{ copy.contact.label }}</p>
         <p>{{ copy.contact.introduction }}</p>
       </div>
-      <h2 id="contact-title" tabindex="-1" data-reveal>{{ copy.contact.title }}</h2>
-      <div class="contact__actions" data-reveal>
+      <h2 id="contact-title" tabindex="-1" v-reveal>{{ copy.contact.title }}</h2>
+      <ContactForm
+        v-reveal
+        :locale="locale"
+        :contact="model.contact"
+        :deletion-email="deletionEmail"
+      />
+      <div class="contact__actions" v-reveal>
         <a v-if="hasRealEmail" class="contact__email" :href="mailto">
           <span>{{ copy.contact.emailLabel }}</span>
           <strong>{{ copy.contact.email }}</strong>
@@ -485,8 +518,20 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="footer-meta">
-        <p>© {{ year }} {{ identity.nameZh }} / {{ identity.nameEn }}</p>
+        <p>© {{ year }} {{ identity.displayName }} / {{ identity.secondaryName }}</p>
         <p>{{ copy.contact.footerNote }}</p>
+        <p class="footer-links">
+          <a
+            v-for="social in model.socialLinks"
+            :key="social.platform"
+            :href="social.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-analytics-type="OUTBOUND_CLICK"
+            data-analytics-page-key="CONTACT"
+          >{{ social.platform }}</a>
+          <RouterLink :to="{ name: 'privacy', params: { locale } }">{{ locale === 'zh-CN' ? '隐私' : 'Privacy' }}</RouterLink>
+        </p>
         <a href="#top"
           >{{ copy.a11y.backToTop }} <ArrowUpRight :size="13" weight="bold" aria-hidden="true"
         /></a>
@@ -856,6 +901,15 @@ onBeforeUnmount(() => {
   border-radius: 2rem;
   background: var(--accent-soft);
   box-shadow: 0 32px 80px rgb(37 54 88 / 13%);
+}
+
+.hero--without-media {
+  grid-template-columns: minmax(0, 54rem);
+  justify-content: start;
+}
+
+.hero--without-media .hero__copy {
+  max-width: 54rem;
 }
 
 .hero__visual::before {
@@ -1409,7 +1463,7 @@ onBeforeUnmount(() => {
   font-size: 0.62rem;
 }
 
-[data-reveal] {
+.reveal {
   opacity: 0;
   transform: translateY(1.25rem);
   transition:
@@ -1417,7 +1471,7 @@ onBeforeUnmount(() => {
     transform 820ms var(--ease-out);
 }
 
-[data-reveal].is-visible {
+.reveal.is-visible {
   opacity: 1;
   transform: translateY(0);
 }
@@ -1651,18 +1705,18 @@ onBeforeUnmount(() => {
     animation: none;
   }
 
-  .hero__visual > img,
-  .project-card__visual > img,
+  .hero__visual :deep(img),
+  .project-card__visual :deep(img),
   .button,
   .desktop-nav a,
   .menu-enter-active,
   .menu-leave-active,
-  [data-reveal] {
+  .reveal {
     transition: none;
     transform: none;
   }
 
-  [data-reveal] {
+  .reveal {
     opacity: 1;
   }
 }

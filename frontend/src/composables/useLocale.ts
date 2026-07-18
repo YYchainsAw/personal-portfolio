@@ -1,53 +1,40 @@
-import { readonly, ref } from 'vue'
+import { computed, watch } from 'vue'
+import {
+  useRoute,
+  useRouter,
+  type RouteLocationNormalizedLoaded,
+  type RouteLocationRaw,
+} from 'vue-router'
+import { isLocale, locales, type Locale, type Localized } from '@/types/public'
 
-export const locales = ['zh-CN', 'en'] as const
-export type Locale = (typeof locales)[number]
-export type Localized<T> = Record<Locale, T>
+export { locales, type Locale, type Localized }
 
-const STORAGE_KEY = 'portfolio.locale'
-const locale = ref<Locale>('zh-CN')
-let initialized = false
-
-const isLocale = (value: unknown): value is Locale =>
-  typeof value === 'string' && locales.includes(value as Locale)
-
-const syncLocale = (nextLocale: Locale) => {
-  if (typeof document !== 'undefined') document.documentElement.lang = nextLocale
-
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, nextLocale)
-    } catch {
-      // The site still works when storage is unavailable.
-    }
+export function localeRouteLocation(
+  route: Pick<RouteLocationNormalizedLoaded, 'name' | 'params'>,
+  locale: Locale,
+): RouteLocationRaw {
+  if (route.name === 'project' && typeof route.params.slug === 'string') {
+    return { name: 'project', params: { locale, slug: route.params.slug } }
   }
+  if (route.name === 'privacy') return { name: 'privacy', params: { locale } }
+  return { name: 'home', params: { locale } }
 }
 
-export const initializeLocale = () => {
-  if (initialized) return
+export function useLocale() {
+  const route = useRoute()
+  const router = useRouter()
+  const locale = computed<Locale>(() => {
+    if (isLocale(route.params.locale)) return route.params.locale
+    const first = route.path.split('/').filter(Boolean)[0]
+    return isLocale(first) ? first : 'zh-CN'
+  })
 
-  if (typeof window !== 'undefined') {
-    try {
-      const savedLocale = window.localStorage.getItem(STORAGE_KEY)
-      if (isLocale(savedLocale)) locale.value = savedLocale
-    } catch {
-      locale.value = 'zh-CN'
-    }
-  }
-
-  initialized = true
-  syncLocale(locale.value)
-}
-
-export const useLocale = () => {
-  const setLocale = (nextLocale: Locale) => {
-    if (locale.value === nextLocale) return
-    locale.value = nextLocale
-    syncLocale(nextLocale)
-  }
+  watch(locale, (value) => {
+    document.documentElement.lang = value
+  }, { immediate: true })
 
   return {
-    locale: readonly(locale),
-    setLocale,
+    locale,
+    setLocale: (value: Locale) => router.push(localeRouteLocation(route, value)),
   }
 }
