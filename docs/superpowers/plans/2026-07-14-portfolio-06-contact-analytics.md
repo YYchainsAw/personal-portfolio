@@ -859,7 +859,7 @@ git commit -m "feat(analytics): aggregate and retain private metrics"
 - Consumes: current admin authentication and V10 aggregate rows.
 - Produces: summary, time-series, and ranked breakdown APIs consumed by plan 04.
 
-- [ ] **Step 1: Write failing report API tests**
+- [x] **Step 1: Write failing report API tests**
 
 Test these exact endpoints:
 
@@ -871,7 +871,7 @@ GET /api/admin/analytics/breakdown?from=2026-07-01&to=2026-07-14&metric=EVENT_CO
 
 Assert auth, date validation, max 366-day range, limit 1–100, zero-filled missing days, stable tie ordering by `dimensionValue`, and that the response declares data delay and metric definitions. Accept only `zone=Asia/Hong_Kong`; reject other zones with `400 ANALYTICS_ZONE_UNSUPPORTED` rather than relabeling fixed site-day aggregates.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AdminAnalyticsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -879,7 +879,7 @@ Assert auth, date validation, max 366-day range, limit 1–100, zero-filled miss
 
 Expected: FAIL because admin report endpoints are absent.
 
-- [ ] **Step 3: Implement report DTOs and queries**
+- [x] **Step 3: Implement report DTOs and queries**
 
 ```java
 public record AnalyticsSummary(
@@ -889,7 +889,7 @@ public record AnalyticsSummary(
     long resumeDownloads,
     long demoDownloads,
     long outboundClicks,
-    Instant dataCompleteThrough,
+    Instant dataCompleteThrough, // nullable until the requested range is fully aggregated
     String zone,
     Map<String, String> definitions
 ) {}
@@ -901,15 +901,19 @@ public record AnalyticsBreakdownItem(String dimensionValue, long value) {}
 
 `dailyUniqueVisitors` across a range is the sum of each site's daily UV, not a cross-day unique-person count. Return the definition text explicitly in both languages through stable message keys. Resolve project dimension UUIDs to current or archived project titles through a read-only plan-03 query, but retain the UUID when a title no longer exists.
 
-- [ ] **Step 4: Apply response security and cache rules**
+`dataCompleteThrough` is the latest aggregate refresh timestamp only when every requested site day contains the seven required `ALL` sentinel metrics under one aggregation version. Return explicit `null` for an empty or incomplete range; plan 04 renders that state as “尚无完整聚合 / No complete aggregation”.
+
+- [x] **Step 4: Apply response security and cache rules**
 
 Admin analytics responses use `Cache-Control: no-store`, never include raw events, visitor-day keys, session-day keys, or contact data, and require CSRF only for mutations (these endpoints are GET). Audit only export actions if CSV export is added in a later scope; do not add export now.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS with exact fixture totals and zero-filled dates.
+
+Verification note: the focused PostgreSQL report suite passed 11 tests; the report/public-collector/batched-project-label regression passed 28 tests. A clean full Maven verify passed 1,899 tests across 171 suites with zero failures and zero errors (14 intentionally skipped). Three independent API, SQL, and cross-plan reviews found no remaining P1/P2 findings. The protected pre-existing Docker database fingerprint remained unchanged.
 
 ```powershell
 git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics
