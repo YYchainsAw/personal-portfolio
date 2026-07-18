@@ -24,7 +24,12 @@ class AuditMetadataRedactor {
             "revokedOtherSessions",
             "staleActor",
             "fromKeyVersion",
-            "toKeyVersion");
+            "toKeyVersion",
+            "previousStatus",
+            "newStatus",
+            "previousEmailStatus",
+            "newEmailStatus",
+            "createdDate");
 
     private final ObjectMapper json;
 

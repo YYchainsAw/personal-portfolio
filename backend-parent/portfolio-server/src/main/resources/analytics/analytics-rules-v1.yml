@@ -1,0 +1,37 @@
+version: analytics-rules-v1
+eventTypes:
+  PAGE_VIEW: { projectRequired: false }
+  PROJECT_VIEW: { projectRequired: true }
+  RESUME_DOWNLOAD: { projectRequired: false }
+  DEMO_DOWNLOAD: { projectRequired: true }
+  OUTBOUND_CLICK: { projectRequired: false }
+pageKeys:
+  - HOME
+  - ABOUT
+  - WORK
+  - ROADMAP
+  - CONTACT
+  - PRIVACY
+  - PROJECT_DETAIL
+crawlerTokens:
+  - bot
+  - crawler
+  - spider
+  - preview
+referrerDomains:
+  - baidu.com
+  - bing.com
+  - bilibili.com
+  - csdn.net
+  - discord.com
+  - duckduckgo.com
+  - gitee.com
+  - github.com
+  - google.com
+  - juejin.cn
+  - linkedin.com
+  - reddit.com
+  - t.co
+  - x.com
+  - youtube.com
+  - zhihu.com

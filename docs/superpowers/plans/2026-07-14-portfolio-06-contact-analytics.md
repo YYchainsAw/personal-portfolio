@@ -26,8 +26,9 @@
 
 ## File Map
 
-- `backend-parent/portfolio-server/src/main/resources/db/migration/V6__contact_and_email.sql`: messages and dedicated email outbox.
-- `backend-parent/portfolio-server/src/main/resources/db/migration/V7__privacy_analytics.sql`: raw events and daily aggregates.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql`: messages and dedicated email outbox.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql`: raw events and daily aggregates.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V11__analytics_retention_checkpoint.sql`: immutable per-date purge checkpoints and database guards for safe recovery.
 - `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/*`: contact intake, inbox, outbox worker, SMTP adapter, and retention.
 - `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/*`: event validation, privacy transforms, aggregation, retention, and reports.
 - `backend-parent/portfolio-server/src/main/resources/analytics/analytics-rules-v1.yml`: versioned event, page, and crawler rules.
@@ -40,79 +41,38 @@
 ### Task 1: Add contact and analytics migrations
 
 **Files:**
-- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V6__contact_and_email.sql`
-- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V7__privacy_analytics.sql`
+- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql`
+- Create: `backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java`
 
 **Interfaces:**
-- Consumes: Plan 01 `xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase`; plan 02 already owns V3 and plan 03 owns V4/V5.
+- Consumes: Plan 01 `xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase`; plan 02 already owns V3-V6 and plan 03 owns V7/V8.
 - Produces: `contact_message`, `email_outbox`, `analytics_event`, and `analytics_daily`.
 
-- [ ] **Step 1: Write the failing migration test**
+- [x] **Step 1: Write the failing migration test**
 
-```java
-package xyz.yychainsaw.portfolio.message;
+Create a `@SpringBootTest`, `@Isolated` PostgreSQL integration test extending
+`PostgresIntegrationTestBase`. It must inspect the catalog and exercise real inserts/updates,
+not merely check that the four relation names exist. Assert the exact column whitelist,
+bounded sensitive text, named keys/checks/indexes/triggers, Flyway V1-V10 order, database
+rejection behavior, and the two exact plan-01 rate policies.
 
-import static org.assertj.core.api.Assertions.assertThat;
+Inspect direct table and column ACLs rather than granting full table CRUD to every component.
+The shared capability role has this exact matrix:
 
-import java.time.Duration;
-import java.util.List;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.jdbc.core.JdbcTemplate;
-import xyz.yychainsaw.portfolio.common.ratelimit.RateLimitProperties;
-import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
+- `contact_message`: table `SELECT/INSERT/DELETE`; column `UPDATE` only for `status`,
+  `version`, and `updated_at`;
+- `email_outbox`: table `SELECT/INSERT`; column `UPDATE` only for delivery state,
+  attempts, retry time, lease fields, sanitized error summary, `sent_at`, and `updated_at`;
+- `analytics_event`: table `SELECT/INSERT/DELETE`, with no update capability;
+- `analytics_daily`: table `SELECT/INSERT/DELETE`; column `UPDATE` only for
+  `metric_count`, `aggregation_version`, and `updated_at`.
 
-@SpringBootTest
-class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
-    @Autowired JdbcTemplate jdbc;
-    @Autowired RateLimitProperties rateLimits;
+Assert that `PUBLIC` and the runtime login have no direct grants, all objects remain
+owned by the migrator, no grant is grantable, and the runtime has no schema `CREATE`,
+`TRUNCATE`, `REFERENCES`, `TRIGGER`, or `MAINTAIN` capability.
 
-    @Test
-    void flywayCreatesContactAndAnalyticsTables() {
-        List<String> tables = jdbc.queryForList("""
-            select table_name from information_schema.tables
-            where table_schema = 'portfolio'
-              and table_name in ('contact_message','email_outbox','analytics_event','analytics_daily')
-            order by table_name
-            """, String.class);
-
-        assertThat(tables).containsExactly(
-            "analytics_daily", "analytics_event", "contact_message", "email_outbox");
-    }
-
-    @Test
-    void runtimeHasRequiredDmlWithoutSchemaOrTruncatePrivileges() {
-        for (String table : List.of(
-                "contact_message", "email_outbox", "analytics_event", "analytics_daily")) {
-            for (String privilege : List.of("SELECT", "INSERT", "UPDATE", "DELETE")) {
-                assertThat(jdbc.queryForObject(
-                        "select has_table_privilege(?::text, ?::text)",
-                        Boolean.class, "portfolio." + table, privilege))
-                        .as(table + " " + privilege).isTrue();
-            }
-            assertThat(jdbc.queryForObject(
-                    "select has_table_privilege(?::text, 'TRUNCATE')",
-                    Boolean.class, "portfolio." + table))
-                    .as(table + " TRUNCATE").isFalse();
-        }
-        assertThat(jdbc.queryForObject(
-                "select has_schema_privilege(current_user, 'portfolio', 'CREATE')",
-                Boolean.class)).isFalse();
-    }
-
-    @Test
-    void plan01RegistersTheExactPublicRateLimitPolicies() {
-        assertThat(rateLimits.policies().get("public-contact"))
-                .isEqualTo(new RateLimitProperties.Policy(5, Duration.ofMinutes(15)));
-        assertThat(rateLimits.policies().get("public-events"))
-                .isEqualTo(new RateLimitProperties.Policy(60, Duration.ofMinutes(1)));
-    }
-}
-```
-
-- [ ] **Step 2: Run the migration test and verify it fails**
+- [x] **Step 2: Run the migration test and verify it fails**
 
 Run from `backend-parent`:
 
@@ -120,114 +80,54 @@ Run from `backend-parent`:
 .\mvnw.cmd -pl portfolio-server -am -Dtest=ContactAnalyticsSchemaMigrationTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
-Expected: FAIL because the V6 and V7 tables do not exist.
+Expected: FAIL because the V9 and V10 tables do not exist.
 
-- [ ] **Step 3: Create V6 with message and outbox constraints**
+- [x] **Step 3: Create V9 with message and outbox constraints**
 
-```sql
-create table contact_message (
-    id uuid primary key,
-    visitor_name varchar(100) not null,
-    visitor_email varchar(320) not null,
-    subject varchar(160) not null,
-    body varchar(5000) not null,
-    status varchar(24) not null
-        check (status in ('UNREAD','READ','ARCHIVED','SPAM')),
-    dedupe_key char(64) not null,
-    privacy_accepted_at timestamptz not null,
-    version integer not null default 0,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
-);
-create index contact_message_inbox_idx
-    on contact_message (status, created_at desc, id desc);
-create index contact_message_dedupe_idx
-    on contact_message (dedupe_key, created_at desc);
+Implement the canonical, schema-qualified V9 migration in the file named above. In addition to
+the declared columns, it must include:
 
-create table email_outbox (
-    id uuid primary key,
-    contact_message_id uuid not null references contact_message(id) on delete cascade,
-    template_name varchar(80) not null,
-    to_address varchar(320) not null,
-    stable_message_id varchar(255) not null unique,
-    status varchar(24) not null
-        check (status in ('PENDING','SENDING','SENT','FAILED','DEAD','CANCELED')),
-    attempts integer not null default 0 check (attempts >= 0),
-    next_attempt_at timestamptz not null,
-    lease_owner varchar(120),
-    lease_until timestamptz,
-    last_error_summary varchar(500),
-    created_at timestamptz not null default now(),
-    sent_at timestamptz,
-    updated_at timestamptz not null default now()
-);
-create index email_outbox_ready_idx
-    on email_outbox (next_attempt_at, created_at)
-    where status in ('PENDING','FAILED');
-
-grant select, insert, update, delete on contact_message to portfolio_runtime;
-grant select, insert, update, delete on email_outbox to portfolio_runtime;
-```
+- named checks for message status, lowercase 64-hex dedupe keys, non-negative version, and
+  privacy acceptance no later than creation;
+- a one-to-one outbox foreign key (`contact_message_id UNIQUE`) with `ON DELETE CASCADE`, plus
+  a unique stable message ID;
+- fenced outbox state: `SENDING` requires a trimmed, non-blank lease owner and lease expiry;
+  every other state has neither, and only `SENT` has `sent_at`;
+- stable inbox, dedupe, message-retention, ready-outbox, and expired-lease indexes;
+- the existing `portfolio.set_updated_at()` trigger on both mutable tables;
+- explicit `REVOKE ALL` from `PUBLIC` and `portfolio_runtime_access` before granting only the
+  ACL matrix above.
 
 The configured site-owner address is the only `to_address`. Do not send an automatic reply to the visitor in this phase.
 
-- [ ] **Step 4: Create V7 with analytics privacy and reporting constraints**
+- [x] **Step 4: Create V10 with analytics privacy and reporting constraints**
 
-```sql
-create table analytics_event (
-    id uuid primary key,
-    client_event_id uuid not null unique,
-    site_date date not null,
-    received_at timestamptz not null,
-    visitor_day_key char(64) not null,
-    session_day_key char(64) not null,
-    event_type varchar(32) not null
-        check (event_type in ('PAGE_VIEW','PROJECT_VIEW','RESUME_DOWNLOAD','DEMO_DOWNLOAD','OUTBOUND_CLICK')),
-    page_key varchar(200) not null,
-    project_id uuid,
-    referrer_domain varchar(253),
-    device_class varchar(16) not null
-        check (device_class in ('DESKTOP','MOBILE','TABLET','OTHER')),
-    locale varchar(10) not null check (locale in ('zh-CN','en')),
-    rules_version varchar(32) not null,
-    created_at timestamptz not null default now()
-);
-create index analytics_event_date_idx on analytics_event (site_date, event_type);
-create index analytics_event_dedupe_idx
-    on analytics_event (session_day_key, event_type, page_key, project_id, received_at desc);
-create index analytics_event_retention_idx on analytics_event (received_at);
+Implement the canonical, schema-qualified V10 migration in the file named above. Preserve the
+exact column whitelist and add named constraints that enforce:
 
-create table analytics_daily (
-    site_date date not null,
-    metric varchar(24) not null check (metric in ('PV','DAILY_UV','EVENT_COUNT')),
-    event_type varchar(32) not null,
-    dimension varchar(24) not null
-        check (dimension in ('ALL','PAGE','PROJECT','REFERRER','DEVICE','LOCALE')),
-    dimension_value varchar(253) not null,
-    metric_count bigint not null check (metric_count >= 0),
-    aggregation_version varchar(32) not null,
-    updated_at timestamptz not null default now(),
-    primary key (site_date, metric, event_type, dimension, dimension_value)
-);
-create index analytics_daily_report_idx
-    on analytics_daily (site_date, dimension, metric, metric_count desc);
+- lowercase 64-hex daily visitor/session keys and the exact event/device/locale enums;
+- `site_date = (received_at AT TIME ZONE 'Asia/Hong_Kong')::date`;
+- the version-1 page allowlist (`HOME`, `ABOUT`, `WORK`, `ROADMAP`, `CONTACT`, `PRIVACY`,
+  `PROJECT_DETAIL`) for raw events and PAGE aggregates;
+- referrers are null, `(direct)`/`(none)`, or normalized lowercase ASCII hostnames—never a URL,
+  userinfo, query, IP literal, or embedded daily key;
+- PV and DAILY_UV pair only with PAGE_VIEW; EVENT_COUNT may pair with every allowed event;
+- dimension-specific values, a separate daily-key leak guard, and non-negative metric counts;
+- stable event-date/dedupe/retention and daily-report indexes, the aggregate update trigger,
+  explicit revocation, and only the ACL matrix above.
 
-grant select, insert, update, delete on analytics_event to portfolio_runtime;
-grant select, insert, update, delete on analytics_daily to portfolio_runtime;
-```
+Do not add IP, IP hash, browser identifier, session identifier, full URL query, or full User-Agent columns. Constrain aggregate dimension values by dimension: `ALL` uses `(all)`, `PAGE` uses an allowlisted uppercase key, `PROJECT` uses a canonical lowercase UUID, `REFERRER` uses a normalized lowercase hostname or `(direct)`/`(none)`, `DEVICE` uses the device enum, and `LOCALE` uses `zh-CN`/`en`. The durable aggregate table must reject any raw visitor/session day HMAC, including one embedded in another value.
 
-Do not add IP, IP hash, browser identifier, session identifier, full URL query, or full User-Agent columns.
-
-- [ ] **Step 5: Re-run the migration test and inspect Flyway order**
+- [x] **Step 5: Re-run the migration test and inspect Flyway order**
 
 Run the Step 2 command.
 
-Expected: PASS; Flyway applies V1 through V7 in order, all four tables exist, runtime has their required DML but no TRUNCATE/schema-CREATE privilege, and both public limiter policies match plan 01 exactly.
+Expected: PASS; Flyway applies V1 through V10 in order, all four tables exist, runtime has their required DML but no TRUNCATE/schema-CREATE privilege, and both public limiter policies match plan 01 exactly.
 
-- [ ] **Step 6: Commit the schema slice**
+- [x] **Step 6: Commit the schema slice**
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/resources/db/migration/V6__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V7__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java
+git add backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/ContactAnalyticsSchemaMigrationTest.java docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
 git commit -m "feat(contact): add message and analytics schema"
 ```
 
@@ -247,14 +147,21 @@ git commit -m "feat(contact): add message and analytics schema"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/persistence/EmailOutboxMapper.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/PublicContactController.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/PublicContactRequest.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/PublicContactBodyReader.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/ContactRateLimitSubjectHasher.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/common/error/GlobalProblemHandler.java`
+- Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
+- Modify: `backend-parent/portfolio-server/src/test/resources/application-test.yml`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/ContactMessageServiceTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/web/PublicContactControllerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/web/PublicContactBodyReaderTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/config/ContactPropertiesTest.java`
 
 **Interfaces:**
 - Consumes: plan-01 CSRF enforcement, `RateLimiter#consume("public-contact", subject)`, `DomainException`, Jackson, `Clock`, and a request-IP resolver that trusts only the plan-01 proxy boundary.
 - Produces: `POST /api/public/contact` and one committed `email_outbox` row per accepted non-duplicate message.
 
-- [ ] **Step 1: Write service tests for atomic insert, deduplication, and the honey field**
+- [x] **Step 1: Write service tests for atomic insert, deduplication, and the honey field**
 
 ```java
 @Test
@@ -262,7 +169,7 @@ void acceptedMessageAndNotificationCommitTogether() {
     SubmitContactCommand command = new SubmitContactCommand(
         "Player One", "player@example.com", "UE collaboration",
         "I would like to discuss your project.", "", true,
-        "rate-subject-1", instant("2026-07-14T10:00:00Z"));
+        "a".repeat(64));
 
     ContactSubmissionResult result = service.submit(command);
 
@@ -273,8 +180,10 @@ void acceptedMessageAndNotificationCommitTogether() {
 
 @Test
 void repeatedContentInSameTenMinuteWindowReturnsGenericAcceptanceWithoutSecondRow() {
-    ContactSubmissionResult first = service.submit(validCommandAt("2026-07-14T10:01:00Z"));
-    ContactSubmissionResult second = service.submit(validCommandAt("2026-07-14T10:08:59Z"));
+    clock.set(instant("2026-07-14T10:01:00Z"));
+    ContactSubmissionResult first = service.submit(validCommand());
+    clock.set(instant("2026-07-14T10:08:59Z"));
+    ContactSubmissionResult second = service.submit(validCommand());
 
     assertThat(first.accepted()).isTrue();
     assertThat(second).isEqualTo(ContactSubmissionResult.acceptedWithoutIdentifier());
@@ -284,7 +193,7 @@ void repeatedContentInSameTenMinuteWindowReturnsGenericAcceptanceWithoutSecondRo
 
 @Test
 void populatedHoneyFieldReturnsGenericAcceptanceAndWritesNothing() {
-    ContactSubmissionResult result = service.submit(validCommand().withWebsite("https://spam.invalid"));
+    ContactSubmissionResult result = service.submit(honeypotCommand());
 
     assertThat(result).isEqualTo(ContactSubmissionResult.acceptedWithoutIdentifier());
     assertThat(contactMapper.count()).isZero();
@@ -294,15 +203,15 @@ void populatedHoneyFieldReturnsGenericAcceptanceAndWritesNothing() {
 
 Use a PostgreSQL integration test for the rollback case: force the outbox insert to fail and assert that no `contact_message` survives.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
-.\mvnw.cmd -pl portfolio-server -am -Dtest=ContactMessageServiceTest,PublicContactControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
+.\mvnw.cmd -pl portfolio-server -am -Dtest=ContactMessageServiceTest,PublicContactControllerTest,PublicContactBodyReaderTest,ContactPropertiesTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 Expected: FAIL because the intake service and endpoint do not exist.
 
-- [ ] **Step 3: Define the strict request and command boundary**
+- [x] **Step 3: Define the strict request and command boundary**
 
 ```java
 public record PublicContactRequest(
@@ -321,8 +230,7 @@ public record SubmitContactCommand(
     String body,
     String website,
     boolean privacyAccepted,
-    String rateLimitSubject,
-    Instant receivedAt
+    String rateLimitSubject
 ) {}
 
 public record ContactSubmissionResult(boolean accepted, UUID messageId) {
@@ -336,9 +244,9 @@ public record ContactSubmissionResult(boolean accepted, UUID messageId) {
 }
 ```
 
-Reject unknown JSON fields for this DTO and cap the complete JSON body at 32 KiB. The controller deliberately does not apply eager `@Valid` before the honeypot check: it maps a null `website` to `""`, returns the same generic `202` immediately for any nonblank honeypot value, and only then invokes Bean Validation/application normalization for a real submission. This preserves the honeypot contract even when a bot leaves other required fields invalid. Normalize Unicode to NFC, trim outer whitespace, lowercase the email domain only, reject control characters except line breaks in the body, and never reflect submitted values in the response.
+Reject unknown and duplicate JSON fields for this DTO, disable scalar coercion by checking every tree value's exact JSON type, and reject trailing tokens. An endpoint-specific bounded reader must reject both declared and chunked/no-length bodies above 32,768 raw bytes before deserializing them, returning `413 PAYLOAD_TOO_LARGE`; the multipart limit does not cover JSON. The controller deliberately does not apply eager `@Valid` before the honeypot check: it maps a null `website` to `""`, returns the same generic `202` immediately for any nonblank honeypot value, and only then invokes manual Bean Validation/application normalization for a real submission. Syntax/type/unknown/duplicate failures are `400 MALFORMED_REQUEST`; well-formed field failures use the existing `422 VALIDATION_ERROR` contract. Normalize Unicode to NFC, trim Unicode whitespace at the boundary, normalize CRLF/CR and Unicode line separators to LF in the body, lowercase the email domain only, reject malformed UTF-16, single-line separators, unsafe format controls, and control characters except LF in the body, and never reflect submitted values in the response.
 
-- [ ] **Step 4: Implement a secret-keyed rolling ten-minute duplicate check**
+- [x] **Step 4: Implement a secret-keyed rolling ten-minute duplicate check**
 
 ```java
 public String contactKey(SubmitContactCommand command) {
@@ -349,62 +257,62 @@ public String contactKey(SubmitContactCommand command) {
 }
 ```
 
-Store the secret as base64 environment configuration. Within the submission transaction, acquire a PostgreSQL transaction advisory lock derived from this keyed fingerprint, then query for the same fingerprint at or after `receivedAt - 10 minutes`. This makes the window rolling and prevents concurrent duplicates without retaining a reusable unkeyed hash of contact content.
+Store the secret as canonical base64 environment configuration and require at least 256 decoded bits. After normalization and rate limiting, open an explicit `READ_COMMITTED` transaction, acquire a PostgreSQL transaction advisory lock derived from this keyed fingerprint, then read the injected `Clock` exactly once (truncated to PostgreSQL microsecond precision). Query for the same fingerprint at or after `acceptedAt - 10 minutes`, and use that same `acceptedAt` for consent, message, and outbox timestamps. This makes the window rolling, lets a lock waiter see the preceding commit, and prevents concurrent duplicates without retaining a reusable unkeyed hash of contact content. Exactly ten minutes remains suppressed; ten minutes plus one microsecond is accepted.
 
-- [ ] **Step 5: Implement the transactional service**
+The public rate-limit subject uses a separate process-random 256-bit HMAC key and a `public-contact` domain separator. Resolve the raw address only at the controller boundary through `TrustedClientAddressResolver`, hash it immediately, and pass only the 64-character result onward. Never reuse the persistent contact-content dedupe secret for IP subjects.
 
-```java
-@Transactional
-public ContactSubmissionResult submit(SubmitContactCommand command) {
-    String website = Objects.requireNonNullElse(command.website(), "");
-    if (!website.isBlank()) {
-        return ContactSubmissionResult.acceptedWithoutIdentifier();
-    }
-    RateLimitDecision decision = rateLimiter.consume("public-contact", command.rateLimitSubject());
-    if (!decision.allowed()) {
-        throw new DomainException("CONTACT_RATE_LIMITED", HttpStatus.TOO_MANY_REQUESTS, Map.of());
-    }
-    SubmitContactCommand normalized = validateAndNormalize(command);
-    String dedupeKey = fingerprintService.contactKey(normalized);
-    contactMapper.acquireDedupeLock(dedupeKey);
-    if (contactMapper.existsByDedupeKeySince(
-            dedupeKey, normalized.receivedAt().minus(Duration.ofMinutes(10)))) {
-        return ContactSubmissionResult.acceptedWithoutIdentifier();
-    }
+- [x] **Step 5: Implement the transactional service**
 
-    UUID messageId = uuidGenerator.next();
-    contactMapper.insert(ContactMessageRecord.unread(messageId, normalized, dedupeKey));
-    outboxMapper.insert(EmailOutboxRecord.pending(
-        uuidGenerator.next(), messageId, properties.ownerEmail(),
-        "portfolio-contact-" + messageId + "@" + properties.mailIdDomain(), normalized.receivedAt()));
-    return ContactSubmissionResult.accepted(messageId);
-}
+Keep the honeypot check, internal hashed-subject validation, limiter call, normalization, and
+content HMAC outside any database transaction. A denied limiter becomes
+`CONTACT_RATE_LIMITED` with a bounded positive `retryAfterSeconds` field; the controller copies
+that exact safe value to `Retry-After` before rethrowing.
+
+Use `TransactionTemplate` (or a separate proxied writer) with explicit `READ_COMMITTED` for the
+single critical section below; do not use a self-invoked `@Transactional` method. Bound both the
+overall transaction and PostgreSQL advisory-lock wait, and assert that the lock mapper is never
+called without an active transaction:
+
+```text
+pg_advisory_xact_lock(first 64 bits of keyed fingerprint)
+→ acceptedAt = truncateToMicros(clock.instant())
+→ exists(dedupe_key, created_at >= acceptedAt - 10 minutes)
+→ insert contact_message with explicit acceptedAt timestamps
+→ insert exactly one email_outbox with the same timestamps
+→ commit
 ```
+
+Both inserts must affect exactly one row and use no `ON CONFLICT DO NOTHING`. Store the complete
+RFC header value `<portfolio-contact-{messageId}@{validatedAsciiDomain}>` once; Task 3 sends it
+unchanged. Any outbox failure escapes the transaction and rolls back the message. JDBC/MyBatis
+queries use bound parameters only; a `JdbcClient` mapper is acceptable and needs no XML.
 
 `validateAndNormalize` returns a new immutable command containing only the normalized values; it never tries to mutate the incoming record. The controller ignores the internal `messageId` and serializes only `{ "accepted": true }`.
 
-The endpoint returns `202 Accepted` with only `{ "accepted": true }`; it never returns `messageId` publicly. Add a two-thread PostgreSQL test proving the advisory lock permits only one insert, plus a boundary test proving 9 minutes 59.999 seconds is suppressed while 10 minutes 0.001 seconds is accepted. Add a controller test with a populated honeypot plus otherwise-invalid/missing fields and assert the same generic `202` with no rate-limit, message, or outbox write.
+The endpoint returns `202 Accepted` with only `{ "accepted": true }`; it never returns `messageId` publicly. Add a two-thread PostgreSQL test proving the advisory lock permits only one insert, plus boundary tests proving 10 minutes minus one microsecond and exactly 10 minutes are suppressed while 10 minutes plus one microsecond is accepted. Add a controller test with a populated honeypot plus otherwise-invalid/missing fields and assert the same generic `202` with no rate-limit, message, or outbox write. Every PII-bearing request, command, persistence row, and configuration type must override `toString()` with a redacted representation.
 
-- [ ] **Step 6: Add controller tests for validation, privacy, rate limiting, and redaction**
+- [x] **Step 6: Add controller tests for validation, privacy, rate limiting, and redaction**
 
 Verify:
 
 - valid input returns `202`;
-- missing/invalid CSRF returns `403 CSRF_INVALID` and writes no message/outbox row;
-- missing consent, invalid email, overlong fields, and unknown fields return the common `400` validation problem;
+- acquire the real anonymous CSRF cookie/token, then prove missing, invalid, and mismatched cookie/header requests return `403 CSRF_INVALID` before body, limiter, service, or database work;
+- 32,768 raw bytes are accepted for parsing while 32,769 bytes, including a no-length/chunked stream, return `413 PAYLOAD_TOO_LARGE` without consuming quota;
+- missing consent, invalid email, and overlong fields return `422 VALIDATION_ERROR`; malformed, unknown, duplicate, or wrong-type JSON returns `400 MALFORMED_REQUEST`;
 - rate limit returns `429` plus `Retry-After`;
 - the injected limiter fake records exactly `consume("public-contact", hashedSubject)` and never receives a raw IP or any other policy name;
+- untrusted peers cannot spoof `X-Real-IP`; only the configured proxy's single valid header affects the hashed subject, while duplicate/invalid headers map to the safe unknown subject;
 - logs and response bodies do not contain email or message body;
 - the controller does not pass a raw IP into persistence.
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS with one message and one outbox row committed atomically.
 
 ```powershell
-git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message
+git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/common/error/GlobalProblemHandler.java backend-parent/portfolio-server/src/main/resources/application.yml backend-parent/portfolio-server/src/test/resources/application-test.yml backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message docs/superpowers/plans/2026-07-14-portfolio-05-public-site-seo.md docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
 git commit -m "feat(contact): accept private contact submissions"
 ```
 
@@ -420,16 +328,19 @@ git commit -m "feat(contact): accept private contact submissions"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxRepository.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxWorker.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/config/EmailOutboxProperties.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/persistence/EmailOutboxMapper.java`
 - Modify: `backend-parent/portfolio-server/pom.xml`
 - Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxWorkerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxLeaseIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxConfigurationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxSmtpWireTest.java`
 
 **Interfaces:**
-- Consumes: `JavaMailSender`, V6 tables, `Clock`, and contact message reads.
+- Consumes: `JavaMailSender`, V9 tables, `Clock`, and contact message reads.
 - Produces: `EmailSenderPort#send(ContactNotification)` and an independently scheduled outbox worker.
 
-- [ ] **Step 1: Write failing retry and lease tests**
+- [x] **Step 1: Write failing retry and lease tests**
 
 ```java
 @Test
@@ -460,15 +371,15 @@ void tenthFailureMovesNotificationToDead() {
 
 The integration test starts two claimers and asserts each ready row is leased once via `FOR UPDATE SKIP LOCKED`.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
-.\mvnw.cmd -pl portfolio-server -am -Dtest=EmailOutboxWorkerTest,EmailOutboxLeaseIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+.\mvnw.cmd -pl portfolio-server -am -Dtest=EmailOutbox*Test -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 Expected: FAIL because the outbox worker does not exist.
 
-- [ ] **Step 3: Add Spring Mail and typed configuration**
+- [x] **Step 3: Add Spring Mail and typed configuration**
 
 Add `spring-boot-starter-mail` without an explicit version. Bind:
 
@@ -477,8 +388,6 @@ portfolio:
   email:
     enabled: ${PORTFOLIO_EMAIL_ENABLED:false}
     from: ${PORTFOLIO_EMAIL_FROM:}
-    owner-address: ${PORTFOLIO_OWNER_EMAIL:}
-    mail-id-domain: ${PORTFOLIO_MAIL_ID_DOMAIN:yychainsaw.xyz}
     poll-interval: 10s
     lease-duration: 2m
     batch-size: 10
@@ -492,14 +401,19 @@ spring:
       mail.smtp.auth: true
       mail.smtp.starttls.enable: true
       mail.smtp.starttls.required: true
+      mail.smtp.ssl.checkserveridentity: true
       mail.smtp.connectiontimeout: 10000
       mail.smtp.timeout: 10000
       mail.smtp.writetimeout: 10000
 ```
 
-Production startup fails if email is enabled but required values are blank or transport TLS is disabled. Development may keep delivery disabled while preserving outbox rows. If the selected provider requires implicit SMTPS instead of STARTTLS, use a separately tested `smtps` profile with certificate validation; never fall back to cleartext SMTP or trust-all TLS.
+The worker reuses `portfolio.contact.owner-email` and the already persisted complete
+`stable_message_id`; it must not define duplicate owner-address or mail-id-domain settings under
+`portfolio.email`.
 
-- [ ] **Step 4: Implement atomic lease acquisition**
+Production startup fails if email is enabled but required values are blank or transport TLS is disabled. Development may keep delivery disabled while preserving outbox rows, and `management.health.mail.enabled` follows `PORTFOLIO_EMAIL_ENABLED` so a deliberately disabled transport cannot make readiness fail. Enabled delivery also rejects JNDI mail sessions, structured SSL/SSL bundles, trust overrides, custom socket factories, protocol/cipher overrides, and mail debug flags; these alternate paths cannot bypass the validated STARTTLS transport or leak credentials. If the selected provider requires implicit SMTPS instead of STARTTLS, use a separately tested `smtps` profile with certificate validation; never fall back to cleartext SMTP or trust-all TLS.
+
+- [x] **Step 4: Implement atomic lease acquisition**
 
 Use one transaction containing:
 
@@ -525,9 +439,9 @@ where e.id = c.id
 returning e.*;
 ```
 
-Before each claim cycle, recover expired `SENDING` rows to `FAILED`. Completion/failure updates require both outbox ID and the current `lease_owner`; a delayed sender cannot overwrite a row reclaimed by another worker. Never hold a database transaction open during SMTP I/O.
+Before each claim cycle, recover a bounded batch of expired `SENDING` rows to `FAILED` with `FOR UPDATE SKIP LOCKED`; an expired attempt 10 is terminalized as `DEAD` instead of being stranded. Every claim cycle receives a fresh random `lease_owner` fencing token, and completion/failure updates require outbox ID, that token, the current attempt, and `status='SENDING'`; a delayed sender cannot overwrite a row reclaimed by another worker, including an ABA reclaim by the same process. Renew each row immediately before SMTP so later rows in a batch retain the full lease. Never hold a database transaction open during SMTP I/O.
 
-- [ ] **Step 5: Implement sending, stable headers, and retry policy**
+- [x] **Step 5: Implement sending, stable headers, and retry policy**
 
 ```java
 public interface EmailSenderPort {
@@ -546,9 +460,9 @@ public record ContactNotification(
 ) {}
 ```
 
-Set `Message-ID` from `stableMessageId`, set `Reply-To` to the visitor email, render a plain-text body, and use an allowlisted subject prefix such as `[Portfolio Contact]`. Strip CR/LF from all header values. Retry at 1, 5, 15, 60, 240, 720 minutes and then every 24 hours until attempt 10; attempt 10 becomes `DEAD`. Persist only the exception class and a redacted category, not the SMTP server response body.
+Set `Message-ID` from `stableMessageId`, set `Reply-To` to the visitor email, target the currently validated `portfolio.contact.owner-email`, render a UTF-8 plain-text body, and use an allowlisted subject prefix such as `[Portfolio Contact]`. Strip CR/LF from all header values. Retry at 1, 5, 15, 60, 240, 720 minutes and then every 24 hours until attempt 10; attempt 10 becomes `DEAD`. Persist only the exception class and a redacted category, not the SMTP server response body. Stable `Message-ID` makes the unavoidable crash-window resend identifiable, but SMTP delivery remains at-least-once rather than physically exactly-once.
 
-- [ ] **Step 6: Verify disabled delivery and crash recovery behavior**
+- [x] **Step 6: Verify disabled delivery and crash recovery behavior**
 
 Add tests that:
 
@@ -558,14 +472,14 @@ Add tests that:
 - a deleted message cascades its unsent outbox;
 - the same stable `Message-ID` is used on every retry.
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS; SMTP failure changes only outbox state and all leases are recoverable.
 
 ```powershell
-git add backend-parent/portfolio-server/pom.xml backend-parent/portfolio-server/src/main/resources/application.yml backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message
+git add backend-parent/portfolio-server/pom.xml backend-parent/portfolio-server/src/main/resources/application.yml backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message docs/superpowers/plans/2026-07-14-portfolio-06-contact-analytics.md
 git commit -m "feat(contact): deliver notifications from email outbox"
 ```
 
@@ -575,21 +489,33 @@ git commit -m "feat(contact): deliver notifications from email outbox"
 
 **Files:**
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageInboxService.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageInboxRepository.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageCursor.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessagePage.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageSummary.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageDetail.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/EmailDeliveryView.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageStatus.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionJobHandler.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionRepository.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/JdbcMessageRetentionRepository.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionScheduler.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/AdminMessageController.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/AdminMessageStatusBodyReader.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/web/UpdateMessageStatusRequest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/web/AdminMessageControllerTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionJobHandlerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageCursorTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageInboxServiceIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message/application/MessageRetentionIntegrationTest.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/email/EmailOutboxRepository.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/audit/AuditMetadataRedactor.java`
 
 **Interfaces:**
 - Consumes: authenticated admin/CSRF rules, `CurrentAdminProvider`, `AuditService`, plan-02 `JobHandler`, and cursor pagination convention.
 - Produces: inbox list/detail/status/delete/retry APIs consumed by plan 04.
 
-- [ ] **Step 1: Write failing inbox and optimistic-lock tests**
+- [x] **Step 1: Write failing inbox and optimistic-lock tests**
 
 Cover the exact API:
 
@@ -609,7 +535,7 @@ The PATCH body is:
 
 Verify unauthenticated requests return `401`, missing CSRF returns `403`, a stale version returns `409`, and list responses never contain the message body.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AdminMessageControllerTest,MessageRetentionJobHandlerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -617,7 +543,7 @@ Verify unauthenticated requests return `401`, missing CSRF returns `403`, a stal
 
 Expected: FAIL because admin inbox use cases are absent.
 
-- [ ] **Step 3: Implement cursor pagination and status transitions**
+- [x] **Step 3: Implement cursor pagination and status transitions**
 
 Encode `(createdAt,id)` as an opaque base64url JSON cursor. Clamp limit to 1–100. Allow transitions among `UNREAD`, `READ`, `ARCHIVED`, and `SPAM`; execute `update contact_message set status = #{status}, version = version + 1, updated_at = #{now} where id = #{id} and version = #{expectedVersion}`, and throw `409 MESSAGE_VERSION_CONFLICT` when zero rows update.
 
@@ -645,17 +571,17 @@ public record EmailDeliveryView(
 ) {}
 ```
 
-`EmailDeliveryView.status` is one of the V6 outbox statuses. `errorCategory` is the existing sanitized category or `null`; it never contains an SMTP response, recipient, server hostname, exception message, or stack trace. These DTOs are admin-only. Every inbox response uses `Cache-Control: no-store`; escape content in the Vue renderer and never render message text as HTML.
+`EmailDeliveryView.status` is one of the V9 outbox statuses. `errorCategory` is the existing sanitized category or `null`; it never contains an SMTP response, recipient, server hostname, exception message, or stack trace. These DTOs are admin-only. Every inbox response uses `Cache-Control: no-store`; escape content in the Vue renderer and never render message text as HTML.
 
-- [ ] **Step 4: Implement manual email retry and hard deletion**
+- [x] **Step 4: Implement manual email retry and hard deletion**
 
 Manual retry changes `FAILED` or `DEAD` to `PENDING`, clears the redacted error, resets `next_attempt_at` to now, and leaves attempt history intact. Reject retry for `SENT` or `SENDING` with `409`. Delete the message and its outbox rows in one transaction. Status changes, manual retry, and deletion each write an audit event containing only message UUID, previous/new state where applicable, creation date, and action—no visitor PII.
 
-- [ ] **Step 5: Add the one-year retention job**
+- [x] **Step 5: Add the one-year retention job**
 
 Implement `MessageRetentionJobHandler` with job type `CONTACT_RETENTION` and idempotency key `contact-retention:{siteDate}`. Delete in batches of 500 where `created_at < now - 1 year`; cascade outbox rows; report only counts to `maintenance_run`. Schedule one job per local day through `BackgroundJobService`.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Run the Step 2 command.
 
@@ -680,19 +606,30 @@ git commit -m "feat(contact): add inbox and retention controls"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsRules.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsEventDeduplicator.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/config/AnalyticsProperties.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/config/AnalyticsProductionConfigurationValidator.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/persistence/AnalyticsEventRecord.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/persistence/AnalyticsEventMapper.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/AnalyticsRateLimitSubjectHasher.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsBodyReader.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsController.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsBatchRequest.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsEventRequest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsCollectorTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsDeduplicationIntegrationTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsPrivacyServiceTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsRulesTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/config/AnalyticsPropertiesTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/AnalyticsRateLimitSubjectHasherTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsBodyReaderTest.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/PublicAnalyticsControllerTest.java`
+- Modify: `backend-parent/portfolio-server/src/main/resources/application.yml`
+- Modify: `backend-parent/portfolio-server/src/test/resources/application-test.yml`
 
 **Interfaces:**
 - Consumes: plan-01 CSRF enforcement, `RateLimiter#consume("public-events", subject)`, `CurrentPublicationQuery#isCurrentPublishedProject(UUID)`, request headers in memory, and a base64 HMAC secret.
 - Produces: `POST /api/public/events`, returning `204 No Content` for accepted or consent-suppressed batches.
 
-- [ ] **Step 1: Write failing privacy and allowlist tests**
+- [x] **Step 1: Write failing privacy and allowlist tests**
 
 ```java
 @Test
@@ -717,7 +654,7 @@ void rejectsUnpublishedProjectAndUnknownEventProperties() {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AnalyticsCollectorTest,AnalyticsDeduplicationIntegrationTest,PublicAnalyticsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -725,7 +662,7 @@ void rejectsUnpublishedProjectAndUnknownEventProperties() {
 
 Expected: FAIL because collection has not been implemented.
 
-- [ ] **Step 3: Define a bounded batch request**
+- [x] **Step 3: Define a bounded batch request**
 
 ```java
 public record PublicAnalyticsBatchRequest(
@@ -747,7 +684,7 @@ public record PublicAnalyticsEventRequest(
 
 Reject unknown JSON fields and all extra event properties. The controller deliberately does not run eager bean validation on this outer record: it checks `DNT` and `analyticsConsent` first and returns `204`, then the collector validates nonblank identifiers, a nonempty batch, every nested field, and the 22–64 character identifier bounds for consented requests. This ordering lets a no-consent request contain no identifier. Referrer is the only accepted URL-shaped field and is reduced to a hostname before persistence; do not accept arbitrary labels, page query strings, user text, revenue, screen dimensions, or browser metadata.
 
-- [ ] **Step 4: Add versioned rules and normalize fields**
+- [x] **Step 4: Add versioned rules and normalize fields**
 
 ```yaml
 version: analytics-rules-v1
@@ -770,11 +707,29 @@ crawlerTokens:
   - crawler
   - spider
   - preview
+referrerDomains:
+  - baidu.com
+  - bing.com
+  - bilibili.com
+  - csdn.net
+  - discord.com
+  - duckduckgo.com
+  - gitee.com
+  - github.com
+  - google.com
+  - juejin.cn
+  - linkedin.com
+  - reddit.com
+  - t.co
+  - x.com
+  - youtube.com
+  - zhihu.com
 ```
 
 Normalize referrer to lowercase ASCII hostname only, map empty/same-site referrers to `(direct)`, classify the in-memory User-Agent to `DESKTOP`, `MOBILE`, `TABLET`, or `OTHER`, and discard known crawlers before persistence. Page keys must come from the file; project events require a currently published project ID.
+Reduce allowlisted external subdomains to their configured root domain and map every other valid external hostname to `(none)`, so attacker-controlled subdomains cannot become permanent analytics dimensions.
 
-- [ ] **Step 5: Derive daily privacy keys**
+- [x] **Step 5: Derive daily privacy keys**
 
 ```java
 LocalDate siteDate = receivedAt.atZone(ZoneId.of("Asia/Hong_Kong")).toLocalDate();
@@ -784,19 +739,21 @@ String sessionDayKey = hex(hmac(secret, siteDate + "\nsession\n" + request.sessi
 
 Validate browser IDs as base64url-encoded 128–256 bit random values before HMAC. The raw IDs exist only in method-local values and are never logged. Implement `ContactProperties` and `AnalyticsProperties` as final classes with redacted `toString()` methods; do not use record/Lombok string generation for HMAC secrets or the owner email. Production startup validates decoded secret entropy is at least 256 bits.
 
-- [ ] **Step 6: Enforce exact ten-second duplicate suppression under concurrency**
+- [x] **Step 6: Enforce exact ten-second duplicate suppression under concurrency**
 
 For each normalized `(sessionDayKey,eventType,pageKey,projectId)` tuple, acquire a PostgreSQL transaction advisory lock derived from a keyed 64-bit hash. Then query the newest row for the tuple and skip insertion when `received_at >= currentReceivedAt - interval '10 seconds'`. Keep the lock and query in the same short transaction. `client_event_id` also prevents network retries from inserting twice.
 
 The integration test launches two transactions for the same tuple and proves that only one event persists. Add a boundary test at 9.999 seconds (one row) and 10.001 seconds (two rows).
 
-- [ ] **Step 7: Implement endpoint privacy behavior and rate limit**
+- [x] **Step 7: Implement endpoint privacy behavior and rate limit**
 
 If `analyticsConsent` is false, return `204` without validating identifiers or persisting. Otherwise call `rateLimiter.consume("public-events", hashedSubject)`, return `429` plus `Retry-After` when denied, ignore known crawlers, accept at most 20 events/32 KiB, use server receipt time for day and dedupe decisions, and return `204`. `DNT` behavior remains a browser obligation in plan 05; if a request nevertheless carries `DNT: 1`, also return `204` without persistence as defense in depth.
 
 Controller tests send CSRF for all consent/no-consent/DNT application-path cases and separately prove that a missing/invalid token returns `403 CSRF_INVALID` with zero rows. The no-consent and DNT short-circuits occur after the security filter but before identifier validation or rate-limit consumption. For a consented request, the injected limiter fake records exactly `consume("public-events", hashedSubject)` and never receives a raw IP or any other policy name.
 
-- [ ] **Step 8: Run tests and commit**
+Do not expose this route in production until Task 6 aggregation and 30-day raw-event retention are enabled. The production reverse proxy must also disable access logging for `/api/public/events` or use a dedicated format that omits client IP, User-Agent, Referrer, cookies, and query strings.
+
+- [x] **Step 8: Run tests and commit**
 
 Run the Step 2 command.
 
@@ -821,10 +778,10 @@ git commit -m "feat(analytics): collect opt-in private events"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/application/AnalyticsRetentionJobHandlerTest.java`
 
 **Interfaces:**
-- Consumes: plan-02 `BackgroundJobService`, `JobHandler`, `maintenance_run`, and V7 events.
+- Consumes: plan-02 `BackgroundJobService`, `JobHandler`, `maintenance_run`, and V10 events.
 - Produces: reproducible `analytics_daily` rows and daily job types `ANALYTICS_AGGREGATE` and `ANALYTICS_RETENTION`.
 
-- [ ] **Step 1: Write a fixed-fixture aggregation test**
+- [x] **Step 1: Write a fixed-fixture aggregation test**
 
 Insert a fixture spanning `2026-07-14` Hong Kong time with:
 
@@ -836,7 +793,7 @@ Insert a fixture spanning `2026-07-14` Hong Kong time with:
 
 Assert exact rows for ALL, PAGE, PROJECT, REFERRER, DEVICE, and LOCALE dimensions, including `PV=3`, `DAILY_UV=2` for all page views, and each event count.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AnalyticsAggregationServiceTest,AnalyticsRetentionJobHandlerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -844,7 +801,7 @@ Assert exact rows for ALL, PAGE, PROJECT, REFERRER, DEVICE, and LOCALE dimension
 
 Expected: FAIL because no aggregates or retention handlers exist.
 
-- [ ] **Step 3: Implement deterministic rebuild-and-upsert**
+- [x] **Step 3: Implement deterministic rebuild-and-upsert**
 
 Within one transaction for a requested `siteDate`:
 
@@ -853,24 +810,32 @@ Within one transaction for a requested `siteDate`:
 3. insert `PV` for `PAGE_VIEW` counts;
 4. insert `DAILY_UV` using `count(distinct visitor_day_key)`;
 5. insert `EVENT_COUNT` for every event type;
-6. generate ALL and each applicable dimension with `(none)` for absent optional values;
+6. generate ALL with `(all)` and each applicable dimension with `(none)` for absent optional values;
 7. record a successful or failed `maintenance_run` with counts only.
 
 The job idempotency key is `analytics-aggregate:{siteDate}:analytics-rules-v1`. Re-running produces byte-equivalent result rows apart from `updated_at`.
 
-- [ ] **Step 4: Schedule late-arrival-safe daily work**
+Implementation note: the rebuild uses one materialized SQL snapshot after stable date/version advisory locks. The queued payload carries the exact aggregation version so a rules deployment cannot silently execute an old key with new semantics.
+
+- [x] **Step 4: Schedule late-arrival-safe daily work**
 
 At 00:15 `Asia/Hong_Kong`, enqueue aggregation for the previous day and the current day. Every hour, enqueue the current day again with an hour-suffixed job idempotency key so the dashboard catches late events. The aggregation itself remains date-idempotent.
 
-- [ ] **Step 5: Implement 30-day event retention**
+Implementation note: the daily previous-day job and hourly current-day job both run at minute 15 without sharing a key. At minute 45, a bounded recent-window scan enqueues the first incomplete date with an independent hour-scoped repair key, so a dead original job cannot permanently strand a date.
+
+- [x] **Step 5: Implement 30-day event retention**
 
 The daily `ANALYTICS_RETENTION` handler first verifies that every date being purged has aggregate rows, then deletes events in batches of 5,000 where `received_at < now - 30 days`. Do not delete aggregate rows. Record only deleted row count and cutoff in `maintenance_run`.
 
-- [ ] **Step 6: Run tests and commit**
+Implementation note: V11 writes an immutable checkpoint under the same date lock before the first raw deletion and compares the full expected dimension rowset against the stored aggregates. Runtime has no direct raw-delete capability; a scoped database function enforces the database-clock 30-day boundary and the 5,000-row limit. Database triggers reject uncheckpointed raw deletion, late raw insertion, and aggregate mutation after retention starts. A missing expired aggregate may be rebuilt only while no checkpoint exists. Each leased job handles at most ten 5,000-row batches; its final batch atomically creates an attempt-fenced idempotent successor when more rows remain.
+
+- [x] **Step 6: Run tests and commit**
 
 Run the Step 2 command twice.
 
 Expected: both runs PASS and the second aggregation leaves the same metric keys and counts.
+
+Verification note: the focused command passed twice with 31 tests each. A clean full Maven verify passed 1,888 tests with zero failures and zero errors; an independent concurrency, recovery, and retention review found no remaining P1/P2 findings.
 
 ```powershell
 git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics
@@ -891,10 +856,10 @@ git commit -m "feat(analytics): aggregate and retain private metrics"
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics/web/AdminAnalyticsControllerTest.java`
 
 **Interfaces:**
-- Consumes: current admin authentication and V7 aggregate rows.
+- Consumes: current admin authentication and V10 aggregate rows.
 - Produces: summary, time-series, and ranked breakdown APIs consumed by plan 04.
 
-- [ ] **Step 1: Write failing report API tests**
+- [x] **Step 1: Write failing report API tests**
 
 Test these exact endpoints:
 
@@ -906,7 +871,7 @@ GET /api/admin/analytics/breakdown?from=2026-07-01&to=2026-07-14&metric=EVENT_CO
 
 Assert auth, date validation, max 366-day range, limit 1–100, zero-filled missing days, stable tie ordering by `dimensionValue`, and that the response declares data delay and metric definitions. Accept only `zone=Asia/Hong_Kong`; reject other zones with `400 ANALYTICS_ZONE_UNSUPPORTED` rather than relabeling fixed site-day aggregates.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AdminAnalyticsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -914,7 +879,7 @@ Assert auth, date validation, max 366-day range, limit 1–100, zero-filled miss
 
 Expected: FAIL because admin report endpoints are absent.
 
-- [ ] **Step 3: Implement report DTOs and queries**
+- [x] **Step 3: Implement report DTOs and queries**
 
 ```java
 public record AnalyticsSummary(
@@ -924,7 +889,7 @@ public record AnalyticsSummary(
     long resumeDownloads,
     long demoDownloads,
     long outboundClicks,
-    Instant dataCompleteThrough,
+    Instant dataCompleteThrough, // nullable until the requested range is fully aggregated
     String zone,
     Map<String, String> definitions
 ) {}
@@ -936,15 +901,19 @@ public record AnalyticsBreakdownItem(String dimensionValue, long value) {}
 
 `dailyUniqueVisitors` across a range is the sum of each site's daily UV, not a cross-day unique-person count. Return the definition text explicitly in both languages through stable message keys. Resolve project dimension UUIDs to current or archived project titles through a read-only plan-03 query, but retain the UUID when a title no longer exists.
 
-- [ ] **Step 4: Apply response security and cache rules**
+`dataCompleteThrough` is the latest aggregate refresh timestamp only when every requested site day contains the seven required `ALL` sentinel metrics under one aggregation version. Return explicit `null` for an empty or incomplete range; plan 04 renders that state as “尚无完整聚合 / No complete aggregation”.
+
+- [x] **Step 4: Apply response security and cache rules**
 
 Admin analytics responses use `Cache-Control: no-store`, never include raw events, visitor-day keys, session-day keys, or contact data, and require CSRF only for mutations (these endpoints are GET). Audit only export actions if CSV export is added in a later scope; do not add export now.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS with exact fixture totals and zero-filled dates.
+
+Verification note: the focused PostgreSQL report suite passed 11 tests; the report/public-collector/batched-project-label regression passed 28 tests. A clean full Maven verify passed 1,899 tests across 171 suites with zero failures and zero errors (14 intentionally skipped). Three independent API, SQL, and cross-plan reviews found no remaining P1/P2 findings. The protected pre-existing Docker database fingerprint remained unchanged.
 
 ```powershell
 git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics

@@ -412,6 +412,9 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
                  "reason":"EXPLICIT","channel":"LOCAL_CLI","backupSha256":"abc",
                  "recoveryCodeCount":"10","revokedOtherSessions":"2",
                  "staleActor":"false","fromKeyVersion":"1","toKeyVersion":"2",
+                 "previousStatus":"UNREAD","newStatus":"READ",
+                 "previousEmailStatus":"FAILED","newEmailStatus":"PENDING",
+                 "createdDate":"2026-07-18",
                  "password":"secret","rawIp":"203.0.113.8",
                  "userAgent":"user-agent-secret","sessionId":"session-secret",
                  "recoveryCode":"recovery-secret","totpSecret":"totp-secret",
@@ -422,7 +425,8 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
         assertThat(safe).containsOnlyKeys(
                 "stage", "next", "method", "reason", "channel", "backupSha256",
                 "recoveryCodeCount", "revokedOtherSessions", "staleActor",
-                "fromKeyVersion", "toKeyVersion");
+                "fromKeyVersion", "toKeyVersion", "previousStatus", "newStatus",
+                "previousEmailStatus", "newEmailStatus", "createdDate");
         assertThat(safe.toString()).doesNotContain(
                 "secret", "rawIp", "userAgent", "sessionId", "totpSecret",
                 "databaseUrl", "unknown", "filePath", "exception",

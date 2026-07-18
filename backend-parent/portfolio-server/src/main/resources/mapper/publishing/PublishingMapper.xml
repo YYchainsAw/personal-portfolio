@@ -74,7 +74,15 @@
   </select>
 
   <select id="redirectTarget" resultType="string">
-    select new_slug from portfolio.slug_redirect where old_slug = #{oldSlug}
+    select current_publication.current_slug
+    from portfolio.slug_redirect redirect
+    join portfolio.publication current_publication
+      on current_publication.aggregate_type = 'PROJECT'
+     and current_publication.aggregate_id = redirect.project_id
+     and current_publication.status = 'PUBLISHED'
+     and current_publication.current_revision_id is not null
+     and current_publication.current_slug is not null
+    where redirect.old_slug = #{oldSlug}
   </select>
 
   <insert id="insertRevision">

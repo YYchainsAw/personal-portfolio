@@ -40,6 +40,9 @@ class PublishingFoundationIntegrationTest extends PostgresIntegrationTestBase {
     void repositoryRoundTripsRevisionPointerHistoryAndTimestampedRedirect() {
         UUID adminId = ensureAdmin();
         UUID projectId = insertProject("Repository title");
+        String firstSlug = slug(projectId);
+        String secondSlug = "second-" + compact(projectId);
+        String currentSlug = "current-" + compact(projectId);
         publications.ensureProjectPublication(projectId);
         var initial = publications.lock(AggregateType.PROJECT, projectId);
         assertThat(initial.status()).isEqualTo("ARCHIVED");
@@ -54,10 +57,10 @@ class PublishingFoundationIntegrationTest extends PostgresIntegrationTestBase {
                 projectId,
                 initial.version(),
                 revision.id(),
-                slug(projectId),
+                firstSlug,
                 publishedAt)).isTrue();
 
-        assertThat(publications.findPublishedProjectBySlug(slug(projectId)))
+        assertThat(publications.findPublishedProjectBySlug(firstSlug))
                 .get()
                 .extracting(PublishingRepository.PublicationRow::currentRevisionId)
                 .isEqualTo(revision.id());
@@ -67,21 +70,57 @@ class PublishingFoundationIntegrationTest extends PostgresIntegrationTestBase {
                 .containsExactly(revision.id());
 
         Instant redirectedAt = publishedAt.plusSeconds(60);
-        publications.insertRedirect(slug(projectId), "new-" + slug(projectId), projectId, redirectedAt);
-        assertThat(publications.redirectTarget(slug(projectId)))
-                .contains("new-" + slug(projectId));
+        RevisionRow secondRevision = revision(
+                adminId, AggregateType.PROJECT, projectId, 2L, "{}");
+        publications.insertRevision(secondRevision);
+        publications.insertRedirect(firstSlug, secondSlug, projectId, redirectedAt);
+        assertThat(publications.casPublish(
+                AggregateType.PROJECT,
+                projectId,
+                1L,
+                secondRevision.id(),
+                secondSlug,
+                redirectedAt)).isTrue();
+        assertThat(publications.redirectTarget(firstSlug)).contains(secondSlug);
+
+        Instant redirectedAgainAt = redirectedAt.plusSeconds(60);
+        RevisionRow currentRevision = revision(
+                adminId, AggregateType.PROJECT, projectId, 3L, "{}");
+        publications.insertRevision(currentRevision);
+        publications.insertRedirect(
+                secondSlug, currentSlug, projectId, redirectedAgainAt);
+        assertThat(publications.casPublish(
+                AggregateType.PROJECT,
+                projectId,
+                2L,
+                currentRevision.id(),
+                currentSlug,
+                redirectedAgainAt)).isTrue();
+
+        assertThat(publications.redirectTarget(firstSlug)).contains(currentSlug);
+        assertThat(publications.redirectTarget(secondSlug)).contains(currentSlug);
+        assertThat(publications.redirectTarget(currentSlug)).isEmpty();
+        assertThat(publications.history(AggregateType.PROJECT, projectId))
+                .extracting(RevisionRow::id)
+                .containsExactly(
+                        currentRevision.id(), secondRevision.id(), revision.id());
         assertThat(jdbc.sql("""
                         select created_at from portfolio.slug_redirect where old_slug=:slug
                         """)
-                .param("slug", slug(projectId))
+                .param("slug", firstSlug)
                 .query(Instant.class)
                 .single()).isEqualTo(redirectedAt);
 
         assertThat(publications.casArchive(
-                AggregateType.PROJECT, projectId, 1L, publishedAt.plusSeconds(120))).isTrue();
+                AggregateType.PROJECT,
+                projectId,
+                3L,
+                redirectedAgainAt.plusSeconds(60))).isTrue();
+        assertThat(publications.redirectTarget(firstSlug)).isEmpty();
+        assertThat(publications.redirectTarget(secondSlug)).isEmpty();
         var archived = publications.lock(AggregateType.PROJECT, projectId);
         assertThat(archived.status()).isEqualTo("ARCHIVED");
-        assertThat(archived.currentRevisionId()).isEqualTo(revision.id());
+        assertThat(archived.currentRevisionId()).isEqualTo(currentRevision.id());
     }
 
     @Test

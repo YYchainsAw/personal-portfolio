@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
@@ -126,6 +127,15 @@ class PublishingReadPortsTest extends PostgresIntegrationTestBase {
                 .isEmpty();
         assertThat(projectLabels.findProjectTitle(UUID.randomUUID(), LocaleCode.EN))
                 .isEmpty();
+
+        UUID missing = UUID.randomUUID();
+        assertThat(projectLabels.findProjectTitles(
+                        Set.of(published.id(), archived.id(), neverPublished.id(), missing),
+                        LocaleCode.ZH_CN))
+                .containsExactlyInAnyOrderEntriesOf(Map.of(
+                        published.id(), "当前发布标题",
+                        archived.id(), "当前归档标题"));
+        assertThat(projectLabels.findProjectTitles(Set.of(), LocaleCode.EN)).isEmpty();
     }
 
     private RevisionRow publishProject(ProjectSeed project, UUID adminId, long revisionVersion) {

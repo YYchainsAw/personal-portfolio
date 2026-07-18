@@ -1,0 +1,120 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org" th:lang="${locale}" lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title th:text="${site.seo.title}">Portfolio</title>
+  <meta name="description" th:content="${site.seo.description}" content="Portfolio">
+  <link rel="canonical" th:href="${canonical}" href="https://yychainsaw.xyz/zh-CN">
+  <link rel="alternate" hreflang="zh-CN" th:href="${zhUrl}" href="https://yychainsaw.xyz/zh-CN">
+  <link rel="alternate" hreflang="en" th:href="${enUrl}" href="https://yychainsaw.xyz/en">
+  <meta property="og:type" content="website">
+  <meta property="og:title" th:content="${site.seo.title}" content="Portfolio">
+  <meta property="og:description" th:content="${site.seo.description}" content="Portfolio">
+  <meta property="og:url" th:content="${canonical}" content="https://yychainsaw.xyz/zh-CN">
+  <meta property="og:image" th:if="${ogImage != null}" th:content="${ogImage}">
+  <link th:each="css : ${assets.css}" rel="stylesheet" th:href="${css}">
+  <script type="application/ld+json" th:utext="${structuredData}"></script>
+</head>
+<body>
+  <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
+
+  <header>
+    <nav th:attr="aria-label=${site.accessibility.primaryNav}" aria-label="Primary navigation">
+      <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
+         th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
+      <a th:href="${enUrl}" hreflang="en" lang="en"
+         th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
+    </nav>
+  </header>
+
+  <main id="app">
+    <div id="main-content" tabindex="-1">
+      <section aria-labelledby="hero-title">
+        <p th:text="${site.hero.eyebrow}">Portfolio</p>
+        <h1 id="hero-title" th:text="${site.hero.headline}">Portfolio</h1>
+        <p th:text="${site.hero.introduction}">Introduction</p>
+
+        <figure th:if="${site.hero.media != null}">
+          <img th:src="${site.hero.media.src}"
+               th:srcset="${site.hero.media.srcset}"
+               th:alt="${site.hero.media.alt}"
+               th:width="${site.hero.media.width}"
+               th:height="${site.hero.media.height}"
+               fetchpriority="high">
+          <figcaption th:if="${!#strings.isEmpty(site.hero.media.caption)
+              or !#strings.isEmpty(site.hero.credit)
+              or !#strings.isEmpty(site.hero.media.credit)}">
+            <span th:if="${!#strings.isEmpty(site.hero.media.caption)}"
+                  th:text="${site.hero.media.caption}"></span>
+            <a th:if="${!#strings.isEmpty(site.hero.credit)
+                    and !#strings.isEmpty(site.hero.sourceUrl)}"
+               th:href="${site.hero.sourceUrl}"
+               th:text="${site.hero.credit}"
+               target="_blank" rel="noopener noreferrer"></a>
+            <span th:if="${!#strings.isEmpty(site.hero.credit)
+                    and #strings.isEmpty(site.hero.sourceUrl)}"
+                  th:text="${site.hero.credit}"></span>
+            <a th:if="${#strings.isEmpty(site.hero.credit)
+                    and !#strings.isEmpty(site.hero.media.credit)
+                    and !#strings.isEmpty(site.hero.media.sourceUrl)}"
+               th:href="${site.hero.media.sourceUrl}"
+               th:text="${site.hero.media.credit}"
+               target="_blank" rel="noopener noreferrer"></a>
+            <span th:if="${#strings.isEmpty(site.hero.credit)
+                    and !#strings.isEmpty(site.hero.media.credit)
+                    and #strings.isEmpty(site.hero.media.sourceUrl)}"
+                  th:text="${site.hero.media.credit}"></span>
+          </figcaption>
+        </figure>
+      </section>
+
+      <section aria-labelledby="projects-title">
+        <p th:text="${site.work.label}">Work</p>
+        <h2 id="projects-title" th:text="${site.work.title}">Projects</h2>
+        <p th:text="${site.work.introduction}">Selected projects</p>
+        <ul>
+          <li th:each="project : ${catalog}">
+            <article>
+              <figure th:if="${project.cover != null}">
+                <img th:src="${project.cover.src}"
+                     th:srcset="${project.cover.srcset}"
+                     th:alt="${project.cover.alt}"
+                     th:width="${project.cover.width}"
+                     th:height="${project.cover.height}"
+                     loading="lazy">
+                <figcaption th:if="${!#strings.isEmpty(project.cover.caption)
+                    or !#strings.isEmpty(project.cover.credit)}">
+                  <span th:if="${!#strings.isEmpty(project.cover.caption)}"
+                        th:text="${project.cover.caption}"></span>
+                  <a th:if="${!#strings.isEmpty(project.cover.credit)
+                          and !#strings.isEmpty(project.cover.sourceUrl)}"
+                     th:href="${project.cover.sourceUrl}"
+                     th:text="${project.cover.credit}"
+                     target="_blank" rel="noopener noreferrer"></a>
+                  <span th:if="${!#strings.isEmpty(project.cover.credit)
+                          and #strings.isEmpty(project.cover.sourceUrl)}"
+                        th:text="${project.cover.credit}"></span>
+                </figcaption>
+              </figure>
+              <p th:text="${project.eyebrow}">Project</p>
+              <h3>
+                <a th:href="@{/{locale}/projects/{slug}(locale=${locale},slug=${project.slug})}"
+                   th:text="${project.title}">Project title</a>
+              </h3>
+              <p th:text="${project.summary}">Project summary</p>
+              <ul th:if="${!project.tags.isEmpty()}"
+                  th:attr="aria-label=${site.accessibility.projectTags}">
+                <li th:each="tag : ${project.tags}" th:text="${tag}">Tag</li>
+              </ul>
+            </article>
+          </li>
+        </ul>
+      </section>
+    </div>
+  </main>
+
+  <template id="__PORTFOLIO_DATA__" th:utext="${initialJson}"></template>
+  <script type="module" th:src="${assets.entryJs}"></script>
+</body>
+</html>

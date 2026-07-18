@@ -61,6 +61,8 @@ import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
     "portfolio.jobs.worker-enabled=true",
     "portfolio.jobs.initial-delay=PT24H",
     "portfolio.jobs.poll-delay=PT24H",
+    "portfolio.analytics.maintenance-scheduling-enabled=false",
+    "portfolio.message.retention.scheduling-enabled=false",
     "portfolio.security.session.cleanup-interval=PT24H"
 })
 @Import(DatabaseJobWorkerTest.WorkerTestConfiguration.class)

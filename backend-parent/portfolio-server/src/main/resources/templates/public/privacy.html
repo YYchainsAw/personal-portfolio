@@ -1,0 +1,43 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org" th:lang="${locale}" lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title th:text="${site.privacy.title + ' · ' + site.identity.displayName}">Privacy · Portfolio</title>
+  <meta name="description" th:content="${site.seo.description}" content="Privacy">
+  <link rel="canonical" th:href="${canonical}" href="https://yychainsaw.xyz/zh-CN/privacy">
+  <link rel="alternate" hreflang="zh-CN" th:href="${zhUrl}" href="https://yychainsaw.xyz/zh-CN/privacy">
+  <link rel="alternate" hreflang="en" th:href="${enUrl}" href="https://yychainsaw.xyz/en/privacy">
+  <meta property="og:type" content="website">
+  <meta property="og:title"
+        th:content="${site.privacy.title + ' · ' + site.identity.displayName}"
+        content="Privacy · Portfolio">
+  <meta property="og:description" th:content="${site.seo.description}" content="Privacy">
+  <meta property="og:url" th:content="${canonical}" content="https://yychainsaw.xyz/zh-CN/privacy">
+  <link th:each="css : ${assets.css}" rel="stylesheet" th:href="${css}">
+  <script type="application/ld+json" th:utext="${structuredData}"></script>
+</head>
+<body>
+  <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
+
+  <header>
+    <nav th:attr="aria-label=${site.accessibility.primaryNav}" aria-label="Primary navigation">
+      <a th:href="@{/{locale}(locale=${locale})}" th:text="${site.identity.displayName}">Home</a>
+      <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
+         th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
+      <a th:href="${enUrl}" hreflang="en" lang="en"
+         th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
+    </nav>
+  </header>
+
+  <main id="app">
+    <article id="main-content" tabindex="-1">
+      <h1 th:text="${site.privacy.title}">Privacy</h1>
+      <div th:utext="${site.privacy.html}"></div>
+    </article>
+  </main>
+
+  <template id="__PORTFOLIO_DATA__" th:utext="${initialJson}"></template>
+  <script type="module" th:src="${assets.entryJs}"></script>
+</body>
+</html>

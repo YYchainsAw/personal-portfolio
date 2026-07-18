@@ -1686,7 +1686,7 @@ export interface MessageSummaryDto { id: string; visitorName: string; visitorEma
 export interface EmailDeliveryView { status: string; attempts: number; nextAttemptAt: string | null; sentAt: string | null; updatedAt: string; errorCategory: string | null }
 export interface MessageDetailDto { id: string; visitorName: string; visitorEmail: string; subject: string; body: string; status: MessageStatus; email: EmailDeliveryView; privacyAcceptedAt: string; createdAt: string; updatedAt: string; version: number }
 export interface UpdateMessageStatusRequest { status: MessageStatus; version: number }
-export interface AnalyticsSummaryDto { pageViews: number; dailyUniqueVisitors: number; projectViews: number; resumeDownloads: number; demoDownloads: number; outboundClicks: number; dataCompleteThrough: string; zone: string; definitions: Record<string, string> }
+export interface AnalyticsSummaryDto { pageViews: number; dailyUniqueVisitors: number; projectViews: number; resumeDownloads: number; demoDownloads: number; outboundClicks: number; dataCompleteThrough: string | null; zone: string; definitions: Record<string, string> }
 export interface AnalyticsPointDto { date: string; value: number }
 export type AnalyticsDimension = 'PAGE' | 'PROJECT' | 'REFERRER' | 'DEVICE' | 'LOCALE'
 export interface AnalyticsBreakdownItemDto { dimensionValue: string; value: number }
@@ -1699,7 +1699,7 @@ export interface AnalyticsBreakdownItemDto { dimensionValue: string; value: numb
 - Inbox status changes reset the cursor; “load more” appends without duplicates by UUID. Selecting a row loads full detail, renders subject/body only by Vue text interpolation, and moves focus to the detail heading.
 - Status actions send the detail's current version and replace both detail/list row from the response. A `409 MESSAGE_VERSION_CONFLICT` reloads that message and asks the operator to retry explicitly.
 - Email detail mirrors all six plan-06 delivery fields: status, attempts, scheduled `nextAttemptAt`, nullable `sentAt`, `updatedAt`, and nullable safe `errorCategory`. Render null times/categories as an explicit unavailable state, use text interpolation, and never display an exception or SMTP response. Retry appears only when the exact status is `FAILED` or `DEAD`, shows the next scheduled attempt when present, confirms, shows progress, and reloads detail. Delete requires typing `DELETE`, calls the exact endpoint, removes the row, clears detail, and never includes visitor PII in logs/toasts.
-- Analytics exposes date/locale/metric/event/dimension controls, validates the range, loads all three endpoints together, renders six summary cards, a table/chart with an accessible table equivalent, ranked breakdown, every definition entry, timezone, and `dataCompleteThrough` delay. Empty data is a valid zero state; request failures remain retryable.
+- Analytics exposes date/locale/metric/event/dimension controls, validates the range, loads all three endpoints together, renders six summary cards, a table/chart with an accessible table equivalent, ranked breakdown, every definition entry, timezone, and `dataCompleteThrough` delay. A null `dataCompleteThrough` renders as “尚无完整聚合 / No complete aggregation”; empty data is a valid zero state, and request failures remain retryable.
 - Replace the temporary `messages` and `analytics` route destinations only after both complete views exist. Do not add public event collection to the admin bundle.
 
 Run: `npm --prefix admin-web run test:unit -- src/views/messages src/views/analytics src/api/operationsApi.spec.ts`

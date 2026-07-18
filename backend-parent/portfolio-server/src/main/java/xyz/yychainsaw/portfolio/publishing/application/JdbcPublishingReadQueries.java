@@ -1,7 +1,10 @@
 package xyz.yychainsaw.portfolio.publishing.application;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -81,5 +84,43 @@ public class JdbcPublishingReadQueries
                 .param("locale", locale.value())
                 .query(String.class)
                 .optional();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, String> findProjectTitles(
+            Set<UUID> projectIds, LocaleCode locale) {
+        Objects.requireNonNull(projectIds, "projectIds");
+        Objects.requireNonNull(locale, "locale");
+        if (projectIds.isEmpty()) {
+            return Map.of();
+        }
+        if (projectIds.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("projectIds contains null");
+        }
+
+        LinkedHashMap<UUID, String> labels = new LinkedHashMap<>();
+        jdbc.sql("""
+                        select project_workspace.id, translation.title
+                        from portfolio.project project_workspace
+                        join portfolio.project_translation translation
+                          on translation.project_id = project_workspace.id
+                        join portfolio.publication publication
+                          on publication.aggregate_type = 'PROJECT'
+                         and publication.aggregate_id = project_workspace.id
+                         and publication.status in ('PUBLISHED', 'ARCHIVED')
+                         and publication.current_revision_id is not null
+                        where project_workspace.id in (:projectIds)
+                          and translation.locale = :locale
+                        order by project_workspace.id
+                        """)
+                .param("projectIds", projectIds)
+                .param("locale", locale.value())
+                .query((row, rowNumber) -> Map.entry(
+                        row.getObject("id", UUID.class),
+                        row.getString("title")))
+                .list()
+                .forEach(entry -> labels.put(entry.getKey(), entry.getValue()));
+        return Map.copyOf(labels);
     }
 }

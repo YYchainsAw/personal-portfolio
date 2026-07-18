@@ -43,12 +43,20 @@ import xyz.yychainsaw.portfolio.auth.web.SecurityProblemWriter;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.common.ratelimit.RateLimitProperties;
 import xyz.yychainsaw.portfolio.config.SecurityConfiguration;
+import xyz.yychainsaw.portfolio.content.api.SiteWorkspaceDto;
 import xyz.yychainsaw.portfolio.publishing.api.ArchiveProjectCommand;
+import xyz.yychainsaw.portfolio.publishing.api.PreviewTokenRequest;
+import xyz.yychainsaw.portfolio.publishing.api.PreviewTokenResponse;
 import xyz.yychainsaw.portfolio.publishing.api.PublicationResult;
 import xyz.yychainsaw.portfolio.publishing.api.PublishProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublishSiteCommand;
 import xyz.yychainsaw.portfolio.publishing.api.ReorderCatalogCommand;
+import xyz.yychainsaw.portfolio.publishing.api.RestoreRevisionRequest;
+import xyz.yychainsaw.portfolio.publishing.application.PreviewService;
+import xyz.yychainsaw.portfolio.publishing.application.PreviewTokenService;
+import xyz.yychainsaw.portfolio.publishing.application.PreviewTokenService.PreviewClaims;
 import xyz.yychainsaw.portfolio.publishing.application.PublicationService;
+import xyz.yychainsaw.portfolio.publishing.application.RestoreService;
 import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository.RevisionRow;
 import xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType;
 
@@ -72,12 +80,20 @@ class AdminPublishingControllerTest {
             UUID.fromString("92000000-0000-4000-8000-000000000004");
     private static final UUID CATALOG_REVISION_ID =
             UUID.fromString("92000000-0000-4000-8000-000000000005");
+    private static final UUID PREVIEW_NONCE =
+            UUID.fromString("92000000-0000-4000-8000-000000000006");
+    private static final String PREVIEW_TOKEN = "payload.signature";
+    private static final Instant PREVIEW_EXPIRES_AT =
+            Instant.parse("2026-07-17T00:10:00Z");
     private static final String NO_STORE = CacheControl.noStore().getHeaderValue();
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
 
     @MockitoBean PublicationService publishing;
+    @MockitoBean PreviewTokenService previewTokens;
+    @MockitoBean PreviewService previews;
+    @MockitoBean RestoreService restores;
     @MockitoBean AdminSessionService sessions;
     @MockitoBean LoginSubjectHasher subjects;
     @MockitoBean RateLimitProperties rateLimits;
@@ -297,6 +313,157 @@ class AdminPublishingControllerTest {
         verifyNoInteractions(publishing);
     }
 
+    @Test
+    void allThreePreviewAndRestoreRoutesReturnTheirBodiesAndNoStore() throws Exception {
+        PreviewTokenRequest request =
+                new PreviewTokenRequest(AggregateType.PROJECT, PROJECT_ID, 7);
+        PreviewTokenResponse response =
+                new PreviewTokenResponse(PREVIEW_TOKEN, PREVIEW_EXPIRES_AT);
+        PreviewClaims claims = previewClaims(AggregateType.PROJECT, PROJECT_ID, 7);
+        RestoreRevisionRequest restore = new RestoreRevisionRequest(11);
+        Map<String, Object> snapshot = Map.of(
+                "schemaVersion", 1,
+                "projectId", PROJECT_ID.toString());
+
+        given(previewTokens.issue(request, ADMIN_ID)).willReturn(response);
+        given(previewTokens.verify(PREVIEW_TOKEN, ADMIN_ID)).willReturn(claims);
+        given(previews.preview(claims)).willReturn(snapshot);
+
+        assertOkNoStore(post("/api/admin/publishing/preview-tokens")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsBytes(request)))
+                .andExpect(jsonPath("$.token").value(PREVIEW_TOKEN))
+                .andExpect(jsonPath("$.expiresAt").value("2026-07-17T00:10:00Z"));
+        assertOkNoStore(get(
+                        "/api/admin/publishing/previews/{token}", PREVIEW_TOKEN))
+                .andExpect(jsonPath("$.schemaVersion").value(1))
+                .andExpect(jsonPath("$.projectId").value(PROJECT_ID.toString()));
+        mvc.perform(authenticated(post(
+                                "/api/admin/publishing/revisions/{revisionId}/restore",
+                                REVISION_ID)
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsBytes(restore))))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE));
+
+        verify(previewTokens).issue(request, ADMIN_ID);
+        verify(previewTokens).verify(PREVIEW_TOKEN, ADMIN_ID);
+        verify(previews).preview(claims);
+        verify(restores).restore(REVISION_ID, 11);
+    }
+
+    @Test
+    void previewTokenIssueAndRevisionRestoreRequireCsrf() throws Exception {
+        PreviewTokenRequest issue =
+                new PreviewTokenRequest(AggregateType.SITE, SiteWorkspaceDto.SITE_ID, 7);
+        RestoreRevisionRequest restore = new RestoreRevisionRequest(11);
+
+        mvc.perform(authenticated(post("/api/admin/publishing/preview-tokens")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsBytes(issue))))
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(
+                        HttpHeaders.CACHE_CONTROL, containsString("no-store")))
+                .andExpect(jsonPath("$.code").value("CSRF_INVALID"));
+        mvc.perform(authenticated(post(
+                                "/api/admin/publishing/revisions/{revisionId}/restore",
+                                REVISION_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsBytes(restore))))
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
+                .andExpect(jsonPath("$.code").value("CSRF_INVALID"));
+
+        verifyNoInteractions(previewTokens, previews, restores);
+    }
+
+    @Test
+    void anonymousPreviewConsumptionIsUnauthorized() throws Exception {
+        mvc.perform(get("/api/admin/publishing/previews/{token}", PREVIEW_TOKEN))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
+                .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+
+        verifyNoInteractions(previewTokens, previews);
+    }
+
+    @Test
+    void previewTokenOwnedByAnotherAdminReturnsUniformForbiddenProblem()
+            throws Exception {
+        given(previewTokens.verify(PREVIEW_TOKEN, ADMIN_ID)).willThrow(new DomainException(
+                "PREVIEW_TOKEN_INVALID", HttpStatus.FORBIDDEN, Map.of()));
+
+        mvc.perform(authenticated(get(
+                                "/api/admin/publishing/previews/{token}", PREVIEW_TOKEN)))
+                .andExpect(status().isForbidden())
+                .andExpect(header().string(
+                        HttpHeaders.CACHE_CONTROL, containsString("no-store")))
+                .andExpect(jsonPath("$.code").value("PREVIEW_TOKEN_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors").isEmpty());
+
+        verify(previewTokens).verify(PREVIEW_TOKEN, ADMIN_ID);
+        verifyNoInteractions(previews);
+    }
+
+    @Test
+    void stalePreviewWorkspaceVersionIsReturnedAsConflict() throws Exception {
+        PreviewClaims claims = previewClaims(AggregateType.PROJECT, PROJECT_ID, 7);
+        given(previewTokens.verify(PREVIEW_TOKEN, ADMIN_ID)).willReturn(claims);
+        given(previews.preview(claims)).willThrow(new DomainException(
+                "CONTENT_VERSION_CONFLICT",
+                HttpStatus.CONFLICT,
+                Map.of("version", "workspace was changed by another request")));
+
+        mvc.perform(authenticated(get(
+                                "/api/admin/publishing/previews/{token}", PREVIEW_TOKEN)))
+                .andExpect(status().isConflict())
+                .andExpect(header().string(
+                        HttpHeaders.CACHE_CONTROL, containsString("no-store")))
+                .andExpect(jsonPath("$.code").value("CONTENT_VERSION_CONFLICT"));
+
+        verify(previewTokens).verify(PREVIEW_TOKEN, ADMIN_ID);
+        verify(previews).preview(claims);
+    }
+
+    @Test
+    void catalogPreviewTokenIssueIsRejectedAsUnprocessable() throws Exception {
+        PreviewTokenRequest request = new PreviewTokenRequest(
+                AggregateType.PROJECT_CATALOG,
+                UUID.fromString("00000000-0000-0000-0000-000000000002"),
+                7);
+        given(previewTokens.issue(request, ADMIN_ID)).willThrow(new DomainException(
+                "CATALOG_PREVIEW_NOT_ALLOWED",
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                Map.of()));
+
+        mvc.perform(authenticated(post("/api/admin/publishing/preview-tokens")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsBytes(request))))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(header().string(
+                        HttpHeaders.CACHE_CONTROL, containsString("no-store")))
+                .andExpect(jsonPath("$.code").value("CATALOG_PREVIEW_NOT_ALLOWED"));
+
+        verify(previewTokens).issue(request, ADMIN_ID);
+        verifyNoInteractions(previews, restores);
+    }
+
+    @Test
+    void literalNullPreviewTokenAndRestoreBodiesReturnStableClientProblem()
+            throws Exception {
+        assertInvalidNullBody(post("/api/admin/publishing/preview-tokens")
+                .with(csrf()));
+        assertInvalidNullBody(post(
+                        "/api/admin/publishing/revisions/{revisionId}/restore",
+                        REVISION_ID)
+                .with(csrf()));
+
+        verifyNoInteractions(previewTokens, previews, restores);
+    }
+
     private PublicationResult result(long aggregateVersion, Long catalogVersion) {
         return new PublicationResult(
                 REVISION_ID,
@@ -304,6 +471,17 @@ class AdminPublishingControllerTest {
                 catalogVersion == null ? null : CATALOG_REVISION_ID,
                 catalogVersion,
                 "project-checksum");
+    }
+
+    private static PreviewClaims previewClaims(
+            AggregateType type, UUID aggregateId, long workspaceVersion) {
+        return new PreviewClaims(
+                ADMIN_ID,
+                type,
+                aggregateId,
+                workspaceVersion,
+                PREVIEW_EXPIRES_AT,
+                PREVIEW_NONCE);
     }
 
     private ResultActions assertOkNoStore(MockHttpServletRequestBuilder request)
