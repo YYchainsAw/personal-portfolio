@@ -1048,21 +1048,29 @@ git commit -m "feat(admin): add bilingual site workspace editor"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/types/blocks.ts`
 - Modify: `admin-web/src/types/content.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.spec.ts`
 - Create: `admin-web/src/api/projectApi.ts`
+- Test: `admin-web/src/api/projectApi.spec.ts`
 - Create: `admin-web/src/views/projects/ProjectListView.vue`
 - Create: `admin-web/src/views/projects/ProjectEditorView.vue`
 - Create: `admin-web/src/components/projects/ProjectMetadataForm.vue`
+- Create: `admin-web/src/tests/fixtures/projectWorkspace.ts`
 - Test: `admin-web/src/types/blocks.spec.ts`
+- Test: `admin-web/src/components/projects/ProjectMetadataForm.spec.ts`
 - Test: `admin-web/src/views/projects/ProjectListView.spec.ts`
 - Test: `admin-web/src/views/projects/ProjectEditorView.spec.ts`
+- Modify: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/content/api/ContentBlockDto.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/web/AdminContentControllerSliceTest.java`
 
 **Interfaces:**
 - Consumes: media summaries, locale/completion components, and versioned autosave.
 - Produces: `ProjectWorkspaceDto`, `ProjectListItemDto`, `ContentBlockDto`, `projectApi`, and editor metadata into which Task 8 mounts `BlockEditor`.
 
-- [ ] **Step 1: Write failing tests for discriminated blocks and project ordering**
+- [x] **Step 1: Write failing tests for discriminated blocks and project ordering**
 
 ```ts
 // admin-web/src/types/blocks.spec.ts
@@ -1081,15 +1089,15 @@ describe('createBlock', () => {
 })
 ```
 
-Project list tests must assert client-side status/search filtering over the exact plan-03 `ProjectWorkspaceDto[]`, accessible empty state, deterministic `sortOrder`, and edit navigation by stable UUID rather than slug. Catalog reorder is a publishing mutation and is wired with its exact CAS command in Task 9.
+Project API/list tests must assert that `GET /api/admin/projects` returns the complete plan-03 `ProjectWorkspaceDto[]`, including every translation, taxonomy reference, project-media row, and existing content block. `ProjectListView` derives display rows without mutating that source array, sorts a defensive copy by `sortOrder` with stable UUID tie-breaking, and applies status/search filters locally without making another request. Tests also cover an accessible true-empty state separately from a no-filter-match state, and edit navigation by stable project UUID rather than slug. Catalog reorder is a publishing mutation and is wired with its exact CAS command in Task 9.
 
-- [ ] **Step 2: Run project/block tests and observe missing-contract failures**
+- [x] **Step 2: Run project/block tests and observe missing-contract failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/types/blocks.spec.ts src/views/projects`
 
 Expected: FAIL because the project and block modules do not exist.
 
-- [ ] **Step 3: Define the complete typed block and project workspace contracts**
+- [x] **Step 3: Define the complete typed block and project workspace contracts**
 
 ```ts
 // admin-web/src/types/blocks.ts
@@ -1102,7 +1110,7 @@ export interface BlockCopy { title: string; description: string }
 export interface ActionCopy { label: string; description: string }
 export interface QuoteCopy { quote: string; source: string }
 export interface MetricCopy { label: string; value: string; suffix: string }
-export interface MetricDto { id: string; sortOrder: number; numericValue: number | null; copy: Localized<MetricCopy> }
+export interface MetricDto { id: string; sortOrder: number; numericValue: string | null; copy: Localized<MetricCopy> }
 export type ContentBlockPayload =
   | { type: 'MARKDOWN'; markdown: Localized<string> }
   | { type: 'IMAGE'; mediaAssetId: string | null }
@@ -1162,7 +1170,8 @@ const draft = (workspace: ProjectWorkspaceDto): VersionedDraft<ProjectWorkspaceD
 export const projectApi = {
   async list(): Promise<ProjectWorkspaceDto[]> { return (await http.get<ProjectWorkspaceDto[]>('/api/admin/projects')).data },
   async create(workspace: ProjectWorkspaceDto): Promise<VersionedDraft<ProjectWorkspaceDto>> {
-    return draft((await http.post<ProjectWorkspaceDto>('/api/admin/projects', workspace)).data)
+    const body = { workspace }
+    return draft((await http.post<ProjectWorkspaceDto>('/api/admin/projects', body)).data)
   },
   async get(projectId: string): Promise<VersionedDraft<ProjectWorkspaceDto>> {
     const id = encodeURIComponent(projectId)
@@ -1185,22 +1194,32 @@ export const projectApi = {
 }
 ```
 
-- [ ] **Step 4: Implement list and metadata editor, then verify**
+`projectApi` treats all successful payloads as untrusted wire data. It validates exact UUID, safe-integer/version, enum, HTTPS, locale, taxonomy, media, and discriminated-block shapes before exposing them to Vue. Because production Jackson uses `NON_NULL`, normalization restores omitted nullable block fields such as `VIDEO.coverAssetId`, `Metric.numericValue`, and the unselected `DOWNLOAD` target to explicit `null`; malformed or partial success responses fail closed with a safe client problem. The admin DTO serializes `Metric.numericValue` as an exact decimal string while retaining Java `BigDecimal` and the database numeric type internally, so values beyond JavaScript's safe integer range survive load-edit-save without precision loss. GET/PUT responses must retain the requested project identity, while POST accepts the server-generated replacement project UUID and version. The create request body is exactly `{ workspace }`, matching `CreateProjectWorkspaceRequest`; no mutation is retried automatically.
 
-`projectApi` uses `GET /api/admin/projects`, `POST /api/admin/projects`, `GET/PUT /api/admin/projects/{projectId}/workspace`, and the exact taxonomy endpoints without client mutation retries. It maps each version-bearing workspace to/from UI-only `VersionedDraft<ProjectWorkspaceDto>` exactly as `siteApi` does; PUT sends `{ expectedVersion, workspace }`. Global taxonomy editing uses versioned `TaxonomyWorkspaceDto` plus `{ expectedVersion, names }`; the project DTO separately embeds `ProjectTaxonomyRefDto` with `sortOrder`, and the UI never substitutes one shape for the other. `ProjectListView` maps the returned array into display rows and applies status/search filters locally. `ProjectEditorView` loads by `projectId`, or creates a complete plan-03 `ProjectWorkspaceDto` only after slug (`^[a-z0-9]+(?:-[a-z0-9]+)*$`) and number are valid. It mounts exact bilingual `translations`, `media`, `tags`, `skills`, autosave status, conflict handling, and an initially empty block region that Task 8 replaces with `BlockEditor`; media alt/caption remains the selected plan-02 media translation, not a duplicate project field. Replace the `projects`, `project-new`, and `project-edit` temporary route destinations only after both views exist.
+- [x] **Step 4: Implement list and metadata editor, then verify**
 
-Run: `npm --prefix admin-web run test:unit -- src/types/blocks.spec.ts src/views/projects src/components/projects`
+`projectApi` uses `GET /api/admin/projects`, `POST /api/admin/projects`, `GET/PUT /api/admin/projects/{projectId}/workspace`, and the exact taxonomy endpoints without client mutation retries. It maps each version-bearing workspace to/from UI-only `VersionedDraft<ProjectWorkspaceDto>` exactly as `siteApi` does; POST sends `{ workspace }` and PUT sends `{ expectedVersion, workspace }`. Global taxonomy editing uses versioned `TaxonomyWorkspaceDto` plus `{ expectedVersion, names }`; the project DTO separately embeds `ProjectTaxonomyRefDto` with `sortOrder`, and the UI never substitutes one shape for the other.
 
-Expected: PASS for create/edit paths, ASCII slug validation, locale completion, stable UUID navigation, client-side status filtering, deterministic `sortOrder`, taxonomy loading, and READY project-media selection.
+`ProjectListView` receives the complete workspace array, maps it into display rows, sorts a defensive copy deterministically, and applies status/search filters locally. The filtered row count or visible index is never used to invent catalog order; a new project's `sortOrder` comes from the complete unfiltered catalog. Replace the `projects`, `project-new`, and `project-edit` temporary route destinations only after both views exist, and navigate edit links with stable UUIDs rather than slugs.
+
+`ProjectEditorView` has two deliberately separate modes. The new-project route builds a structurally complete plan-03 `ProjectWorkspaceDto`, validates slug (`^[a-z0-9]+(?:-[a-z0-9]+)*$`) and number, and performs one explicit user-triggered POST. New-project drafts do not use the autosave timer; duplicate clicks are locked, controls cannot accept unsaved edits while the POST is pending, and a failed create keeps the complete local draft. On success, route replacement uses the server-returned UUID (`router.replace({ name: 'project-edit', params: { projectId: saved.value.id } })`), never the client placeholder ID or slug. Only the persisted edit route uses versioned GET/PUT autosave.
+
+Edit mode mounts exact bilingual `translations`, `media`, `tags`, and `skills`, plus autosave status and conflict handling. Task 7 renders only a block-editor placeholder, but it must keep every loaded `workspace.blocks` entry byte-for-byte through metadata edits and PUT requests; only a newly created workspace starts with `blocks: []`. Media alt/caption remains the selected plan-02 media translation and is never duplicated into the project DTO.
+
+Extend `useVersionedDraft` with an explicit project conflict classifier while retaining its existing default for SITE. `ProjectEditorView` classifies only `problem.body.code === 'CONTENT_VERSION_CONFLICT'` as the reload-required version conflict shown by `ConflictBanner`. Slug, external-key, catalog-order, taxonomy, and media uniqueness `409` responses remain normal safe field/general errors that preserve the draft and can be corrected; they must never be relabeled as a newer server workspace. Tests cover this override, autosave suspension, and explicit recovery.
+
+Run: `npm --prefix admin-web run test:unit -- src/types/blocks.spec.ts src/api/projectApi.spec.ts src/composables/useVersionedDraft.spec.ts src/router/index.spec.ts src/views/projects src/components/projects`
+
+Expected: PASS for exact create/save envelopes, Jackson `NON_NULL` normalization, explicit single-create versus edit autosave, server-UUID route replacement, exact preservation of existing blocks, code-specific version conflicts, create/edit paths, ASCII slug validation, locale completion/error association, stable UUID navigation, local status/search filtering over complete workspaces, deterministic `sortOrder`, taxonomy loading, and READY project-media selection.
 
 Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0; `switch (block.payload.type)` is exhaustive.
 
-- [ ] **Step 5: Commit the project workspace contracts and metadata UI**
+- [x] **Step 5: Commit the project workspace contracts and metadata UI**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/blocks.ts admin-web/src/types/content.ts admin-web/src/api/projectApi.ts admin-web/src/views/projects admin-web/src/components/projects
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/blocks.ts admin-web/src/types/blocks.spec.ts admin-web/src/types/content.ts admin-web/src/composables/useVersionedDraft.ts admin-web/src/composables/useVersionedDraft.spec.ts admin-web/src/api/projectApi.ts admin-web/src/api/projectApi.spec.ts admin-web/src/tests/fixtures/projectWorkspace.ts admin-web/src/views/projects admin-web/src/components/projects backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/content/api/ContentBlockDto.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/content/web/AdminContentControllerSliceTest.java docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add bilingual project workspace editor"
 ```
 

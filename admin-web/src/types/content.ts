@@ -1,3 +1,5 @@
+import type { ContentBlockDto } from './blocks'
+
 export const locales = Object.freeze(['zh-CN', 'en'] as const)
 
 export type Locale = (typeof locales)[number]
@@ -262,4 +264,80 @@ export interface MediaAssetSummaryDto {
   previewUrl: string | null
   width: number | null
   height: number | null
+}
+
+export interface ProjectCopy {
+  status: string
+  eyebrow: string
+  title: string
+  summary: string
+  seoTitle: string
+  seoDescription: string
+}
+
+export interface ProjectTaxonomyRefDto {
+  id: string
+  normalizedKey: string
+  sortOrder: number
+  names: Localized<string>
+}
+
+export interface TaxonomyWorkspaceDto {
+  id: string
+  normalizedKey: string
+  version: number
+  names: Localized<string>
+}
+
+export interface UpdateTaxonomyRequest {
+  expectedVersion: number
+  names: Localized<string>
+}
+
+export type ProjectMediaUsage = 'COVER' | 'CARD' | 'DETAIL'
+export type ProjectMediaLayout = 'wide' | 'standard'
+
+export interface ProjectMediaDto {
+  assetId: string
+  usage: ProjectMediaUsage
+  sortOrder: number
+  layout: ProjectMediaLayout
+  objectPosition: string
+  credit: string
+  sourceUrl: string
+}
+
+export interface ProjectWorkspaceDto {
+  id: string
+  externalKey: string
+  slug: string
+  number: string
+  sortOrder: number
+  featured: boolean
+  visible: boolean
+  publicationDirty: boolean
+  version: number
+  translations: Localized<ProjectCopy>
+  tags: ProjectTaxonomyRefDto[]
+  skills: ProjectTaxonomyRefDto[]
+  media: ProjectMediaDto[]
+  blocks: ContentBlockDto[]
+}
+
+/** UI-only project catalog row derived from the full management workspace response. */
+export interface ProjectListItemDto {
+  id: string
+  slug: string
+  number: string
+  sortOrder: number
+  featured: boolean
+  visible: boolean
+  publicationDirty: boolean
+  title: Localized<string>
+  status: Localized<string>
+  workspaceVersion: number
+}
+
+export interface CreateProjectWorkspaceRequest {
+  workspace: ProjectWorkspaceDto
 }

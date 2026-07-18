@@ -338,6 +338,99 @@ describe('useVersionedDraft', () => {
     expect(model.dirty.value).toBe(false)
   })
 
+  it('lets a caller distinguish version conflicts from other 409 business errors', async () => {
+    const slugConflict = new ApiProblem({
+      type: 'conflict',
+      title: 'Slug 已被使用',
+      status: 409,
+      code: 'CONTENT_SLUG_CONFLICT',
+      traceId: 'slug-conflict',
+    })
+    const save = vi.fn().mockRejectedValue(slugConflict)
+    const model = tracked(
+      useVersionedDraft<Workspace>({
+        load: vi.fn().mockResolvedValue(workspace(1, 'initial')),
+        save,
+        isConflict: (problem) => problem.body.code === 'CONTENT_VERSION_CONFLICT',
+      }),
+    )
+    await model.reload()
+    model.draft.value!.title = 'new-slug'
+    await nextTick()
+
+    await model.saveNow()
+
+    expect(model.conflict.value).toBeNull()
+    expect(model.error.value).toBe(slugConflict)
+    expect(model.dirty.value).toBe(true)
+  })
+
+  it('can discard a reused route draft and cancel its pending autosave without stopping future loads', async () => {
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(workspace(1, 'first'))
+      .mockResolvedValueOnce(workspace(2, 'second'))
+    const save = vi.fn()
+    const model = tracked(useVersionedDraft<Workspace>({ load, save }))
+    await model.reload()
+    model.draft.value!.title = 'dirty route'
+    await nextTick()
+
+    model.reset()
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(model.draft.value).toBeNull()
+    expect(model.version.value).toBe(0)
+    expect(model.dirty.value).toBe(false)
+    expect(model.error.value).toBeNull()
+    expect(model.conflict.value).toBeNull()
+    expect(save).not.toHaveBeenCalled()
+
+    await model.reload()
+    expect(model.draft.value?.title).toBe('second')
+    expect(model.version.value).toBe(2)
+  })
+
+  it('ignores a stale save finally while a reused route has a newer save pending', async () => {
+    const firstSave = deferred<ReturnType<typeof workspace>>()
+    const secondSave = deferred<ReturnType<typeof workspace>>()
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(workspace(1, 'project-a'))
+      .mockResolvedValueOnce(workspace(7, 'project-b'))
+    const save = vi
+      .fn()
+      .mockReturnValueOnce(firstSave.promise)
+      .mockReturnValueOnce(secondSave.promise)
+    const model = tracked(useVersionedDraft<Workspace>({ load, save }))
+
+    await model.reload()
+    model.draft.value!.title = 'project-a-edit'
+    await nextTick()
+    const staleRequest = model.saveNow()
+    expect(model.saving.value).toBe(true)
+
+    model.reset()
+    await model.reload()
+    model.draft.value!.title = 'project-b-edit'
+    await nextTick()
+    const currentRequest = model.saveNow()
+    expect(model.saving.value).toBe(true)
+
+    firstSave.resolve(workspace(2, 'stale-project-a'))
+    await staleRequest
+    expect(model.saving.value).toBe(true)
+    expect(model.draft.value?.title).toBe('project-b-edit')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(save).toHaveBeenCalledTimes(2)
+
+    secondSave.resolve(workspace(8, 'saved-project-b'))
+    await currentRequest
+    expect(model.saving.value).toBe(false)
+    expect(model.version.value).toBe(8)
+    expect(model.draft.value?.title).toBe('saved-project-b')
+  })
+
   it('stops only on an exact 409 and resumes after an explicit server reload', async () => {
     const conflict = new ApiProblem({
       type: 'conflict',

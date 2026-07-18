@@ -27,6 +27,8 @@ export interface SessionGuardPort {
 const adminShell = () => import('@/components/layout/AdminShell.vue')
 const dashboard = () => import('@/views/DashboardView.vue')
 const siteEditor = () => import('@/views/site/SiteEditorView.vue')
+const projectList = () => import('@/views/projects/ProjectListView.vue')
+const projectEditor = () => import('@/views/projects/ProjectEditorView.vue')
 const feature = () => import('@/views/FeatureShellView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
@@ -86,21 +88,20 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'projects',
             name: 'projects',
-            component: feature,
-            props: { title: '项目' },
+            component: projectList,
           },
           {
             path: 'projects/new',
             name: 'project-new',
-            component: feature,
-            props: { title: '新建项目' },
+            component: projectEditor,
+            props: { mode: 'create' },
           },
           {
             path: 'projects/:projectId',
             name: 'project-edit',
-            component: feature,
+            component: projectEditor,
             props: (route) => ({
-              title: '编辑项目',
+              mode: 'edit',
               projectId: singleParam(route.params.projectId),
             }),
           },

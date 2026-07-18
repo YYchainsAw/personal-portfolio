@@ -187,6 +187,20 @@ describe('admin route guard', () => {
     ).toBe('/admin/publishing/PROJECT/p1/history')
   })
 
+  it('routes the project catalog, static create path, and stable edit UUID to real views', () => {
+    const router = createTestRouter(createGuardSession('AUTHENTICATED'))
+
+    const catalog = router.resolve('/admin/projects')
+    const create = router.resolve('/admin/projects/new')
+    const edit = router.resolve(`/admin/projects/20000000-0000-4000-8000-000000000001`)
+
+    expect(catalog.name).toBe('projects')
+    expect(create.name).toBe('project-new')
+    expect(edit.name).toBe('project-edit')
+    expect(create.matched.at(-1)?.path).toBe('/admin/projects/new')
+    expect(edit.params.projectId).toBe('20000000-0000-4000-8000-000000000001')
+  })
+
   it('keeps the admin root and not-found destination behind authentication', async () => {
     const authenticatedRouter = createTestRouter(createGuardSession('AUTHENTICATED'))
     await authenticatedRouter.push('/admin')
