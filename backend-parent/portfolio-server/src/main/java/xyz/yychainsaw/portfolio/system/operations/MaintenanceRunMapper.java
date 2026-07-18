@@ -11,7 +11,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
-public final class MaintenanceRunMapper {
+public class MaintenanceRunMapper {
     static final String LATEST_ALLOWLISTED_RUNS_SQL = """
             select distinct on (run_type)
                    run_type, status, started_at, finished_at, artifact_checksum
