@@ -1,0 +1,13 @@
+[Unit]
+Description=Remind the operator about the quarterly isolated portfolio restore drill
+
+[Timer]
+# 01:00 UTC is 09:00 Asia/Hong_Kong year-round and avoids a host tzdata dependency.
+OnCalendar=Mon *-01,04,07,10-01..07 01:00:00 UTC
+Persistent=true
+RandomizedDelaySec=30m
+AccuracySec=1m
+Unit=portfolio-restore-reminder.service
+
+[Install]
+WantedBy=timers.target

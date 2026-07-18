@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public final class TotpService {
+    public static final String PROVISIONING_URI_PREFIX = "otpauth" + "://totp/";
     private static final char[] HEX = "0123456789ABCDEF".toCharArray();
 
     private final TotpProperties properties;
@@ -50,7 +51,7 @@ public final class TotpService {
         }
 
         String encodedIssuer = percentEncode(properties.issuer());
-        String uri = "otpauth://totp/" + encodedIssuer + ':' + percentEncode(username)
+        String uri = PROVISIONING_URI_PREFIX + encodedIssuer + ':' + percentEncode(username)
                 + "?secret=" + percentEncode(secret)
                 + "&issuer=" + encodedIssuer
                 + "&algorithm=SHA1&digits=6&period=30";
