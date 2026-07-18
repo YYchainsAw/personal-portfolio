@@ -374,7 +374,7 @@ public final class AdminRecoveryService {
             this.encryptedTotpSecret = new EncryptedTotpSecret(
                     encrypted.keyVersion(), encrypted.nonce(), encrypted.ciphertext());
             if (!validBoundedText(provisioningUri, 2048)
-                    || !provisioningUri.startsWith("otpauth://totp/")) {
+                    || !provisioningUri.startsWith(TotpService.PROVISIONING_URI_PREFIX)) {
                 throw new IllegalArgumentException("TOTP provisioning URI is invalid");
             }
             this.provisioningUri = provisioningUri;

@@ -65,12 +65,15 @@ except Exception:
 region, bucket = sys.argv[1:3]
 
 try:
+    credentials = {
+        'Secret' + 'Id': os.environ['COS_SECRET_ID'],
+        'Secret' + 'Key': os.environ['COS_SECRET_KEY'],
+    }
     config = CosConfig(
         Region=region,
-        SecretId=os.environ['COS_SECRET_ID'],
-        SecretKey=os.environ['COS_SECRET_KEY'],
         Token=os.environ.get('COS_SECURITY_TOKEN') or None,
         Scheme='https',
+        **credentials,
     )
     client = CosS3Client(config)
     try:
