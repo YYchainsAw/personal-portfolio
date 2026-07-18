@@ -199,7 +199,7 @@ describe('admin route guard', () => {
     )
   })
 
-  it('provides one main landmark around temporary protected destinations', async () => {
+  it('provides one main landmark around dashboard and temporary destinations', async () => {
     const router = createTestRouter(createGuardSession('AUTHENTICATED'))
     await router.push('/admin/dashboard')
     await router.isReady()
@@ -208,6 +208,14 @@ describe('admin route guard', () => {
       template: '<RouterView />',
     })
     const wrapper = mount(Host, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.findAll('main')).toHaveLength(1)
+    expect(
+      wrapper.get('main#admin-main > section[aria-labelledby="dashboard-title"]').element.tagName,
+    ).toBe('SECTION')
+
+    await router.push('/admin/site')
     await flushPromises()
 
     expect(wrapper.findAll('main')).toHaveLength(1)

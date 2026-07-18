@@ -530,7 +530,9 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 ### Task 3: Implement guarded routes, password login, and TOTP verification
 
 **Files:**
+- Modify: `admin-web/vite.config.ts`
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/router/redirect.ts`
 - Create: `admin-web/src/views/auth/LoginView.vue`
 - Create: `admin-web/src/views/auth/TotpView.vue`
@@ -628,13 +630,14 @@ git commit -m "feat(admin): add password and TOTP entry flow"
 - Create: `admin-web/src/components/common/AsyncPanel.vue`
 - Create: `admin-web/src/views/DashboardView.vue`
 - Test: `admin-web/src/components/layout/AdminShell.spec.ts`
+- Test: `admin-web/src/components/common/AsyncPanel.spec.ts`
 - Test: `admin-web/src/views/DashboardView.spec.ts`
 
 **Interfaces:**
 - Consumes: `sessionStore.logout()` and named routes from Task 3.
 - Produces: the shared authenticated layout and a complete route-navigation dashboard; it does not invent an aggregate dashboard endpoint.
 
-- [ ] **Step 1: Write failing shell and dashboard state tests**
+- [x] **Step 1: Write failing shell and dashboard state tests**
 
 ```ts
 // admin-web/src/components/layout/AdminShell.spec.ts
@@ -669,61 +672,32 @@ it('links every complete administration area without an invented summary request
 })
 ```
 
-- [ ] **Step 2: Run the tests and confirm missing shell/dashboard failures**
+- [x] **Step 2: Run the tests and confirm missing shell/dashboard failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/layout src/views/DashboardView.spec.ts`
 
 Expected: FAIL because the layout and dashboard do not exist.
 
-- [ ] **Step 3: Implement the shell, retryable state component, and navigation dashboard**
+- [x] **Step 3: Implement the shell, retryable state component, and navigation dashboard**
 
-```vue
-<!-- admin-web/src/components/layout/AdminShell.vue -->
-<script setup lang="ts">
-import { useRouter } from 'vue-router'
-import { sessionStore } from '@/stores/sessionInstance'
-
-const props = withDefaults(defineProps<{ username?: string; onLogout?: () => Promise<void> }>(), {
-  username: '',
-  onLogout: () => sessionStore.logout(),
-})
-const router = useRouter()
-const links = [
-  ['dashboard', '仪表盘'], ['site', '站点内容'], ['projects', '项目'],
-  ['media', '媒体库'], ['messages', '留言'], ['analytics', '访问统计'], ['settings', '设置'],
-] as const
-async function logout() { await props.onLogout(); await router.replace({ name: 'login' }) }
-</script>
-
-<template>
-  <div class="min-h-screen lg:grid lg:grid-cols-[15rem_1fr]">
-    <aside class="border-r border-slate-200 bg-white p-5">
-      <p class="font-semibold">Portfolio Admin</p>
-      <nav aria-label="后台导航" class="mt-6 grid gap-1">
-        <RouterLink v-for="[name, label] in links" :key="name" :to="{ name }" class="rounded px-3 py-2">{{ label }}</RouterLink>
-      </nav>
-      <p class="mt-8 text-sm text-slate-500">{{ username || sessionStore.state.user?.username }}</p>
-      <button type="button" class="mt-2" @click="logout">安全退出</button>
-    </aside>
-    <main id="admin-main" class="min-w-0 p-5 lg:p-8"><RouterView /></main>
-  </div>
-</template>
-```
+Implement `AdminShell.vue` with the seven exact named destinations, a first-focus skip link, one focusable `main`, responsive navigation, the authenticated username, current-area `aria-current` for direct/project/publication subroutes, and a serialized safe logout action. Logout failures render only the allowlisted title and trace ID and never navigate. Once logout succeeds, immediately remove the protected `RouterView`, navigation, and administrator identity before attempting the login route; if lazy navigation fails, retain a signed-out screen whose button retries navigation without calling logout again. The global anonymous-session watcher and shell navigation may race safely to the same login route.
 
 Implement `AsyncPanel.vue` with four explicit states: `loading` announces `正在加载`; a supplied safe error title plus trace ID and retry button; an empty slot; and a default content slot. Implement `DashboardView.vue` as six semantic cards with the exact named route, concise scope description, and direct action for SITE, projects, media, inbox, analytics, and security/operations. Operational data is rendered in its owning complete views from Tasks 10–12; the dashboard makes no API request and does not duplicate or approximate message, analytics, audit, or maintenance totals.
 
 Replace Task 3's parent `RouteOutlet` with the now-existing `AdminShell.vue`, and replace only the `dashboard` route's `FeatureShellView` with `DashboardView.vue`. Leave later compile-time destinations import-safe until their owning task creates them.
 
-- [ ] **Step 4: Verify shell, dashboard, and keyboard landmarks**
+- [x] **Step 4: Verify shell, dashboard, and keyboard landmarks**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/layout src/components/common src/views/DashboardView.spec.ts`
 
 Expected: PASS; the navigation has an accessible label, every destination is keyboard-reachable, and the dashboard has no request to an unowned aggregate endpoint.
 
-- [ ] **Step 5: Commit the dashboard slice**
+Verification (2026-07-18): all three focused suites first failed because the shell, panel, and dashboard modules did not exist, then passed 16/16. Under exact Node 22.18, the final full admin suite passed 67/67 across ten files; strict `vue-tsc`, Vite production build, and `git diff --check` exited 0; npm audit reported zero vulnerabilities. Vitest is capped at four workers after the unbounded Docker default twice started more forks than the environment could reliably initialize. Coverage includes all named links, project/publication active areas, skip/main landmarks, duplicate and failed logout, immediate protected-screen clearing, navigation-only retry, concurrent anonymous redirects, safe four-state async rendering, rejected/unmounted retry lifecycles, six source-free semantic dashboard cards, and transport/session zero-call assertions. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the dashboard slice**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/components/layout admin-web/src/components/common/AsyncPanel.vue admin-web/src/views/DashboardView.vue
+git add admin-web/vite.config.ts admin-web/src/router admin-web/src/components/layout admin-web/src/components/common/AsyncPanel.vue admin-web/src/components/common/AsyncPanel.spec.ts admin-web/src/views/DashboardView.vue admin-web/src/views/DashboardView.spec.ts docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add authenticated shell and dashboard"
 ```
 

@@ -1,8 +1,7 @@
-import { defineComponent, h, watch, type WatchStopHandle } from 'vue'
+import { watch, type WatchStopHandle } from 'vue'
 import {
   createRouter,
   createWebHistory,
-  RouterView,
   type RouteLocationNormalizedLoaded,
   type Router,
   type RouterHistory,
@@ -25,11 +24,8 @@ export interface SessionGuardPort {
   invalidate(): void
 }
 
-const RouteOutlet = defineComponent({
-  name: 'AdminRouteOutlet',
-  setup: () => () => h('main', { id: 'admin-main', tabindex: -1 }, h(RouterView)),
-})
-
+const adminShell = () => import('@/components/layout/AdminShell.vue')
+const dashboard = () => import('@/views/DashboardView.vue')
 const feature = () => import('@/views/FeatureShellView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
@@ -73,14 +69,13 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
       },
       {
         path: '/admin',
-        component: RouteOutlet,
+        component: adminShell,
         children: [
           { path: '', redirect: { name: 'dashboard' } },
           {
             path: 'dashboard',
             name: 'dashboard',
-            component: feature,
-            props: { title: '仪表盘' },
+            component: dashboard,
           },
           {
             path: 'site',
