@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 
+import { toApiProblem } from '@/api/http'
 import { mediaApi } from '@/api/mediaApi'
+import { publishingApi } from '@/api/publishingApi'
 import { siteApi } from '@/api/siteApi'
 import AsyncPanel from '@/components/common/AsyncPanel.vue'
 import ConflictBanner from '@/components/common/ConflictBanner.vue'
 import TranslationTabs from '@/components/common/TranslationTabs.vue'
 import MediaPickerDialog from '@/components/media/MediaPickerDialog.vue'
+import PublishPanel from '@/components/publishing/PublishPanel.vue'
 import OrderedLocalizedList from '@/components/site/OrderedLocalizedList.vue'
 import SiteIdentityForm from '@/components/site/SiteIdentityForm.vue'
 import SiteTranslationForm from '@/components/site/SiteTranslationForm.vue'
@@ -27,20 +30,29 @@ import type {
   SiteWorkspaceDto,
   SocialLink,
 } from '@/types/content'
+import {
+  SITE_ID,
+  type PublicationResultDto,
+  type PublicationStateDto,
+  type SitePublishTarget,
+} from '@/types/publishing'
 
 type LoadSite = () => Promise<VersionedDraft<SiteWorkspaceDto>>
 type SaveSite = (
   request: SaveWorkspaceRequest<SiteWorkspaceDto>,
 ) => Promise<VersionedDraft<SiteWorkspaceDto>>
+type LoadSitePublicationState = () => Promise<PublicationStateDto>
 
 const props = withDefaults(
   defineProps<{
     load?: LoadSite
     save?: SaveSite
+    loadPublicationState?: LoadSitePublicationState
   }>(),
   {
     load: () => siteApi.get(),
     save: (request: SaveWorkspaceRequest<SiteWorkspaceDto>) => siteApi.save(request),
+    loadPublicationState: () => publishingApi.state('SITE', SITE_ID),
   },
 )
 
@@ -73,6 +85,19 @@ type PickerTarget =
   | { readonly type: 'resume'; readonly resumeId: string }
 
 const pickerTarget = ref<PickerTarget | null>(null)
+const publicationState = ref<PublicationStateDto | null>(null)
+const publicationStateError = ref<ApiProblem | null>(null)
+const publicationStateLoading = ref(false)
+const publishingBusy = ref(false)
+const postPublishRefreshing = ref(false)
+const postPublishRefreshError = ref<ApiProblem | null>(null)
+const publicationNotice = ref('')
+const publishedResult = ref<PublicationResultDto | null>(null)
+const publishedWorkspaceVersionFloor = ref<number | null>(null)
+
+let componentMounted = true
+let publicationStateGeneration = 0
+let postPublishGeneration = 0
 
 const identityFields = [
   { key: 'displayName', label: '显示姓名', required: true },
@@ -219,6 +244,37 @@ const completion = computed(() =>
     completionKeys,
   ),
 )
+
+const publicationInteractionLocked = computed(
+  () =>
+    publishingBusy.value ||
+    postPublishRefreshing.value ||
+    postPublishRefreshError.value !== null,
+)
+
+const editorLocked = computed(
+  () => loading.value || saving.value || publicationInteractionLocked.value,
+)
+
+const publicationDisabled = computed(
+  () =>
+    loading.value ||
+    saving.value ||
+    dirty.value ||
+    conflict.value !== null ||
+    error.value !== null ||
+    publicationStateLoading.value ||
+    publicationState.value === null ||
+    publicationStateError.value !== null ||
+    publicationInteractionLocked.value,
+)
+
+const sitePublishTarget = computed<SitePublishTarget>(() => ({
+  aggregateType: 'SITE',
+  aggregateId: SITE_ID,
+  expectedWorkspaceVersion: version.value,
+  expectedPublicationVersion: publicationState.value?.version ?? 0,
+}))
 
 const SAFE_MEDIA_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -489,23 +545,142 @@ async function saveValidated(
 }
 
 async function manualSave(): Promise<void> {
+  if (editorLocked.value || conflict.value !== null) return
   if (!validateClient()) return
   await saveNow()
 }
 
-async function reloadServer(): Promise<void> {
+async function reloadWorkspace(): Promise<void> {
   clientErrors.value = Object.freeze({})
   closePicker()
   await reload()
 }
 
+function publicationStateMismatch(): ApiProblem {
+  return new ApiProblem({
+    type: 'publication_state',
+    title: '发布状态响应与当前站点不匹配',
+    status: 0,
+    code: 'PUBLICATION_STATE_MISMATCH',
+    traceId: 'client',
+  })
+}
+
+async function reloadPublicationState(): Promise<void> {
+  const operation = ++publicationStateGeneration
+  publicationStateLoading.value = true
+  publicationStateError.value = null
+  try {
+    const next = await props.loadPublicationState()
+    if (!componentMounted || operation !== publicationStateGeneration) return
+    if (
+      next.aggregateType !== 'SITE' ||
+      next.aggregateId.toLowerCase() !== SITE_ID
+    ) {
+      throw publicationStateMismatch()
+    }
+    publicationState.value = next
+  } catch (cause: unknown) {
+    if (!componentMounted || operation !== publicationStateGeneration) return
+    publicationState.value = null
+    publicationStateError.value = toApiProblem(cause)
+  } finally {
+    if (componentMounted && operation === publicationStateGeneration) {
+      publicationStateLoading.value = false
+    }
+  }
+}
+
+async function reloadServer(): Promise<void> {
+  await Promise.all([reloadWorkspace(), reloadPublicationState()])
+}
+
+function postPublishStateMismatch(): ApiProblem {
+  return new ApiProblem({
+    type: 'publication_refresh',
+    title: '发布成功，但未能确认最新发布状态',
+    status: 0,
+    code: 'PUBLICATION_REFRESH_INCOMPLETE',
+    traceId: 'client',
+  })
+}
+
+async function refreshAfterPublish(result: PublicationResultDto): Promise<void> {
+  const operation = ++postPublishGeneration
+  postPublishRefreshing.value = true
+  postPublishRefreshError.value = null
+  publicationNotice.value = ''
+
+  await Promise.all([reloadWorkspace(), reloadPublicationState()])
+  if (!componentMounted || operation !== postPublishGeneration) return
+
+  const state = publicationState.value
+  const workspace = draft.value
+  const workspaceFloor = publishedWorkspaceVersionFloor.value
+  const refreshProblem = error.value ?? publicationStateError.value
+  const workspaceMatches =
+    workspace !== null &&
+    workspaceFloor !== null &&
+    version.value === workspace.version &&
+    workspace.version >= workspaceFloor
+  const exactPublishedState =
+    state !== null &&
+    state.status === 'PUBLISHED' &&
+    state.version === result.aggregateVersion &&
+    state.currentRevisionId?.toLowerCase() === result.revisionId.toLowerCase()
+  const newerPublishedState =
+    state !== null &&
+    state.status === 'PUBLISHED' &&
+    state.version > result.aggregateVersion
+
+  if (
+    refreshProblem !== null ||
+    !workspaceMatches ||
+    (!exactPublishedState && !newerPublishedState)
+  ) {
+    postPublishRefreshError.value = refreshProblem ?? postPublishStateMismatch()
+  } else {
+    publishedResult.value = null
+    publishedWorkspaceVersionFloor.value = null
+    publicationNotice.value = newerPublishedState
+      ? `本次发布成功；刷新期间又有更新，已载入较新的发布版本 v${state.version}。`
+      : `发布成功，已载入发布版本 v${state.version}。`
+  }
+  postPublishRefreshing.value = false
+}
+
+function handlePublicationBusy(busy: boolean): void {
+  publishingBusy.value = busy
+  if (busy) closePicker()
+}
+
+function handlePublished(result: PublicationResultDto): void {
+  if (postPublishRefreshing.value || postPublishRefreshError.value !== null) return
+  publishedResult.value = result
+  publishedWorkspaceVersionFloor.value = sitePublishTarget.value.expectedWorkspaceVersion
+  void refreshAfterPublish(result)
+}
+
+function reloadAfterPublicationConflict(): void {
+  if (publishingBusy.value || postPublishRefreshing.value || postPublishRefreshError.value !== null) {
+    return
+  }
+  void reloadServer()
+}
+
+function retryPostPublishRefresh(): void {
+  const result = publishedResult.value
+  if (result === null || postPublishRefreshing.value) return
+  void refreshAfterPublish(result)
+}
+
 function openHeroPicker(): void {
-  if (loading.value || saving.value) return
+  if (editorLocked.value) return
   pickerTarget.value = { type: 'hero' }
 }
 
 function openResumePicker(resumeId: string): void {
-  if (loading.value || saving.value) return
+  if (editorLocked.value) return
   pickerTarget.value = { type: 'resume', resumeId }
 }
 
@@ -525,7 +700,14 @@ function closePicker(): void {
 function selectMedia(asset: MediaAssetSummaryDto): void {
   const target = pickerTarget.value
   const site = draft.value
-  if (target === null || site === null || loading.value) return
+  if (
+    target === null ||
+    site === null ||
+    loading.value ||
+    publicationInteractionLocked.value
+  ) {
+    return
+  }
 
   if (target.type === 'hero') {
     if (!trustedReadyMedia(asset, 'IMAGE')) return
@@ -553,6 +735,12 @@ function loadMediaPage(request: {
 
 onMounted(() => {
   void reloadServer()
+})
+
+onBeforeUnmount(() => {
+  componentMounted = false
+  publicationStateGeneration += 1
+  postPublishGeneration += 1
 })
 
 onBeforeRouteLeave(() => {
@@ -586,7 +774,7 @@ onBeforeRouteLeave(() => {
           class="rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-55"
           type="button"
           data-action="save"
-          :disabled="loading || saving || draft === null || conflict !== null"
+          :disabled="editorLocked || draft === null || conflict !== null"
           @click="manualSave"
         >
           {{ saving ? '正在保存…' : '立即保存' }}
@@ -643,21 +831,102 @@ onBeforeRouteLeave(() => {
           </p>
         </div>
 
-        <form novalidate :aria-busy="loading || saving" @submit.prevent="manualSave">
-          <fieldset :disabled="loading || saving" class="min-w-0 space-y-8">
+        <section class="mb-8 space-y-4" aria-label="站点预览与发布">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-sm text-slate-600" data-publication-state role="status" aria-live="polite">
+              <template v-if="publicationStateLoading">正在载入发布状态…</template>
+              <template v-else-if="publicationState !== null">
+                发布状态：{{ publicationState.status }} · v{{ publicationState.version }}
+              </template>
+              <template v-else>发布状态暂不可用</template>
+            </p>
+            <RouterLink
+              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              data-action="publication-history"
+              :to="{
+                name: 'publishing-history',
+                params: { aggregateType: 'SITE', aggregateId: SITE_ID },
+              }"
+            >
+              查看发布历史
+            </RouterLink>
+          </div>
+
+          <div
+            v-if="publicationStateError !== null && postPublishRefreshError === null"
+            class="rounded-2xl border border-red-200 bg-red-50 p-5 text-red-900"
+            data-publication-state-error
+            role="alert"
+          >
+            <p class="font-semibold">{{ publicationStateError.body.title }}</p>
+            <p class="mt-1 text-xs">请求编号：{{ publicationStateError.body.traceId }}</p>
+            <button
+              class="mt-3 rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-800 disabled:opacity-55"
+              type="button"
+              data-action="retry-publication-state"
+              :disabled="publicationStateLoading || publicationInteractionLocked"
+              @click="reloadPublicationState"
+            >
+              重试发布状态
+            </button>
+          </div>
+
+          <div
+            v-if="postPublishRefreshError !== null"
+            class="rounded-2xl border border-amber-300 bg-amber-50 p-5 text-amber-950"
+            data-post-publish-refresh-error
+            role="alert"
+          >
+            <p class="font-semibold">内容已发布，但最新工作区或发布状态载入失败</p>
+            <p class="mt-2 text-sm">{{ postPublishRefreshError.body.title }}</p>
+            <p class="mt-1 text-xs">请求编号：{{ postPublishRefreshError.body.traceId }}</p>
+            <button
+              class="mt-3 rounded-lg border border-amber-400 bg-white px-3 py-2 text-sm font-semibold text-amber-900 disabled:opacity-55"
+              type="button"
+              data-action="retry-post-publish-refresh"
+              :disabled="postPublishRefreshing"
+              @click="retryPostPublishRefresh"
+            >
+              {{ postPublishRefreshing ? '正在重新载入…' : '仅重试载入最新状态' }}
+            </button>
+          </div>
+
+          <p
+            v-if="publicationNotice"
+            class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
+            data-publication-notice
+            role="status"
+            aria-live="polite"
+          >
+            {{ publicationNotice }}
+          </p>
+
+          <PublishPanel
+            :target="sitePublishTarget"
+            :locale="locale"
+            :completion="completion"
+            :disabled="publicationDisabled"
+            @busy-change="handlePublicationBusy"
+            @published="handlePublished"
+            @reload-requested="reloadAfterPublicationConflict"
+          />
+        </section>
+
+        <form novalidate :aria-busy="editorLocked" @submit.prevent="manualSave">
+          <fieldset :disabled="editorLocked" class="min-w-0 space-y-8">
           <section aria-labelledby="identity-heading">
             <h2 id="identity-heading" class="mb-4 text-2xl font-semibold text-slate-950">身份</h2>
             <SiteIdentityForm
               :monogram="draft.monogram"
               :email="draft.email"
-              :disabled="loading || saving"
+              :disabled="editorLocked"
               :field-errors="identityErrors"
               @update:monogram="draft.monogram = $event"
               @update:email="draft.email = $event"
             />
           </section>
 
-          <TranslationTabs v-model="locale" :status="completion" :disabled="loading">
+          <TranslationTabs v-model="locale" :status="completion" :disabled="editorLocked">
             <template #default="{ locale: activeLocale }">
               <div class="mt-6 space-y-8">
                 <section class="space-y-4" aria-labelledby="localized-identity-heading">
@@ -669,7 +938,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="姓名"
                     :fields="identityFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('identity', activeLocale, identityFields)"
                     @update:model-value="draft.identity[activeLocale] = $event"
                   />
@@ -682,7 +951,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="SEO"
                     :fields="seoFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('seo', activeLocale, seoFields)"
                     @update:model-value="draft.seo[activeLocale] = $event"
                   />
@@ -697,7 +966,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="无障碍文案"
                     :fields="accessibilityFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('accessibility', activeLocale, accessibilityFields)"
                     @update:model-value="draft.accessibility[activeLocale] = $event"
                   />
@@ -711,7 +980,7 @@ onBeforeRouteLeave(() => {
                     list-label="导航项"
                     reorder-key="navigation"
                     :item-label="navigationLabel"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     @update:items="draft.navigation = $event; suppressFieldErrors('navigation')"
                   >
                     <template #default="{ item, index }">
@@ -821,7 +1090,7 @@ onBeforeRouteLeave(() => {
                       :locale="activeLocale"
                       title="Hero 文案"
                       :fields="heroFields"
-                      :disabled="loading || saving"
+                      :disabled="editorLocked"
                       :field-errors="translatedErrors('hero.copy', activeLocale, heroFields)"
                       @update:model-value="draft.hero.copy[activeLocale] = $event"
                     />
@@ -835,7 +1104,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="关于文案"
                     :fields="aboutFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('about', activeLocale, aboutFields)"
                     @update:model-value="draft.about[activeLocale] = $event"
                   />
@@ -846,7 +1115,7 @@ onBeforeRouteLeave(() => {
                     list-label="资料卡"
                     reorder-key="facts"
                     :item-label="factLabel"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     @update:items="draft.facts = $event; suppressFieldErrors('facts')"
                   >
                     <template #default="{ item, index }">
@@ -873,7 +1142,7 @@ onBeforeRouteLeave(() => {
                     list-label="技能状态"
                     reorder-key="profileSkills"
                     :item-label="skillLabel"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     @update:items="draft.profileSkills = $event; suppressFieldErrors('profileSkills')"
                   >
                     <template #default="{ item, index }">
@@ -902,7 +1171,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="作品区文案"
                     :fields="workFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('work', activeLocale, workFields)"
                     @update:model-value="draft.work[activeLocale] = $event"
                   />
@@ -915,7 +1184,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="路线图标题"
                     :fields="roadmapHeaderFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('roadmap.header', activeLocale, roadmapHeaderFields)"
                     @update:model-value="draft.roadmap.header[activeLocale] = $event"
                   />
@@ -926,7 +1195,7 @@ onBeforeRouteLeave(() => {
                     list-label="路线图阶段"
                     reorder-key="roadmapStages"
                     :item-label="stageLabel"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     @update:items="draft.roadmap.stages = $event; suppressFieldErrors('roadmap.stages')"
                   >
                     <template #default="{ item: stage, index: stageIndex }">
@@ -946,7 +1215,7 @@ onBeforeRouteLeave(() => {
                           list-label="阶段成果"
                           reorder-key="roadmapOutcomes"
                           :item-label="outcomeLabel"
-                          :disabled="loading || saving"
+                          :disabled="editorLocked"
                           @update:items="stage.outcomes = $event; suppressFieldErrors(`roadmap.stages.${stageIndex}.outcomes`)"
                         >
                           <template #default="{ item: outcome, index: outcomeIndex }">
@@ -975,7 +1244,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="联系文案"
                     :fields="contactFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('contact', activeLocale, contactFields)"
                     @update:model-value="draft.contact[activeLocale] = $event"
                   />
@@ -988,7 +1257,7 @@ onBeforeRouteLeave(() => {
                     :locale="activeLocale"
                     title="隐私说明"
                     :fields="privacyFields"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     :field-errors="translatedErrors('privacy', activeLocale, privacyFields)"
                     @update:model-value="draft.privacy[activeLocale] = $event"
                   />
@@ -1002,7 +1271,7 @@ onBeforeRouteLeave(() => {
                     list-label="社交链接排序"
                     reorder-key="socialLinks"
                     :item-label="socialLabel"
-                    :disabled="loading || saving"
+                    :disabled="editorLocked"
                     @update:items="draft.socialLinks = $event; suppressFieldErrors('socialLinks')"
                   >
                     <template #default="{ item, index }">
@@ -1054,7 +1323,7 @@ onBeforeRouteLeave(() => {
             <button
               class="rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-55"
               type="submit"
-              :disabled="loading || saving || conflict !== null"
+              :disabled="editorLocked || conflict !== null"
             >
               {{ saving ? '正在保存…' : '保存站点内容' }}
             </button>
@@ -1065,7 +1334,7 @@ onBeforeRouteLeave(() => {
     </AsyncPanel>
 
     <MediaPickerDialog
-      :open="pickerTarget !== null"
+      :open="pickerTarget !== null && !publicationInteractionLocked"
       :accept="pickerAccept"
       :load="loadMediaPage"
       @select="selectMedia"

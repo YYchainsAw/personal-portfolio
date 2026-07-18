@@ -29,6 +29,7 @@ const dashboard = () => import('@/views/DashboardView.vue')
 const siteEditor = () => import('@/views/site/SiteEditorView.vue')
 const projectList = () => import('@/views/projects/ProjectListView.vue')
 const projectEditor = () => import('@/views/projects/ProjectEditorView.vue')
+const publishingHistory = () => import('@/views/publishing/PublishingHistoryView.vue')
 const feature = () => import('@/views/FeatureShellView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
@@ -114,9 +115,8 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'publishing/:aggregateType/:aggregateId/history',
             name: 'publishing-history',
-            component: feature,
+            component: publishingHistory,
             props: (route) => ({
-              title: '发布历史',
               aggregateType: singleParam(route.params.aggregateType),
               aggregateId: singleParam(route.params.aggregateId),
             }),

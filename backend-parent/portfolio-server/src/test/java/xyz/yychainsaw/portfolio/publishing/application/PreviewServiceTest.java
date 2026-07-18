@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +21,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
+import xyz.yychainsaw.portfolio.content.api.ContentBlockDto;
+import xyz.yychainsaw.portfolio.content.api.LocaleCode;
 import xyz.yychainsaw.portfolio.content.api.ProjectWorkspaceDto;
 import xyz.yychainsaw.portfolio.content.api.SiteWorkspaceDto;
 import xyz.yychainsaw.portfolio.content.application.WorkspaceValidator;
@@ -32,6 +35,7 @@ import xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType;
 import xyz.yychainsaw.portfolio.publishing.snapshot.ProjectSnapshotMapper;
 import xyz.yychainsaw.portfolio.publishing.snapshot.SiteSnapshotMapper;
 import xyz.yychainsaw.portfolio.publishing.snapshot.v1.ProjectSnapshotV1;
+import xyz.yychainsaw.portfolio.publishing.snapshot.v1.PublishedBlockV1;
 import xyz.yychainsaw.portfolio.publishing.snapshot.v1.SiteSnapshotV1;
 
 class PreviewServiceTest {
@@ -56,6 +60,7 @@ class PreviewServiceTest {
     private final SiteSnapshotMapper siteSnapshots = mock(SiteSnapshotMapper.class);
     private final ProjectSnapshotMapper projectSnapshots =
             mock(ProjectSnapshotMapper.class);
+    private final PublicProjectionMapper projections = mock(PublicProjectionMapper.class);
     private final MediaQueryAccessGuard mediaAccess = new MediaQueryAccessGuard();
 
     private PreviewService service;
@@ -68,6 +73,7 @@ class PreviewServiceTest {
                 validator,
                 siteSnapshots,
                 projectSnapshots,
+                projections,
                 mediaAccess);
     }
 
@@ -104,7 +110,74 @@ class PreviewServiceTest {
         assertThat(preview).isSameAs(snapshot);
         verify(validator).validateProject(workspace);
         verify(projectSnapshots).toSnapshot(workspace);
+        verify(projections).validateProjectSafetyTargets(snapshot);
         verifyNoInteractions(sites, siteSnapshots);
+    }
+
+    @Test
+    void projectPreviewRejectsForgedYoutubeHostButAllowsEmptyBlockCopy() {
+        URI forgedUrl = URI.create("https://youtube.com.evil.example/watch?v=abc");
+        ContentBlockDto workspaceVideo = new ContentBlockDto(
+                UUID.fromString("93000000-0000-4000-8000-000000000020"),
+                0,
+                true,
+                ContentBlockDto.Width.STANDARD,
+                ContentBlockDto.Alignment.LEFT,
+                ContentBlockDto.Emphasis.NONE,
+                1,
+                new ContentBlockDto.VideoPayload(
+                        "YOUTUBE",
+                        forgedUrl,
+                        null,
+                        Map.of(
+                                LocaleCode.ZH_CN, new ContentBlockDto.BlockCopy("", ""),
+                                LocaleCode.EN, new ContentBlockDto.BlockCopy("", ""))));
+        ProjectWorkspaceDto workspace = WorkspaceFixtures.projectBuilder()
+                .version(VERSION)
+                .blocks(List.of(workspaceVideo))
+                .build();
+        ProjectSnapshotV1 base = projectSnapshot(workspace);
+        PublishedBlockV1 snapshotVideo = new PublishedBlockV1(
+                workspaceVideo.id(),
+                0,
+                true,
+                PublishedBlockV1.WidthV1.STANDARD,
+                PublishedBlockV1.AlignmentV1.LEFT,
+                PublishedBlockV1.EmphasisV1.NONE,
+                1,
+                new PublishedBlockV1.VideoPayloadV1(
+                        "YOUTUBE", forgedUrl, null, Map.of()));
+        ProjectSnapshotV1 snapshot = new ProjectSnapshotV1(
+                base.schemaVersion(),
+                base.projectId(),
+                base.externalKey(),
+                base.slug(),
+                base.number(),
+                base.sortOrder(),
+                base.featured(),
+                base.translations(),
+                base.tags(),
+                base.skills(),
+                base.projectMedia(),
+                List.of(snapshotVideo),
+                base.media());
+        PreviewService strict = new PreviewService(
+                sites,
+                projects,
+                validator,
+                siteSnapshots,
+                projectSnapshots,
+                new PublicProjectionMapper(new SafeMarkdownRenderer()),
+                mediaAccess);
+        when(projects.require(PROJECT_ID)).thenReturn(workspace);
+        when(projectSnapshots.toSnapshot(workspace)).thenReturn(snapshot);
+
+        assertThatThrownBy(() -> strict.preview(claims(
+                        AggregateType.PROJECT, PROJECT_ID, VERSION)))
+                .isInstanceOfSatisfying(DomainException.class, failure -> {
+                    assertThat(failure.code()).isEqualTo("PROJECT_NOT_PUBLISHABLE");
+                    assertThat(failure.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                });
     }
 
     @Test
@@ -167,7 +240,8 @@ class PreviewServiceTest {
                     assertThat(failure.fieldErrors()).isEmpty();
                 });
 
-        verifyNoInteractions(sites, projects, validator, siteSnapshots, projectSnapshots);
+        verifyNoInteractions(
+                sites, projects, validator, siteSnapshots, projectSnapshots, projections);
     }
 
     @Test
@@ -183,7 +257,8 @@ class PreviewServiceTest {
                     assertThat(failure.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
                 });
 
-        verifyNoInteractions(sites, projects, validator, siteSnapshots, projectSnapshots);
+        verifyNoInteractions(
+                sites, projects, validator, siteSnapshots, projectSnapshots, projections);
     }
 
     @Test

@@ -1414,14 +1414,17 @@ git commit -m "feat(admin): add typed sortable project blocks"
 - Modify: `admin-web/src/views/site/SiteEditorView.vue`
 - Modify: `admin-web/src/views/projects/ProjectListView.vue`
 - Modify: `admin-web/src/views/projects/ProjectEditorView.vue`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/web/AdminPublishingController.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/application/PublicationService.java`
+- Create: `backend-parent/portfolio-pojo/src/main/java/xyz/yychainsaw/portfolio/publishing/api/PublicationStateDto.java`
 - Test: `admin-web/src/components/publishing/PublishPanel.spec.ts`
 - Test: `admin-web/src/views/publishing/PublishingHistoryView.spec.ts`
 
 **Interfaces:**
 - Consumes: current workspace versions, exact plan-03 publishing commands/results, and client-side translation completion.
-- Produces: `publishingApi`, 10-minute preview-token handling, SITE/PROJECT publish, catalog reorder, immutable history, and restore-to-current-editor behavior.
+- Produces: `publishingApi`, an explicit current-publication state read model, 10-minute preview-token handling, SITE/PROJECT publish, catalog reorder, immutable history, and restore-to-current-editor behavior.
 
-- [ ] **Step 1: Write failing validation/publish/history tests**
+- [x] **Step 1: Write failing validation/publish/history tests**
 
 ```ts
 // admin-web/src/components/publishing/PublishPanel.spec.ts
@@ -1447,19 +1450,19 @@ it('blocks publish when local bilingual completeness contains errors', async () 
 
 Add a second test where completion is full, `publish` rejects with plan-03 `422` field errors, and the panel renders every returned path plus the safe problem title/trace ID. History tests assert immutable revision IDs, versions, schema versions, timestamps, and checksums; restore posts the current workspace version to the selected revision path, receives `204`, reloads the same editor, and leaves the historical row unchanged.
 
-- [ ] **Step 2: Run publishing tests and observe missing-module failures**
+- [x] **Step 2: Run publishing tests and observe missing-module failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/publishing src/views/publishing`
 
 Expected: FAIL because publishing contracts and components do not exist.
 
-- [ ] **Step 3: Implement typed publication contracts and client**
+- [x] **Step 3: Implement typed publication contracts and client**
 
 ```ts
 // admin-web/src/types/publishing.ts
-import type { Locale } from './content'
 export type AggregateType = 'SITE' | 'PROJECT' | 'PROJECT_CATALOG'
-export interface PreviewTokenRequest { aggregateType: 'SITE' | 'PROJECT'; aggregateId: string; workspaceVersion: number; locale: Locale }
+export type PublicationStatus = 'UNPUBLISHED' | 'PUBLISHED' | 'ARCHIVED'
+export interface PreviewTokenRequest { aggregateType: 'SITE' | 'PROJECT'; aggregateId: string; workspaceVersion: number }
 export interface PreviewTokenResponse { token: string; expiresAt: string }
 export interface PublishSiteCommand { expectedWorkspaceVersion: number; expectedPublicationVersion: number }
 export interface PublishProjectCommand { projectId: string; expectedWorkspaceVersion: number; expectedProjectPublicationVersion: number; expectedCatalogVersion: number }
@@ -1468,6 +1471,7 @@ export interface ReorderCatalogCommand { expectedCatalogVersion: number; project
 export interface PublicationResultDto { revisionId: string; aggregateVersion: number; catalogRevisionId: string | null; catalogVersion: number | null; checksum: string }
 export interface RevisionSummaryDto { id: string; type: AggregateType; aggregateId: string; version: number; schemaVersion: number; checksum: string; publishedBy: string; publishedAt: string }
 export interface RestoreRevisionRequest { expectedWorkspaceVersion: number }
+export interface PublicationStateDto { aggregateType: AggregateType; aggregateId: string; status: PublicationStatus; version: number; currentRevisionId: string | null; publishedAt: string | null; projectIdsInOrder: readonly string[] }
 export type PublishTarget =
   | ({ aggregateType: 'SITE'; aggregateId: string } & PublishSiteCommand)
   | ({ aggregateType: 'PROJECT'; aggregateId: string } & Omit<PublishProjectCommand, 'projectId'>)
@@ -1480,6 +1484,9 @@ import type { AggregateType, ArchiveProjectCommand, PreviewTokenRequest, Preview
 export const publishingApi = {
   async createPreview(request: PreviewTokenRequest): Promise<PreviewTokenResponse> {
     return (await http.post<PreviewTokenResponse>('/api/admin/publishing/preview-tokens', request)).data
+  },
+  async preflightPreview(token: string): Promise<void> {
+    await http.get(this.previewUrl(token))
   },
   previewUrl(token: string): string {
     return `/api/admin/publishing/previews/${encodeURIComponent(token)}`
@@ -1503,19 +1510,28 @@ export const publishingApi = {
     const id = encodeURIComponent(aggregateId)
     return (await http.get<RevisionSummaryDto[]>(`/api/admin/publishing/${type}/${id}/history`)).data
   },
+  async state(aggregateType: AggregateType, aggregateId: string): Promise<PublicationStateDto> {
+    const type = encodeURIComponent(aggregateType)
+    const id = encodeURIComponent(aggregateId)
+    return (await http.get<PublicationStateDto>(`/api/admin/publishing/${type}/${id}/state`)).data
+  },
   async restore(revisionId: string, request: RestoreRevisionRequest): Promise<void> {
     await http.post(`/api/admin/publishing/revisions/${encodeURIComponent(revisionId)}/restore`, request)
   },
 }
 ```
 
-- [ ] **Step 4: Implement publish and history behavior, then verify**
+- [x] **Step 4: Implement publish and history behavior, then verify**
 
-`PublishPanel.vue` renders both locale completion counts before enabling preview or publish. Preview sends exact `{ aggregateType, aggregateId, workspaceVersion, locale }`, verifies that the token is nonblank and not already expired, constructs the same-origin URL only through `publishingApi.previewUrl`, and opens it with `window.open(url, '_blank', 'noopener,noreferrer')`. Publication reconfirms immediately, dispatches either `publishSite` or `publishProject`, disables all actions while active, and emits the exact `PublicationResultDto`. There is no invented validation endpoint: a `409` shows `ConflictBanner`, while authoritative preview/publish `422 fieldErrors` render without discarding the draft.
+`PublishPanel.vue` renders both locale completion counts before enabling publication; incomplete translations do not block structural preview. Preview sends exact `{ aggregateType, aggregateId, workspaceVersion }`, verifies that the token is nonblank and not already expired, performs `GET` against the exact preview URL so authoritative preview validation runs before opening a tab, rechecks expiry, constructs the same-origin URL only through `publishingApi.previewUrl`, and opens it with `window.open(url, '_blank', 'noopener,noreferrer')`. Publication reconfirms immediately, dispatches either `publishSite` or `publishProject`, disables all actions while active, and emits the exact `PublicationResultDto`. A `409` remains a manual-reload conflict; authoritative preview/publish `422 fieldErrors` render without discarding the draft. Mutations are never retried automatically.
 
 `PublishingHistoryView.vue` validates route params (`SITE|PROJECT|PROJECT_CATALOG`, UUID), loads the exact revision array, sorts a defensive copy by descending `version`, and displays immutable revision metadata. SITE/PROJECT rows offer restore only after explicit confirmation; they post `{ expectedWorkspaceVersion }` to the selected `revisionId`, receive `204`, then call the editor's reload callback and route back to `/admin/site` or `/admin/projects/{aggregateId}` constructed locally. PROJECT_CATALOG history is read-only because plan 03 rejects catalog restore.
 
-Site and project editors load their expected publication versions from the first history row (or `0`), retain the workspace DTO's own version for `expectedWorkspaceVersion`, and replace publication/catalog CAS values from each successful result. `ProjectListView` also loads `PROJECT_CATALOG` history using aggregate ID `00000000-0000-0000-0000-000000000002`; reorder sends exact `{ expectedCatalogVersion, projectIdsInOrder }`, uses the returned `catalogVersion`, and on `409` reloads projects plus history instead of retrying. This plan does not expose archive UI, so it never attempts to infer a post-archive project pointer from revision count.
+History cannot represent the current pointer after archive, so editors must load `GET /api/admin/publishing/{aggregateType}/{aggregateId}/state`. Its exact seven-field response is `{ aggregateType, aggregateId, status, version, currentRevisionId, publishedAt, projectIdsInOrder }`; missing aggregates are `UNPUBLISHED` version `0`, and only `PROJECT_CATALOG` may return an ordered project-ID list. Site and project editors retain the workspace DTO's own version for `expectedWorkspaceVersion`, use state versions for publication/catalog CAS, and reload workspace plus state after success. Project publication also reloads its workspace because the backend advances that workspace version. The project editor exposes a confirmed archive action only for `PUBLISHED` projects and submits the exact project/catalog CAS pair. If publish, archive, restore, or reorder has been dispatched and its outcome or refresh is uncertain, the UI latches the mutation and offers GET-only reconciliation so it cannot repeat the write.
+
+`ProjectListView` loads the fixed catalog state identity `00000000-0000-0000-0000-000000000002`. Reorder operates only on the authoritative `projectIdsInOrder` set, sends exact `{ expectedCatalogVersion, projectIdsInOrder }`, validates the returned catalog revision through `aggregateVersion`, and then reloads projects plus state. The latch clears only after GET proves the returned successor (exact version plus submitted order) or a higher monotonic catalog version; a successful but stale GET remains GET-only. A `409` also reloads both without retrying the PUT. Filtering disables reorder controls so a filtered subset can never be submitted as the full catalog.
+
+Before any revision insert or pointer CAS, the backend maps the candidate snapshot through the same public projection for both locales. This publish-time renderability gate prevents accepting a revision that the public API cannot render (for example an unsupported video target) and must fail with zero writes.
 
 Replace the temporary `publishing-history` route destination only after `PublishingHistoryView.vue` exists. Add `PublishPanel` to SITE/PROJECT editors and exact reorder wiring to the project list.
 
@@ -1523,7 +1539,7 @@ Run: `npm --prefix admin-web run test:unit -- src/components/publishing src/view
 
 Expected: PASS for incomplete translation, server `422`, expired preview token, safe preview URL construction, SITE publish with `expectedPublicationVersion`, PROJECT publish with both publication/catalog versions, catalog reorder CAS, `409`, descending history, and restore/reload navigation.
 
-- [ ] **Step 5: Commit the publication workflow**
+- [x] **Step 5: Commit the publication workflow**
 
 ```bash
 git add admin-web/src/router/index.ts admin-web/src/types/publishing.ts admin-web/src/api/publishingApi.ts admin-web/src/components/publishing admin-web/src/views/publishing admin-web/src/views/site/SiteEditorView.vue admin-web/src/views/projects/ProjectListView.vue admin-web/src/views/projects/ProjectEditorView.vue

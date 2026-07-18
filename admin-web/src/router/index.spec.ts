@@ -4,8 +4,10 @@ import { createMemoryHistory, RouterView, type Router } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { siteApi } from '@/api/siteApi'
+import { publishingApi } from '@/api/publishingApi'
 import { createSessionStore } from '@/stores/session'
 import { createSiteFixture } from '@/tests/fixtures/siteWorkspace'
+import { SITE_ID } from '@/types/publishing'
 
 import { createAdminRouter, disposeAdminRouter, sanitizeAdminRedirect } from './index'
 
@@ -218,6 +220,15 @@ describe('admin route guard', () => {
 
   it('provides one main landmark around dashboard and the complete SITE editor', async () => {
     vi.spyOn(siteApi, 'get').mockResolvedValue(createSiteFixture())
+    vi.spyOn(publishingApi, 'state').mockResolvedValue({
+      aggregateType: 'SITE',
+      aggregateId: SITE_ID,
+      status: 'UNPUBLISHED',
+      version: 0,
+      currentRevisionId: null,
+      publishedAt: null,
+      projectIdsInOrder: [],
+    })
     const router = createTestRouter(createGuardSession('AUTHENTICATED'))
     await router.push('/admin/dashboard')
     await router.isReady()

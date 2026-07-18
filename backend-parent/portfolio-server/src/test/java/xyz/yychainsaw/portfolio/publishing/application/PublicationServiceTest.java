@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -23,6 +24,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionOperations;
 import xyz.yychainsaw.portfolio.audit.AuditCommand;
@@ -53,6 +57,7 @@ import xyz.yychainsaw.portfolio.media.application.MediaVariantDescriptor;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.publishing.api.ArchiveProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublicationResult;
+import xyz.yychainsaw.portfolio.publishing.api.PublicationStateDto;
 import xyz.yychainsaw.portfolio.publishing.api.PublishProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublishSiteCommand;
 import xyz.yychainsaw.portfolio.publishing.api.ReorderCatalogCommand;
@@ -68,6 +73,7 @@ import xyz.yychainsaw.portfolio.publishing.snapshot.SiteSnapshotMapper;
 import xyz.yychainsaw.portfolio.publishing.snapshot.SnapshotCodec;
 import xyz.yychainsaw.portfolio.publishing.snapshot.v1.ProjectCatalogSnapshotV1;
 import xyz.yychainsaw.portfolio.publishing.snapshot.v1.ProjectSnapshotV1;
+import xyz.yychainsaw.portfolio.publishing.snapshot.v1.PublishedBlockV1;
 import xyz.yychainsaw.portfolio.publishing.snapshot.v1.PublishedMediaV1;
 import xyz.yychainsaw.portfolio.publishing.snapshot.v1.SiteSnapshotV1;
 
@@ -113,6 +119,7 @@ class PublicationServiceTest {
     private final ProjectWorkspaceRepository projects = mock(ProjectWorkspaceRepository.class);
     private final PublishingRepository publishing = mock(PublishingRepository.class);
     private final PublicationValidator validator = mock(PublicationValidator.class);
+    private final PublicProjectionMapper projections = mock(PublicProjectionMapper.class);
     private final SiteSnapshotMapper siteSnapshots = mock(SiteSnapshotMapper.class);
     private final ProjectSnapshotMapper projectSnapshots = mock(ProjectSnapshotMapper.class);
     private final ProjectCatalogSnapshotMapper catalogSnapshots =
@@ -148,6 +155,7 @@ class PublicationServiceTest {
                 projects,
                 publishing,
                 validator,
+                projections,
                 siteSnapshots,
                 projectSnapshots,
                 catalogSnapshots,
@@ -158,6 +166,226 @@ class PublicationServiceTest {
                 transactions,
                 clock,
                 revisionIds);
+    }
+
+    @Test
+    void missingProjectPublicationStateIsStableUnpublishedAndDoesNotReadCatalog() {
+        when(publishing.find(AggregateType.PROJECT, PROJECT_ID))
+                .thenReturn(Optional.empty());
+
+        PublicationStateDto result = service.state(AggregateType.PROJECT, PROJECT_ID);
+
+        assertThat(result).isEqualTo(new PublicationStateDto(
+                AggregateType.PROJECT,
+                PROJECT_ID,
+                "UNPUBLISHED",
+                0,
+                null,
+                null,
+                List.of()));
+        verify(publishing, never()).findPublishedProjects();
+    }
+
+    @Test
+    void seededSiteAndCatalogPointersAreNormalizedToUnpublished() {
+        PublicationRow initialSite = new PublicationRow(
+                AggregateType.SITE,
+                SiteWorkspaceDto.SITE_ID,
+                "ARCHIVED",
+                null,
+                null,
+                0,
+                null);
+        PublicationRow initialCatalog = new PublicationRow(
+                AggregateType.PROJECT_CATALOG,
+                CATALOG_ID,
+                "ARCHIVED",
+                null,
+                null,
+                0,
+                null);
+        when(publishing.find(AggregateType.SITE, SiteWorkspaceDto.SITE_ID))
+                .thenReturn(Optional.of(initialSite));
+        when(publishing.find(AggregateType.PROJECT_CATALOG, CATALOG_ID))
+                .thenReturn(Optional.of(initialCatalog));
+        when(publishing.findPublishedProjects()).thenReturn(List.of());
+
+        PublicationStateDto site = service.state(
+                AggregateType.SITE, SiteWorkspaceDto.SITE_ID);
+        PublicationStateDto catalog = service.state(
+                AggregateType.PROJECT_CATALOG, CATALOG_ID);
+
+        assertThat(site.status()).isEqualTo("UNPUBLISHED");
+        assertThat(site.version()).isZero();
+        assertThat(site.currentRevisionId()).isNull();
+        assertThat(site.publishedAt()).isNull();
+        assertThat(site.projectIdsInOrder()).isEmpty();
+        assertThat(catalog.status()).isEqualTo("UNPUBLISHED");
+        assertThat(catalog.version()).isZero();
+        assertThat(catalog.currentRevisionId()).isNull();
+        assertThat(catalog.publishedAt()).isNull();
+        assertThat(catalog.projectIdsInOrder()).isEmpty();
+    }
+
+    @Test
+    void publicationStatePreservesPublishedAndArchivedPointers() {
+        PublicationRow published = publication(
+                AggregateType.PROJECT,
+                PROJECT_ID,
+                "PUBLISHED",
+                PROJECT_REVISION,
+                "project",
+                4);
+        PublicationRow archived = publication(
+                AggregateType.PROJECT,
+                OTHER_PROJECT_ID,
+                "ARCHIVED",
+                OTHER_OLD_REVISION,
+                "other",
+                6);
+        when(publishing.find(AggregateType.PROJECT, PROJECT_ID))
+                .thenReturn(Optional.of(published));
+        when(publishing.find(AggregateType.PROJECT, OTHER_PROJECT_ID))
+                .thenReturn(Optional.of(archived));
+
+        PublicationStateDto publishedState = service.state(
+                AggregateType.PROJECT, PROJECT_ID);
+        PublicationStateDto archivedState = service.state(
+                AggregateType.PROJECT, OTHER_PROJECT_ID);
+
+        assertThat(publishedState.status()).isEqualTo("PUBLISHED");
+        assertThat(publishedState.version()).isEqualTo(4);
+        assertThat(publishedState.currentRevisionId()).isEqualTo(PROJECT_REVISION);
+        assertThat(publishedState.publishedAt()).isEqualTo(BEFORE);
+        assertThat(publishedState.projectIdsInOrder()).isEmpty();
+        assertThat(archivedState.status()).isEqualTo("ARCHIVED");
+        assertThat(archivedState.version()).isEqualTo(6);
+        assertThat(archivedState.currentRevisionId()).isEqualTo(OTHER_OLD_REVISION);
+        assertThat(archivedState.publishedAt()).isEqualTo(BEFORE);
+        assertThat(archivedState.projectIdsInOrder()).isEmpty();
+    }
+
+    @Test
+    void catalogPublicationStateUsesAuthoritativePublishedProjectOrder() {
+        PublicationRow catalog = publication(
+                AggregateType.PROJECT_CATALOG,
+                CATALOG_ID,
+                "PUBLISHED",
+                CATALOG_REVISION,
+                null,
+                8);
+        PublicationRow second = publication(
+                AggregateType.PROJECT,
+                OTHER_PROJECT_ID,
+                "PUBLISHED",
+                OTHER_OLD_REVISION,
+                "second",
+                2);
+        PublicationRow first = publication(
+                AggregateType.PROJECT,
+                PROJECT_ID,
+                "PUBLISHED",
+                PROJECT_REVISION,
+                "first",
+                4);
+        when(publishing.find(AggregateType.PROJECT_CATALOG, CATALOG_ID))
+                .thenReturn(Optional.of(catalog));
+        when(publishing.findPublishedProjects()).thenReturn(List.of(second, first));
+
+        PublicationStateDto result = service.state(
+                AggregateType.PROJECT_CATALOG, CATALOG_ID);
+
+        assertThat(result.projectIdsInOrder())
+                .containsExactly(OTHER_PROJECT_ID, PROJECT_ID);
+        assertThatThrownBy(() -> result.projectIdsInOrder().add(PROJECT_ID))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void fixedAggregatePublicationStateRejectsAnotherIdBeforeRepositoryAccess() {
+        assertThatThrownBy(() -> service.state(AggregateType.SITE, PROJECT_ID))
+                .isInstanceOfSatisfying(DomainException.class, failure -> {
+                    assertThat(failure.code()).isEqualTo("PUBLICATION_STATE_INVALID");
+                    assertThat(failure.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                });
+        assertThatThrownBy(() -> service.state(
+                        AggregateType.PROJECT_CATALOG, PROJECT_ID))
+                .isInstanceOfSatisfying(DomainException.class, failure -> {
+                    assertThat(failure.code()).isEqualTo("PUBLICATION_STATE_INVALID");
+                    assertThat(failure.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                });
+        assertThatThrownBy(() -> service.state(
+                        AggregateType.PROJECT, SiteWorkspaceDto.SITE_ID))
+                .isInstanceOfSatisfying(DomainException.class, failure ->
+                        assertThat(failure.status())
+                                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+        assertThatThrownBy(() -> service.state(AggregateType.PROJECT, CATALOG_ID))
+                .isInstanceOfSatisfying(DomainException.class, failure ->
+                        assertThat(failure.status())
+                                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+
+        verify(publishing, never()).find(any(), any());
+    }
+
+    @Test
+    void publicationStateReadUsesOneReadOnlyRepeatableReadSnapshot()
+            throws NoSuchMethodException {
+        Transactional transaction = PublicationService.class
+                .getMethod("state", AggregateType.class, UUID.class)
+                .getAnnotation(Transactional.class);
+
+        assertThat(transaction).isNotNull();
+        assertThat(transaction.readOnly()).isTrue();
+        assertThat(transaction.isolation()).isEqualTo(Isolation.REPEATABLE_READ);
+    }
+
+    @Test
+    void publicationStateDtoRejectsInvalidStatusesAndVersions() {
+        assertThatThrownBy(() -> new PublicationStateDto(
+                        AggregateType.PROJECT,
+                        PROJECT_ID,
+                        "DRAFT",
+                        0,
+                        null,
+                        null,
+                        List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PublicationStateDto(
+                        AggregateType.PROJECT,
+                        PROJECT_ID,
+                        "UNPUBLISHED",
+                        -1,
+                        null,
+                        null,
+                        List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PublicationStateDto(
+                        AggregateType.PROJECT,
+                        PROJECT_ID,
+                        "UNPUBLISHED",
+                        1,
+                        PROJECT_REVISION,
+                        BEFORE,
+                        List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PublicationStateDto(
+                        AggregateType.PROJECT,
+                        PROJECT_ID,
+                        "PUBLISHED",
+                        0,
+                        null,
+                        null,
+                        List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PublicationStateDto(
+                        AggregateType.PROJECT,
+                        PROJECT_ID,
+                        "PUBLISHED",
+                        1,
+                        PROJECT_REVISION,
+                        BEFORE,
+                        List.of(OTHER_PROJECT_ID)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -218,6 +446,8 @@ class PublicationServiceTest {
                 ACTOR,
                 NOW));
         verify(publishing).insertMediaReferences(SITE_REVISION, references);
+        verify(projections).site(snapshot, LocaleCode.ZH_CN);
+        verify(projections).site(snapshot, LocaleCode.EN);
 
         InOrder mediaBeforePointer = inOrder(
                 validator, media, siteSnapshots, publishing);
@@ -346,6 +576,10 @@ class PublicationServiceTest {
                 NOW));
         verify(publishing).insertMediaReferences(PROJECT_REVISION, projectReferences);
         verify(publishing).insertMediaReferences(CATALOG_REVISION, catalogReferences);
+        verify(projections).project(projectSnapshot, LocaleCode.ZH_CN);
+        verify(projections).project(projectSnapshot, LocaleCode.EN);
+        verify(projections).catalog(catalogSnapshot, LocaleCode.ZH_CN);
+        verify(projections).catalog(catalogSnapshot, LocaleCode.EN);
         verify(publishing).insertRedirect(
                 "old-project-slug", "new-project-slug", PROJECT_ID, NOW);
         verify(projects).markPublished(PROJECT_ID, 5, NOW);
@@ -378,6 +612,69 @@ class PublicationServiceTest {
                 PROJECT_ID,
                 Map.of("revisionId", PROJECT_REVISION.toString()));
         assertThat(clock.calls()).isOne();
+    }
+
+    @Test
+    void forgedYoutubeHostProjectionFailureIsUnprocessableWithZeroWrites() {
+        ProjectWorkspaceDto workspace = WorkspaceFixtures.projectBuilder()
+                .version(5)
+                .build();
+        ProjectSnapshotV1 base = projectSnapshot(PROJECT_ID, workspace.slug(), 0);
+        PublishedBlockV1 forgedVideo = new PublishedBlockV1(
+                UUID.fromString("20000000-0000-4000-8000-000000000099"),
+                0,
+                true,
+                PublishedBlockV1.WidthV1.STANDARD,
+                PublishedBlockV1.AlignmentV1.LEFT,
+                PublishedBlockV1.EmphasisV1.NONE,
+                1,
+                new PublishedBlockV1.VideoPayloadV1(
+                        "YOUTUBE",
+                        URI.create("https://youtube.com.evil.example/watch?v=abc"),
+                        null,
+                        Map.of()));
+        ProjectSnapshotV1 unsafe = new ProjectSnapshotV1(
+                base.schemaVersion(),
+                base.projectId(),
+                base.externalKey(),
+                base.slug(),
+                base.number(),
+                base.sortOrder(),
+                base.featured(),
+                base.translations(),
+                base.tags(),
+                base.skills(),
+                base.projectMedia(),
+                List.of(forgedVideo),
+                base.media());
+        ProjectCatalogSnapshotV1 catalog = catalogSnapshot(List.of(PROJECT_ID));
+        DomainException projectionFailure = new DomainException(
+                "PROJECT_NOT_PUBLISHABLE",
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                Map.of("blocks.url", "unsupported video host"));
+
+        when(projects.require(PROJECT_ID)).thenReturn(workspace);
+        when(publishing.findPublishedProjects()).thenReturn(List.of());
+        when(projectSnapshots.toSnapshot(workspace)).thenReturn(unsafe);
+        when(validator.validateProject(workspace, unsafe)).thenReturn(List.of());
+        when(catalogSnapshots.fromCurrentProjects(List.of(unsafe))).thenReturn(catalog);
+        when(validator.validateCatalog(catalog)).thenReturn(List.of());
+        doThrow(projectionFailure)
+                .when(projections).project(unsafe, LocaleCode.ZH_CN);
+
+        assertThatThrownBy(() -> service.publishProject(
+                        new PublishProjectCommand(PROJECT_ID, 5, 0, 0)))
+                .isSameAs(projectionFailure)
+                .isInstanceOfSatisfying(DomainException.class, failure ->
+                        assertThat(failure.status())
+                                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+
+        verify(projections).project(unsafe, LocaleCode.ZH_CN);
+        verify(publishing, never()).ensureProjectPublication(any());
+        verify(publishing, never()).lock(any(), any());
+        verify(projects, never()).markPublished(any(), anyLong(), any());
+        verify(projects, never()).updateCatalogOrder(any(), any());
+        assertNoImmutableWrites();
     }
 
     @Test
@@ -479,6 +776,8 @@ class PublicationServiceTest {
                 NOW));
         verify(publishing, times(1)).insertRevision(any(RevisionRow.class));
         verify(publishing).insertMediaReferences(CATALOG_REVISION, catalogReferences);
+        verify(projections).catalog(catalogSnapshot, LocaleCode.ZH_CN);
+        verify(projections).catalog(catalogSnapshot, LocaleCode.EN);
         verify(projects, never()).markPublished(any(), anyLong(), any(Instant.class));
         verify(publishing, never()).insertRedirect(any(), any(), any(), any(Instant.class));
 
@@ -579,6 +878,8 @@ class PublicationServiceTest {
                 NOW));
         verify(publishing, times(1)).insertRevision(any(RevisionRow.class));
         verify(publishing).insertMediaReferences(CATALOG_REVISION, references);
+        verify(projections).catalog(reordered, LocaleCode.ZH_CN);
+        verify(projections).catalog(reordered, LocaleCode.EN);
         verify(publishing, never()).casPublish(
                 eq(AggregateType.PROJECT), any(), anyLong(), any(), any(), any());
         verify(publishing, never()).casArchive(any(), any(), anyLong(), any());

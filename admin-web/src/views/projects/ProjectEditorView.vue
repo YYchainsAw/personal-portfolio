@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router'
 
 import { projectApi } from '@/api/projectApi'
+import { publishingApi } from '@/api/publishingApi'
 import AsyncPanel from '@/components/common/AsyncPanel.vue'
 import ConflictBanner from '@/components/common/ConflictBanner.vue'
 import TranslationTabs from '@/components/common/TranslationTabs.vue'
@@ -10,6 +11,8 @@ import BlockEditor from '@/components/editor/BlockEditor.vue'
 import { validateBlocks } from '@/components/editor/blockValidation'
 import type { MediaPickerLoad } from '@/components/media/MediaPickerDialog.vue'
 import ProjectMetadataForm from '@/components/projects/ProjectMetadataForm.vue'
+import PublishPanel from '@/components/publishing/PublishPanel.vue'
+import { projectPublicationCompletion } from '@/components/publishing/publicationCompletion'
 import { useVersionedDraft } from '@/composables/useVersionedDraft'
 import { ApiProblem, type FieldErrors, type VersionedDraft } from '@/types/api'
 import type { ContentBlockDto } from '@/types/blocks'
@@ -21,6 +24,16 @@ import type {
   TaxonomyWorkspaceDto,
   TranslationStatus,
 } from '@/types/content'
+import {
+  PROJECT_CATALOG_ID,
+  type AggregateType,
+  type ArchiveProjectCommand,
+  type PreviewTokenRequest,
+  type PreviewTokenResponse,
+  type PublicationResultDto,
+  type PublicationStateDto,
+  type PublishTarget,
+} from '@/types/publishing'
 
 type EditorMode = 'create' | 'edit'
 type LoadProject = (projectId: string) => Promise<VersionedDraft<ProjectWorkspaceDto>>
@@ -33,6 +46,25 @@ type CreateProject = (
 ) => Promise<VersionedDraft<ProjectWorkspaceDto>>
 type ListProjects = () => Promise<ProjectWorkspaceDto[]>
 type LoadTaxonomy = () => Promise<TaxonomyWorkspaceDto[]>
+type LoadPublicationState = (
+  aggregateType: AggregateType,
+  aggregateId: string,
+) => Promise<PublicationStateDto>
+type CreatePreview = (request: PreviewTokenRequest) => Promise<PreviewTokenResponse>
+type PreflightPreview = (token: string) => Promise<void>
+type PreviewUrl = (token: string) => string
+type PublishTargetRequest = (target: PublishTarget) => Promise<PublicationResultDto>
+type ArchiveProjectRequest = (command: ArchiveProjectCommand) => Promise<PublicationResultDto>
+
+interface ProjectPublicationOutcome {
+  readonly operation: 'publish' | 'archive'
+  readonly projectId: string
+  readonly expectedWorkspaceVersion: number
+  readonly expectedProjectPublicationVersion: number
+  readonly expectedCatalogVersion: number
+  readonly result: PublicationResultDto | null
+  readonly requestProblem: ApiProblem | null
+}
 
 const props = withDefaults(
   defineProps<{
@@ -46,6 +78,12 @@ const props = withDefaults(
     loadSkills?: LoadTaxonomy
     loadMedia?: MediaPickerLoad
     resolveMedia?: (id: string) => Promise<MediaAssetView>
+    loadPublicationState?: LoadPublicationState
+    createPreview?: CreatePreview
+    preflightPreview?: PreflightPreview
+    previewUrl?: PreviewUrl
+    publishTarget?: PublishTargetRequest
+    archiveProject?: ArchiveProjectRequest
   }>(),
   {
     projectId: '',
@@ -58,11 +96,19 @@ const props = withDefaults(
     listProjects: () => projectApi.list(),
     loadTags: () => projectApi.tags(),
     loadSkills: () => projectApi.skills(),
+    loadPublicationState: (aggregateType: AggregateType, aggregateId: string) =>
+      publishingApi.state(aggregateType, aggregateId),
+    createPreview: (request: PreviewTokenRequest) => publishingApi.createPreview(request),
+    preflightPreview: (token: string) => publishingApi.preflightPreview(token),
+    previewUrl: (token: string) => publishingApi.previewUrl(token),
+    publishTarget: (target: PublishTarget) => publishingApi.publishTarget(target),
+    archiveProject: (command: ArchiveProjectCommand) => publishingApi.archiveProject(command),
   },
 )
 
 const router = useRouter()
 const editorForm = ref<HTMLFormElement | null>(null)
+const publicationRefreshRetry = ref<HTMLButtonElement | null>(null)
 const saveStatusId = `${useId()}-project-save-status`
 const activeLocale = ref<Locale>('zh-CN')
 const tags = ref<TaxonomyWorkspaceDto[]>([])
@@ -78,39 +124,34 @@ const creationComplete = ref(false)
 const createdProjectId = ref<string | null>(null)
 const navigationPending = ref(false)
 const navigationError = ref<ApiProblem | null>(null)
+const projectPublicationState = ref<PublicationStateDto | null>(null)
+const catalogPublicationState = ref<PublicationStateDto | null>(null)
+const publicationStateLoading = ref(false)
+const publicationStateError = ref<ApiProblem | null>(null)
+const publicationBusy = ref(false)
+const archivePending = ref(false)
+const publicationApplied = ref(false)
+const publicationRefreshPending = ref(false)
+const publicationRefreshProblem = ref<ApiProblem | null>(null)
+const publicationAnnouncement = ref('')
 let catalogGeneration = 0
 let createGeneration = 0
 let navigationGeneration = 0
+let reloadGeneration = 0
+let publicationStateGeneration = 0
+let publicationOutcomeGeneration = 0
+let archiveGeneration = 0
+let publicationOutcome: ProjectPublicationOutcome | null = null
+let activePublicationTarget: PublishTarget | null = null
 let disposed = false
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const JAVA_INT_MAX = 2_147_483_647
-const COPY_FIELDS = Object.freeze([
-  'status',
-  'eyebrow',
-  'title',
-  'summary',
-  'seoTitle',
-  'seoDescription',
-] as const)
 const EMPTY_TRANSLATION_STATUS: TranslationStatus = Object.freeze({
-  'zh-CN': Object.freeze({ complete: 0, total: COPY_FIELDS.length }),
-  en: Object.freeze({ complete: 0, total: COPY_FIELDS.length }),
+  'zh-CN': Object.freeze({ complete: 0, total: 0 }),
+  en: Object.freeze({ complete: 0, total: 0 }),
 })
-
-function projectTranslationStatus(workspace: ProjectWorkspaceDto): TranslationStatus {
-  const status = {} as Record<Locale, Readonly<{ complete: number; total: number }>>
-  for (const locale of ['zh-CN', 'en'] as const) {
-    const complete = COPY_FIELDS.reduce(
-      (count, field) =>
-        count + (workspace.translations[locale][field].trim().length > 0 ? 1 : 0),
-      0,
-    )
-    status[locale] = Object.freeze({ complete, total: COPY_FIELDS.length })
-  }
-  return Object.freeze(status)
-}
 
 function clientProblem(title: string, code: string, fieldErrors?: FieldErrors): ApiProblem {
   return new ApiProblem({
@@ -225,7 +266,54 @@ const {
 const completion = computed(() =>
   draft.value === null
     ? EMPTY_TRANSLATION_STATUS
-    : projectTranslationStatus(draft.value),
+    : projectPublicationCompletion(draft.value),
+)
+
+const publicationTarget = computed<PublishTarget>(() => ({
+  aggregateType: 'PROJECT',
+  aggregateId: props.projectId,
+  expectedWorkspaceVersion: version.value,
+  expectedProjectPublicationVersion: projectPublicationState.value?.version ?? 0,
+  expectedCatalogVersion: catalogPublicationState.value?.version ?? 0,
+}))
+
+const editorLocked = computed(
+  () =>
+    loading.value ||
+    saving.value ||
+    publicationBusy.value ||
+    archivePending.value ||
+    publicationRefreshPending.value ||
+    publicationApplied.value,
+)
+
+const publicationDisabled = computed(
+  () =>
+    editorLocked.value ||
+    dirty.value ||
+    conflict.value !== null ||
+    error.value !== null ||
+    publicationStateLoading.value ||
+    publicationStateError.value !== null ||
+    projectPublicationState.value === null ||
+    catalogPublicationState.value === null,
+)
+
+const archiveVisible = computed(
+  () =>
+    props.mode === 'edit' &&
+    projectPublicationState.value?.status === 'PUBLISHED',
+)
+
+const archiveDisabled = computed(
+  () => publicationDisabled.value || archivePending.value,
+)
+
+const refreshOperationIsArchive = computed(
+  () => {
+    void publicationApplied.value
+    return publicationOutcome?.operation === 'archive'
+  },
 )
 
 const fieldErrors = computed<FieldErrors>(() => ({
@@ -240,7 +328,7 @@ const saveState = computed(() => {
   return `已保存 · 版本 ${version.value}`
 })
 
-async function loadTaxonomies(): Promise<void> {
+async function loadTaxonomies(): Promise<boolean> {
   const operation = ++catalogGeneration
   catalogLoading.value = true
   catalogError.value = null
@@ -249,29 +337,110 @@ async function loadTaxonomies(): Promise<void> {
       props.loadTags(),
       props.loadSkills(),
     ])
-    if (disposed || operation !== catalogGeneration) return
+    if (disposed || operation !== catalogGeneration) return false
     tags.value = [...nextTags]
     skills.value = [...nextSkills]
+    return true
   } catch (cause) {
-    if (disposed || operation !== catalogGeneration) return
+    if (disposed || operation !== catalogGeneration) return false
     catalogError.value = displayProblem(
       cause,
       '分类目录暂时无法加载',
       'TAXONOMY_LOAD_FAILED',
     )
+    return false
   } finally {
     if (!disposed && operation === catalogGeneration) catalogLoading.value = false
   }
 }
 
-async function reloadEverything(): Promise<void> {
-  if (props.mode !== 'edit') return
-  resetDraft()
+function sameId(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase()
+}
+
+function requirePublicationState(
+  state: PublicationStateDto,
+  aggregateType: AggregateType,
+  aggregateId: string,
+): void {
+  if (state.aggregateType !== aggregateType || !sameId(state.aggregateId, aggregateId)) {
+    throw clientProblem('发布状态响应与当前项目不匹配', 'PUBLICATION_STATE_MISMATCH')
+  }
+}
+
+async function loadPublicationStates(projectId = props.projectId): Promise<boolean> {
+  if (props.mode !== 'edit' || !UUID.test(projectId)) return false
+  const operation = ++publicationStateGeneration
+  publicationStateLoading.value = true
+  publicationStateError.value = null
+  projectPublicationState.value = null
+  catalogPublicationState.value = null
+  try {
+    const [nextProjectState, nextCatalogState] = await Promise.all([
+      props.loadPublicationState('PROJECT', projectId),
+      props.loadPublicationState('PROJECT_CATALOG', PROJECT_CATALOG_ID),
+    ])
+    if (
+      disposed ||
+      operation !== publicationStateGeneration ||
+      props.mode !== 'edit' ||
+      !sameId(props.projectId, projectId)
+    ) {
+      return false
+    }
+    requirePublicationState(nextProjectState, 'PROJECT', projectId)
+    requirePublicationState(nextCatalogState, 'PROJECT_CATALOG', PROJECT_CATALOG_ID)
+    projectPublicationState.value = nextProjectState
+    catalogPublicationState.value = nextCatalogState
+    return true
+  } catch (cause) {
+    if (disposed || operation !== publicationStateGeneration) return false
+    publicationStateError.value = displayProblem(
+      cause,
+      '发布状态暂时无法加载',
+      'PUBLICATION_STATE_LOAD_FAILED',
+    )
+    return false
+  } finally {
+    if (!disposed && operation === publicationStateGeneration) {
+      publicationStateLoading.value = false
+    }
+  }
+}
+
+async function reloadEverything(preserveDraft = false): Promise<boolean> {
+  if (props.mode !== 'edit') return false
+  const projectId = props.projectId
+  const operation = ++reloadGeneration
+  if (!preserveDraft) resetDraft()
   localErrors.value = {}
-  await Promise.all([reload(), loadTaxonomies()])
+  const [, taxonomiesLoaded, publicationStatesLoaded] = await Promise.all([
+    reload(),
+    loadTaxonomies(),
+    loadPublicationStates(projectId),
+  ])
+  if (
+    disposed ||
+    operation !== reloadGeneration ||
+    props.mode !== 'edit' ||
+    !sameId(props.projectId, projectId)
+  ) {
+    return false
+  }
+  return (
+    draft.value !== null &&
+    error.value === null &&
+    taxonomiesLoaded &&
+    publicationStatesLoaded
+  )
+}
+
+async function retryEverything(): Promise<void> {
+  await reloadEverything()
 }
 
 function replaceDraft(workspace: ProjectWorkspaceDto): void {
+  if (editorLocked.value) return
   localErrors.value = {}
   draft.value = workspace
 }
@@ -291,7 +460,7 @@ async function focusFirstValidationError(): Promise<void> {
 }
 
 async function manualSave(): Promise<void> {
-  if (draft.value === null) return
+  if (draft.value === null || editorLocked.value) return
   const validation = validateWorkspace(draft.value)
   localErrors.value = validation
   if (Object.keys(validation).length > 0) {
@@ -302,6 +471,308 @@ async function manualSave(): Promise<void> {
   if (Object.keys(error.value?.body.fieldErrors ?? {}).length > 0) {
     await focusFirstValidationError()
   }
+}
+
+function handlePublicationBusy(busy: boolean): void {
+  publicationBusy.value = busy
+  activePublicationTarget = busy ? Object.freeze({ ...publicationTarget.value }) : null
+}
+
+function refreshFailureProblem(): ApiProblem {
+  const archive = publicationOutcome?.operation === 'archive'
+  return (
+    error.value ??
+    catalogError.value ??
+    publicationStateError.value ??
+    clientProblem(
+      archive
+        ? '归档结果需要确认，但最新项目状态暂时无法载入；请仅重试刷新'
+        : '项目已经发布，但最新工作区暂时无法载入；请仅重试刷新',
+      archive ? 'ARCHIVE_REFRESH_FAILED' : 'PUBLICATION_REFRESH_FAILED',
+    )
+  )
+}
+
+function publicationRefreshOutcome(): 'exact' | 'newer' | null {
+  const outcome = publicationOutcome
+  const workspace = draft.value
+  const projectState = projectPublicationState.value
+  const catalogState = catalogPublicationState.value
+  if (
+    outcome === null ||
+    workspace === null ||
+    projectState === null ||
+    catalogState === null
+  ) {
+    return null
+  }
+  const expectedWorkspaceVersion =
+    outcome.expectedWorkspaceVersion + (outcome.operation === 'publish' ? 1 : 0)
+  const expectedProjectPublicationVersion =
+    outcome.expectedProjectPublicationVersion + 1
+  const expectedCatalogVersion = outcome.expectedCatalogVersion + 1
+  if (
+    !Number.isSafeInteger(expectedWorkspaceVersion) ||
+    !Number.isSafeInteger(expectedProjectPublicationVersion) ||
+    !Number.isSafeInteger(expectedCatalogVersion) ||
+    !sameId(props.projectId, outcome.projectId) ||
+    !sameId(workspace.id, outcome.projectId) ||
+    version.value !== workspace.version ||
+    workspace.version < expectedWorkspaceVersion ||
+    projectState.version < expectedProjectPublicationVersion ||
+    catalogState.version < expectedCatalogVersion
+  ) {
+    return null
+  }
+
+  const result = outcome.result
+  if (result !== null) {
+    if (
+      result.aggregateVersion !== expectedProjectPublicationVersion ||
+      result.catalogVersion !== expectedCatalogVersion ||
+      result.catalogRevisionId === null
+    ) {
+      return null
+    }
+  }
+
+  if (outcome.operation === 'publish') {
+    if (
+      result === null ||
+      workspace.version === expectedWorkspaceVersion &&
+        workspace.publicationDirty !== false
+    ) {
+      return null
+    }
+  }
+
+  const catalogStillContainsProject = catalogState.projectIdsInOrder.some((id) =>
+    sameId(id, outcome.projectId),
+  )
+  if (
+    outcome.operation === 'archive' &&
+    result === null &&
+    (projectState.status !== 'ARCHIVED' || catalogStillContainsProject)
+  ) {
+    return null
+  }
+
+  if (
+    projectState.version === expectedProjectPublicationVersion &&
+    (projectState.status !== (outcome.operation === 'archive' ? 'ARCHIVED' : 'PUBLISHED') ||
+      projectState.currentRevisionId === null ||
+      (result !== null && !sameId(projectState.currentRevisionId, result.revisionId)))
+  ) {
+    return null
+  }
+  if (
+    catalogState.version === expectedCatalogVersion &&
+    (catalogState.status !== 'PUBLISHED' ||
+      catalogState.currentRevisionId === null ||
+      (outcome.operation === 'archive' && catalogStillContainsProject) ||
+      (result !== null &&
+        (result.catalogRevisionId === null ||
+          !sameId(catalogState.currentRevisionId, result.catalogRevisionId))))
+  ) {
+    return null
+  }
+
+  return workspace.version > expectedWorkspaceVersion ||
+    projectState.version > expectedProjectPublicationVersion ||
+    catalogState.version > expectedCatalogVersion
+    ? 'newer'
+    : 'exact'
+}
+
+async function refreshAfterPublication(): Promise<void> {
+  if (!publicationApplied.value || publicationRefreshPending.value) return
+  const projectId = props.projectId
+  const archive = publicationOutcome?.operation === 'archive'
+  const operation = ++publicationOutcomeGeneration
+  publicationRefreshPending.value = true
+  publicationRefreshProblem.value = null
+  publicationAnnouncement.value = archive
+    ? '归档请求已经提交，正在载入最新工作区与发布状态以确认结果。'
+    : '项目已经发布，正在载入最新工作区与发布状态。'
+  const refreshed = await reloadEverything(true)
+  if (
+    disposed ||
+    operation !== publicationOutcomeGeneration ||
+    props.mode !== 'edit' ||
+    !sameId(props.projectId, projectId)
+  ) {
+    return
+  }
+  publicationRefreshPending.value = false
+  const outcome = refreshed ? publicationRefreshOutcome() : null
+  if (outcome !== null) {
+    publicationApplied.value = false
+    publicationOutcome = null
+    publicationAnnouncement.value = archive
+      ? outcome === 'newer'
+        ? '本次项目归档已处理；刷新期间又有更新，已载入更高版本的工作区与发布状态。'
+        : '项目已经下线，最新工作区与目录状态已经载入。'
+      : outcome === 'newer'
+        ? '本次项目发布成功；刷新期间又有更新，已载入更高版本的工作区与发布状态。'
+        : '项目发布成功，最新工作区与目录状态已经载入。'
+    return
+  }
+  publicationRefreshProblem.value = refreshed
+    ? publicationOutcome?.requestProblem ??
+      clientProblem(
+        archive
+          ? '归档结果尚未被最新状态证明；请仅重试刷新'
+          : '项目已经发布，但重新载入的版本证明与发布结果不一致；请仅重试刷新',
+        archive ? 'ARCHIVE_REFRESH_MISMATCH' : 'PUBLICATION_REFRESH_MISMATCH',
+      )
+    : refreshFailureProblem()
+  publicationAnnouncement.value = archive
+    ? '归档结果尚未确认；不会重复提交归档请求。'
+    : '项目已经发布，但最新状态载入失败；不会重复提交发布请求。'
+  await nextTick()
+  publicationRefreshRetry.value?.focus()
+}
+
+function handlePublished(result: PublicationResultDto): void {
+  if (props.mode !== 'edit' || publicationApplied.value) return
+  const target = activePublicationTarget
+  if (
+    target === null ||
+    target.aggregateType !== 'PROJECT' ||
+    !sameId(target.aggregateId, props.projectId)
+  ) {
+    return
+  }
+  publicationOutcome = Object.freeze({
+    operation: 'publish',
+    projectId: target.aggregateId,
+    expectedWorkspaceVersion: target.expectedWorkspaceVersion,
+    expectedProjectPublicationVersion: target.expectedProjectPublicationVersion,
+    expectedCatalogVersion: target.expectedCatalogVersion,
+    result: Object.freeze({ ...result }),
+    requestProblem: null,
+  })
+  publicationApplied.value = true
+  publicationRefreshProblem.value = null
+  void refreshAfterPublication()
+}
+
+function archiveResultIsExact(
+  result: PublicationResultDto,
+  command: ArchiveProjectCommand,
+): boolean {
+  return (
+    Number.isSafeInteger(command.expectedProjectPublicationVersion + 1) &&
+    Number.isSafeInteger(command.expectedCatalogVersion + 1) &&
+    result.aggregateVersion === command.expectedProjectPublicationVersion + 1 &&
+    result.catalogVersion === command.expectedCatalogVersion + 1 &&
+    result.catalogRevisionId !== null
+  )
+}
+
+async function archiveCurrentProject(): Promise<void> {
+  const projectState = projectPublicationState.value
+  const catalogState = catalogPublicationState.value
+  const workspace = draft.value
+  if (
+    props.mode !== 'edit' ||
+    !archiveVisible.value ||
+    archiveDisabled.value ||
+    projectState === null ||
+    catalogState === null ||
+    workspace === null ||
+    !UUID.test(props.projectId)
+  ) {
+    return
+  }
+  if (
+    !window.confirm(
+      '确定下线这个已发布项目吗？项目会从公开目录移除，但后台内容和发布历史会保留。',
+    )
+  ) {
+    return
+  }
+
+  const projectId = props.projectId
+  const expectedWorkspaceVersion = version.value
+  const command: ArchiveProjectCommand = Object.freeze({
+    projectId,
+    expectedProjectPublicationVersion: projectState.version,
+    expectedCatalogVersion: catalogState.version,
+  })
+  const operation = ++archiveGeneration
+  archivePending.value = true
+  publicationAnnouncement.value = '正在下线项目并更新公开目录。'
+
+  let result: PublicationResultDto | null = null
+  let requestProblem: ApiProblem | null = null
+  try {
+    const response = await props.archiveProject(command)
+    if (archiveResultIsExact(response, command)) {
+      result = Object.freeze({ ...response })
+    } else {
+      requestProblem = clientProblem(
+        '归档响应无法验证；请仅刷新最新状态',
+        'ARCHIVE_RESULT_INVALID',
+      )
+    }
+  } catch (cause) {
+    requestProblem = displayProblem(
+      cause,
+      '归档请求结果无法确认；请仅刷新最新状态',
+      'ARCHIVE_RESULT_UNCERTAIN',
+    )
+  }
+
+  if (
+    disposed ||
+    operation !== archiveGeneration ||
+    props.mode !== 'edit' ||
+    !sameId(props.projectId, projectId)
+  ) {
+    return
+  }
+
+  archivePending.value = false
+  publicationOutcome = Object.freeze({
+    operation: 'archive',
+    projectId,
+    expectedWorkspaceVersion,
+    expectedProjectPublicationVersion: command.expectedProjectPublicationVersion,
+    expectedCatalogVersion: command.expectedCatalogVersion,
+    result,
+    requestProblem,
+  })
+  publicationApplied.value = true
+  publicationRefreshProblem.value = null
+  void refreshAfterPublication()
+}
+
+function reloadAfterPublicationConflict(): void {
+  if (props.mode !== 'edit' || publicationBusy.value || publicationApplied.value) return
+  void reloadEverything(true)
+}
+
+function retryPublicationRefresh(): void {
+  void refreshAfterPublication()
+}
+
+function resetPublicationContext(): void {
+  publicationStateGeneration += 1
+  publicationOutcomeGeneration += 1
+  archiveGeneration += 1
+  projectPublicationState.value = null
+  catalogPublicationState.value = null
+  publicationStateLoading.value = false
+  publicationStateError.value = null
+  publicationBusy.value = false
+  archivePending.value = false
+  publicationApplied.value = false
+  publicationRefreshPending.value = false
+  publicationRefreshProblem.value = null
+  publicationAnnouncement.value = ''
+  publicationOutcome = null
+  activePublicationTarget = null
 }
 
 function freshWorkspace(slug: string, number: string, sortOrder: number): ProjectWorkspaceDto {
@@ -426,6 +897,7 @@ watch(
   ([mode]) => {
     activeLocale.value = 'zh-CN'
     localErrors.value = {}
+    resetPublicationContext()
     if (mode === 'edit') {
       navigationGeneration += 1
       creationComplete.value = false
@@ -435,6 +907,8 @@ watch(
       void reloadEverything()
       return
     }
+    reloadGeneration += 1
+    catalogGeneration += 1
     createGeneration += 1
     navigationGeneration += 1
     resetDraft()
@@ -451,7 +925,7 @@ watch(
     navigationPending.value = false
     navigationError.value = null
   },
-  { immediate: true },
+  { immediate: true, flush: 'sync' },
 )
 
 function hasUnpersistedCreateDraft(): boolean {
@@ -484,6 +958,10 @@ onBeforeUnmount(() => {
   catalogGeneration += 1
   createGeneration += 1
   navigationGeneration += 1
+  reloadGeneration += 1
+  publicationStateGeneration += 1
+  publicationOutcomeGeneration += 1
+  archiveGeneration += 1
   if (typeof window !== 'undefined') {
     window.removeEventListener('beforeunload', beforeUnloadCreate)
   }
@@ -506,7 +984,15 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <div v-if="mode === 'edit'" class="text-right">
-          <p class="text-xs font-semibold tracking-wide text-slate-500">保存状态</p>
+          <RouterLink
+            v-if="UUID.test(projectId)"
+            class="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            :to="{
+              name: 'publishing-history',
+              params: { aggregateType: 'PROJECT', aggregateId: projectId },
+            }"
+          >项目发布历史</RouterLink>
+          <p class="mt-4 text-xs font-semibold tracking-wide text-slate-500">保存状态</p>
           <p
             :id="saveStatusId"
             class="mt-1 text-sm font-semibold text-slate-800"
@@ -519,7 +1005,7 @@ onBeforeUnmount(() => {
             class="mt-3 rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-55"
             type="button"
             data-action="save"
-            :disabled="loading || saving || draft === null || conflict !== null || !dirty"
+            :disabled="editorLocked || draft === null || conflict !== null || !dirty"
             :aria-describedby="saveStatusId"
             @click="manualSave"
           >
@@ -620,6 +1106,37 @@ onBeforeUnmount(() => {
     </form>
 
     <template v-else>
+      <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {{ publicationAnnouncement }}
+      </p>
+
+      <div
+        v-if="publicationRefreshProblem"
+        class="rounded-2xl border border-amber-300 bg-amber-50 p-5 text-sm text-amber-950"
+        data-publication-refresh-problem
+        role="alert"
+      >
+        <p class="font-semibold">
+          {{ refreshOperationIsArchive
+            ? '归档结果尚未确认。'
+            : '项目已经发布，但最新状态载入失败。' }}
+        </p>
+        <p class="mt-1">
+          {{ refreshOperationIsArchive
+            ? '不会重复提交归档请求；请仅重试载入最新工作区与发布状态。'
+            : '不会重复提交发布请求；请仅重试载入最新工作区。' }}
+        </p>
+        <p class="mt-1 text-xs">请求编号：{{ publicationRefreshProblem.body.traceId }}</p>
+        <button
+          ref="publicationRefreshRetry"
+          class="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-2 font-semibold disabled:cursor-not-allowed disabled:opacity-55"
+          type="button"
+          data-action="retry-publication-refresh"
+          :disabled="publicationRefreshPending"
+          @click="retryPublicationRefresh"
+        >{{ publicationRefreshPending ? '正在刷新…' : '仅重试刷新' }}</button>
+      </div>
+
       <ConflictBanner
         v-if="conflict"
         :problem="conflict"
@@ -648,11 +1165,29 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div
+        v-if="publicationStateError && draft !== null && !publicationApplied"
+        class="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"
+        data-publication-state-error
+        role="alert"
+      >
+        <p class="font-semibold">{{ publicationStateError.body.title }}</p>
+        <p class="mt-1">编辑仍可继续；发布与预览会保持锁定，直到状态重新载入。</p>
+        <p class="mt-1 text-xs">请求编号：{{ publicationStateError.body.traceId }}</p>
+        <button
+          class="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-2 font-semibold"
+          type="button"
+          data-action="retry-publication-state"
+          :disabled="publicationStateLoading"
+          @click="loadPublicationStates()"
+        >{{ publicationStateLoading ? '正在重试…' : '重试发布状态' }}</button>
+      </div>
+
       <AsyncPanel
-        :loading="loading"
+        :loading="loading && draft === null"
         :error-title="draft === null ? error?.body.title : undefined"
         :trace-id="draft === null ? error?.body.traceId : undefined"
-        :on-retry="reloadEverything"
+        :on-retry="retryEverything"
       >
         <form
           v-if="draft"
@@ -660,15 +1195,15 @@ onBeforeUnmount(() => {
           class="space-y-6"
           data-project-editor-form
           novalidate
-          :aria-busy="loading || saving"
+          :aria-busy="editorLocked"
           @submit.prevent="manualSave"
         >
-          <fieldset :disabled="loading || saving" class="space-y-6">
+          <fieldset :disabled="editorLocked" class="space-y-6" data-project-editor-fields>
             <TranslationTabs
               v-model="activeLocale"
               :status="completion"
               status-label="元数据翻译完成度"
-              :disabled="loading || saving"
+              :disabled="editorLocked"
             >
               <div class="space-y-6">
                 <ProjectMetadataForm
@@ -676,7 +1211,7 @@ onBeforeUnmount(() => {
                   :locale="activeLocale"
                   :tag-catalog="tags"
                   :skill-catalog="skills"
-                  :disabled="loading || saving || catalogLoading"
+                  :disabled="editorLocked || catalogLoading"
                   :field-errors="fieldErrors"
                   @update:model-value="replaceDraft"
                 />
@@ -685,7 +1220,7 @@ onBeforeUnmount(() => {
                   data-project-block-editor
                   :blocks="draft.blocks"
                   :locale="activeLocale"
-                  :disabled="loading || saving"
+                  :disabled="editorLocked"
                   :field-errors="fieldErrors"
                   :load-media="loadMedia"
                   :resolve-media="resolveMedia"
@@ -701,13 +1236,56 @@ onBeforeUnmount(() => {
               class="rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-55"
               type="submit"
               data-action="save-bottom"
-              :disabled="loading || saving || conflict !== null || !dirty"
+              :disabled="editorLocked || conflict !== null || !dirty"
               :aria-describedby="saveStatusId"
             >
               {{ saving ? '正在保存…' : '保存项目资料' }}
             </button>
           </div>
         </form>
+
+        <div v-if="draft" class="mt-6 space-y-3">
+          <p class="text-xs font-semibold text-slate-500" data-publication-version>
+            项目发布版本 {{ projectPublicationState?.version ?? '—' }} · 目录版本
+            {{ catalogPublicationState?.version ?? '—' }}
+          </p>
+          <PublishPanel
+            :target="publicationTarget"
+            :locale="activeLocale"
+            :completion="completion"
+            :disabled="publicationDisabled"
+            :create-preview="createPreview"
+            :preflight-preview="preflightPreview"
+            :preview-url="previewUrl"
+            :publish-target="publishTarget"
+            @busy-change="handlePublicationBusy"
+            @published="handlePublished"
+            @reload-requested="reloadAfterPublicationConflict"
+          />
+          <section
+            v-if="archiveVisible"
+            class="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm sm:p-6"
+            data-project-archive
+            aria-labelledby="project-archive-title"
+          >
+            <p class="text-xs font-semibold tracking-[0.16em] text-amber-800">TAKE OFFLINE</p>
+            <h2 id="project-archive-title" class="mt-2 text-lg font-semibold text-slate-950">
+              下线已发布项目
+            </h2>
+            <p class="mt-2 text-sm leading-6 text-slate-700">
+              项目会从公开目录移除；后台内容与发布历史仍会保留，之后可以重新发布。
+            </p>
+            <button
+              class="mt-4 rounded-xl border border-amber-400 bg-white px-4 py-2.5 text-sm font-semibold text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-55"
+              type="button"
+              data-action="archive-project"
+              :disabled="archiveDisabled"
+              @click="archiveCurrentProject"
+            >
+              {{ archivePending ? '正在下线…' : '下线项目' }}
+            </button>
+          </section>
+        </div>
       </AsyncPanel>
     </template>
   </section>

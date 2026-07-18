@@ -60,7 +60,8 @@ function isNavigationActive(name: (typeof links)[number]['name']): boolean {
       : ''
   return (
     (name === 'site' && aggregateType === 'SITE') ||
-    (name === 'projects' && aggregateType === 'PROJECT')
+    (name === 'projects' &&
+      (aggregateType === 'PROJECT' || aggregateType === 'PROJECT_CATALOG'))
   )
 }
 

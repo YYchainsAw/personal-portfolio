@@ -105,6 +105,14 @@ describe('AdminShell', () => {
     })
     await flushPromises()
     expect(linkFor('项目')?.attributes('aria-current')).toBe('page')
+
+    await router.push({
+      name: 'publishing-history',
+      params: { aggregateType: 'PROJECT_CATALOG', aggregateId: 'catalog' },
+    })
+    await flushPromises()
+    expect(linkFor('项目')?.attributes('aria-current')).toBe('page')
+    expect(linkFor('站点内容')?.attributes('aria-current')).toBeUndefined()
   })
 
   it('submits logout once while pending and navigates to login only after success', async () => {

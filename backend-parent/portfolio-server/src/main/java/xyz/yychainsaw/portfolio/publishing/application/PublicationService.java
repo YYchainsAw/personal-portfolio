@@ -20,6 +20,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.transaction.support.TransactionTemplate;
 import xyz.yychainsaw.portfolio.audit.AuditCommand;
@@ -28,6 +30,7 @@ import xyz.yychainsaw.portfolio.audit.AuditService;
 import xyz.yychainsaw.portfolio.auth.CurrentAdminProvider;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.content.api.ContentBlockDto;
+import xyz.yychainsaw.portfolio.content.api.LocaleCode;
 import xyz.yychainsaw.portfolio.content.api.ProjectWorkspaceDto;
 import xyz.yychainsaw.portfolio.content.api.SiteWorkspaceDto;
 import xyz.yychainsaw.portfolio.content.persistence.ProjectWorkspaceRepository;
@@ -38,6 +41,7 @@ import xyz.yychainsaw.portfolio.media.application.MediaQueryService;
 import xyz.yychainsaw.portfolio.media.application.MediaVariantDescriptor;
 import xyz.yychainsaw.portfolio.publishing.api.ArchiveProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublicationResult;
+import xyz.yychainsaw.portfolio.publishing.api.PublicationStateDto;
 import xyz.yychainsaw.portfolio.publishing.api.PublishProjectCommand;
 import xyz.yychainsaw.portfolio.publishing.api.PublishSiteCommand;
 import xyz.yychainsaw.portfolio.publishing.api.ReorderCatalogCommand;
@@ -78,6 +82,7 @@ public class PublicationService {
     private final ProjectWorkspaceRepository projects;
     private final PublishingRepository publishing;
     private final PublicationValidator validator;
+    private final PublicProjectionMapper projections;
     private final SiteSnapshotMapper siteSnapshots;
     private final ProjectSnapshotMapper projectSnapshots;
     private final ProjectCatalogSnapshotMapper catalogSnapshots;
@@ -96,6 +101,7 @@ public class PublicationService {
             ProjectWorkspaceRepository projects,
             PublishingRepository publishing,
             PublicationValidator validator,
+            PublicProjectionMapper projections,
             SiteSnapshotMapper siteSnapshots,
             ProjectSnapshotMapper projectSnapshots,
             ProjectCatalogSnapshotMapper catalogSnapshots,
@@ -111,6 +117,7 @@ public class PublicationService {
                 projects,
                 publishing,
                 validator,
+                projections,
                 siteSnapshots,
                 projectSnapshots,
                 catalogSnapshots,
@@ -130,6 +137,7 @@ public class PublicationService {
             ProjectWorkspaceRepository projects,
             PublishingRepository publishing,
             PublicationValidator validator,
+            PublicProjectionMapper projections,
             SiteSnapshotMapper siteSnapshots,
             ProjectSnapshotMapper projectSnapshots,
             ProjectCatalogSnapshotMapper catalogSnapshots,
@@ -148,6 +156,8 @@ public class PublicationService {
                 publishing, "publishing repository is required");
         this.validator = Objects.requireNonNull(
                 validator, "publication validator is required");
+        this.projections = Objects.requireNonNull(
+                projections, "public projection mapper is required");
         this.siteSnapshots = Objects.requireNonNull(
                 siteSnapshots, "site snapshot mapper is required");
         this.projectSnapshots = Objects.requireNonNull(
@@ -183,6 +193,7 @@ public class PublicationService {
             }
             requireExactReferencesLocked(
                     lockedMedia, publishedVariantKeys(snapshot.media()), references);
+            validatePublicSite(snapshot);
 
             PublicationRow pointer = requirePointer(
                     publishing.lock(AggregateType.SITE, SiteWorkspaceDto.SITE_ID),
@@ -269,6 +280,8 @@ public class PublicationService {
                     projectReferences);
             requireExactReferencesLocked(
                     lockedMedia, catalogVariantKeys(catalogSnapshot), catalogReferences);
+            validatePublicProject(projectSnapshot);
+            validatePublicCatalog(catalogSnapshot);
 
             PublicationRow catalogPointer = requirePointer(
                     publishing.lock(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID),
@@ -398,6 +411,7 @@ public class PublicationService {
             }
             requireExactReferencesLocked(
                     lockedMedia, catalogVariantKeys(catalogSnapshot), catalogReferences);
+            validatePublicCatalog(catalogSnapshot);
 
             PublicationRow catalogPointer = requirePointer(
                     publishing.lock(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID),
@@ -493,6 +507,7 @@ public class PublicationService {
             }
             requireExactReferencesLocked(
                     lockedMedia, catalogVariantKeys(catalogSnapshot), catalogReferences);
+            validatePublicCatalog(catalogSnapshot);
 
             PublicationRow catalogPointer = requirePointer(
                     publishing.lock(AggregateType.PROJECT_CATALOG, PROJECT_CATALOG_ID),
@@ -548,6 +563,101 @@ public class PublicationService {
         return publishing.history(
                 Objects.requireNonNull(type, "aggregateType"),
                 Objects.requireNonNull(aggregateId, "aggregateId"));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public PublicationStateDto state(AggregateType type, UUID aggregateId) {
+        AggregateType requiredType = Objects.requireNonNull(type, "aggregateType");
+        UUID requiredId = Objects.requireNonNull(aggregateId, "aggregateId");
+        requireStateAggregateId(requiredType, requiredId);
+
+        PublicationRow pointer = publishing.find(requiredType, requiredId).orElse(null);
+        if (pointer == null) {
+            if (requiredType == AggregateType.PROJECT) {
+                return new PublicationStateDto(
+                        requiredType,
+                        requiredId,
+                        "UNPUBLISHED",
+                        0,
+                        null,
+                        null,
+                        List.of());
+            }
+            throw new IllegalStateException("required publication pointer is missing");
+        }
+        requirePointer(pointer, requiredType, requiredId);
+
+        List<UUID> projectIdsInOrder = requiredType == AggregateType.PROJECT_CATALOG
+                ? publishedRows().stream().map(PublicationRow::aggregateId).toList()
+                : List.of();
+        return publicationState(pointer, projectIdsInOrder);
+    }
+
+    private void validatePublicSite(SiteSnapshotV1 snapshot) {
+        projections.site(snapshot, LocaleCode.ZH_CN);
+        projections.site(snapshot, LocaleCode.EN);
+    }
+
+    private void validatePublicProject(ProjectSnapshotV1 snapshot) {
+        projections.project(snapshot, LocaleCode.ZH_CN);
+        projections.project(snapshot, LocaleCode.EN);
+    }
+
+    private void validatePublicCatalog(ProjectCatalogSnapshotV1 snapshot) {
+        projections.catalog(snapshot, LocaleCode.ZH_CN);
+        projections.catalog(snapshot, LocaleCode.EN);
+    }
+
+    private static PublicationStateDto publicationState(
+            PublicationRow pointer, List<UUID> projectIdsInOrder) {
+        if (pointer.version() < 0) {
+            throw new IllegalStateException("publication repository returned a negative version");
+        }
+        boolean pristine = pointer.version() == 0
+                && pointer.currentRevisionId() == null
+                && pointer.publishedAt() == null;
+        if (pristine
+                && ("ARCHIVED".equals(pointer.status())
+                        || "UNPUBLISHED".equals(pointer.status()))) {
+            return new PublicationStateDto(
+                    pointer.type(),
+                    pointer.aggregateId(),
+                    "UNPUBLISHED",
+                    0,
+                    null,
+                    null,
+                    projectIdsInOrder);
+        }
+        if (!("PUBLISHED".equals(pointer.status())
+                        || "ARCHIVED".equals(pointer.status()))
+                || pointer.version() == 0
+                || pointer.currentRevisionId() == null
+                || pointer.publishedAt() == null) {
+            throw new IllegalStateException("publication repository returned invalid state");
+        }
+        return new PublicationStateDto(
+                pointer.type(),
+                pointer.aggregateId(),
+                pointer.status(),
+                pointer.version(),
+                pointer.currentRevisionId(),
+                pointer.publishedAt(),
+                projectIdsInOrder);
+    }
+
+    private static void requireStateAggregateId(AggregateType type, UUID aggregateId) {
+        boolean valid = switch (type) {
+            case SITE -> SiteWorkspaceDto.SITE_ID.equals(aggregateId);
+            case PROJECT -> !SiteWorkspaceDto.SITE_ID.equals(aggregateId)
+                    && !PROJECT_CATALOG_ID.equals(aggregateId);
+            case PROJECT_CATALOG -> PROJECT_CATALOG_ID.equals(aggregateId);
+        };
+        if (!valid) {
+            throw new DomainException(
+                    "PUBLICATION_STATE_INVALID",
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    Map.of("aggregateId", "aggregate id does not match its type"));
+        }
     }
 
     private List<ProjectSnapshotV1> catalogWithPublishedProject(

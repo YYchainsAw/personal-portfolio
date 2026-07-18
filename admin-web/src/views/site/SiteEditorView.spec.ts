@@ -4,6 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiProblem, type VersionedDraft } from '@/types/api'
 import type { MediaAssetSummaryDto, SaveWorkspaceRequest, SiteWorkspaceDto } from '@/types/content'
+import {
+  PROJECT_CATALOG_ID,
+  SITE_ID,
+  type PublicationResultDto,
+  type PublicationStateDto,
+  type SitePublishTarget,
+} from '@/types/publishing'
 import { createSiteFixture } from '@/tests/fixtures/siteWorkspace'
 
 const routeHooks = vi.hoisted(() => ({
@@ -43,6 +50,50 @@ const MediaPickerStub = defineComponent({
   template: '<div v-if="open" data-media-picker-stub><button type="button" @click="$emit(\'close\')">关闭媒体选择</button></div>',
 })
 
+const PublishPanelStub = defineComponent({
+  name: 'PublishPanel',
+  props: {
+    target: { type: Object, required: true },
+    locale: { type: String, required: true },
+    completion: { type: Object, required: true },
+    disabled: { type: Boolean, default: false },
+  },
+  emits: ['busy-change', 'published', 'reload-requested'],
+  template:
+    '<section data-publish-panel-stub :data-disabled="String(disabled)"><button type="button" data-action="stub-publish-busy" @click="$emit(\'busy-change\', true)">模拟发布中</button></section>',
+})
+
+const RouterLinkStub = defineComponent({
+  name: 'RouterLink',
+  props: { to: { type: [Object, String], required: true } },
+  template: '<a data-router-link-stub><slot /></a>',
+})
+
+const SITE_REVISION_ID = 'e0000000-0000-0000-0000-000000000006'
+
+function createPublicationState(version = 6): PublicationStateDto {
+  return {
+    aggregateType: 'SITE',
+    aggregateId: SITE_ID,
+    status: 'PUBLISHED',
+    version,
+    currentRevisionId:
+      version === 6 ? SITE_REVISION_ID : 'e0000000-0000-0000-0000-000000000007',
+    publishedAt: '2026-07-18T05:00:00Z',
+    projectIdsInOrder: [],
+  }
+}
+
+function publicationResult(version = 7): PublicationResultDto {
+  return {
+    revisionId: 'e0000000-0000-0000-0000-000000000007',
+    aggregateVersion: version,
+    catalogRevisionId: null,
+    catalogVersion: null,
+    checksum: 'a'.repeat(64),
+  }
+}
+
 const mounted: VueWrapper[] = []
 
 function successfulSave(request: SaveWorkspaceRequest<SiteWorkspaceDto>): VersionedDraft<SiteWorkspaceDto> {
@@ -56,29 +107,38 @@ function successfulSave(request: SaveWorkspaceRequest<SiteWorkspaceDto>): Versio
 async function mountEditor(options: {
   load?: () => Promise<VersionedDraft<SiteWorkspaceDto>>
   save?: (request: SaveWorkspaceRequest<SiteWorkspaceDto>) => Promise<VersionedDraft<SiteWorkspaceDto>>
+  loadPublicationState?: () => Promise<PublicationStateDto>
   fixture?: VersionedDraft<SiteWorkspaceDto>
+  publicationState?: PublicationStateDto
 } = {}): Promise<{
   wrapper: VueWrapper
   load: ReturnType<typeof vi.fn>
   save: ReturnType<typeof vi.fn>
+  loadPublicationState: ReturnType<typeof vi.fn>
 }> {
   const load = vi.fn(options.load ?? (async () => options.fixture ?? createSiteFixture()))
   const save = vi.fn(options.save ?? (async (request) => successfulSave(request)))
+  const loadPublicationState = vi.fn(
+    options.loadPublicationState ??
+      (async () => options.publicationState ?? createPublicationState()),
+  )
   const wrapper = mount(SiteEditorView, {
     props: {
       load,
       save,
+      loadPublicationState,
     },
     global: {
       stubs: {
         MediaPickerDialog: MediaPickerStub,
-        PublishPanel: true,
+        PublishPanel: PublishPanelStub,
+        RouterLink: RouterLinkStub,
       },
     },
   })
   mounted.push(wrapper)
   await flushPromises()
-  return { wrapper, load, save }
+  return { wrapper, load, save, loadPublicationState }
 }
 
 function input(wrapper: VueWrapper, field: string) {
@@ -128,6 +188,261 @@ describe('SiteEditorView', () => {
     expect(input(wrapper, 'hero.objectPosition').element.value).toBe('50% 50%')
     expect(input(wrapper, 'hero.credit').element.value).toBe('易嘉轩')
     expect(input(wrapper, 'hero.sourceUrl').element.value).toBe('https://yychainsaw.xyz')
+  })
+
+  it('loads the workspace and SITE publication state in parallel and builds the exact CAS target', async () => {
+    const workspacePending = deferred<VersionedDraft<SiteWorkspaceDto>>()
+    const statePending = deferred<PublicationStateDto>()
+    const { wrapper, load, loadPublicationState } = await mountEditor({
+      load: () => workspacePending.promise,
+      loadPublicationState: () => statePending.promise,
+    })
+
+    expect(load).toHaveBeenCalledOnce()
+    expect(loadPublicationState).toHaveBeenCalledOnce()
+
+    workspacePending.resolve(createSiteFixture())
+    statePending.resolve(createPublicationState())
+    await flushPromises()
+
+    const panel = wrapper.getComponent(PublishPanelStub)
+    expect(panel.props('target')).toEqual({
+      aggregateType: 'SITE',
+      aggregateId: SITE_ID,
+      expectedWorkspaceVersion: 4,
+      expectedPublicationVersion: 6,
+    } satisfies SitePublishTarget)
+    expect(panel.props('disabled')).toBe(false)
+    expect(wrapper.getComponent(RouterLinkStub).props('to')).toEqual({
+      name: 'publishing-history',
+      params: { aggregateType: 'SITE', aggregateId: SITE_ID },
+    })
+
+    await input(wrapper, 'monogram').setValue('DIRTY')
+    expect(panel.props('disabled')).toBe(true)
+  })
+
+  it('synchronously freezes form, save controls, and an open media picker while publishing is busy', async () => {
+    const { wrapper } = await mountEditor()
+
+    await wrapper.get('[data-media-target="hero"]').trigger('click')
+    expect(wrapper.find('[data-media-picker-stub]').exists()).toBe(true)
+
+    wrapper.getComponent(PublishPanelStub).vm.$emit('busy-change', true)
+    await flushPromises()
+
+    expect(wrapper.get('form').attributes('aria-busy')).toBe('true')
+    expect(wrapper.get('form fieldset').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-action="save"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-media-picker-stub]').exists()).toBe(false)
+
+    wrapper.getComponent(PublishPanelStub).vm.$emit('busy-change', false)
+    await flushPromises()
+    expect(wrapper.get('form fieldset').attributes('disabled')).toBeUndefined()
+  })
+
+  it('reloads only workspace and publication state after publishing, then advances the panel target', async () => {
+    const workspaceRefresh = deferred<VersionedDraft<SiteWorkspaceDto>>()
+    const stateRefresh = deferred<PublicationStateDto>()
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(createSiteFixture())
+      .mockReturnValueOnce(workspaceRefresh.promise)
+    const loadPublicationState = vi
+      .fn()
+      .mockResolvedValueOnce(createPublicationState())
+      .mockReturnValueOnce(stateRefresh.promise)
+    const { wrapper } = await mountEditor({ load, loadPublicationState })
+    const panel = wrapper.getComponent(PublishPanelStub)
+
+    panel.vm.$emit('published', publicationResult())
+    await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(loadPublicationState).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('form fieldset').attributes('disabled')).toBeDefined()
+
+    const refreshed = createSiteFixture()
+    refreshed.value.monogram = 'LIVE'
+    workspaceRefresh.resolve(refreshed)
+    stateRefresh.resolve(createPublicationState(7))
+    await flushPromises()
+
+    expect(input(wrapper, 'monogram').element.value).toBe('LIVE')
+    expect(wrapper.get('[data-publication-notice]').text()).toContain('发布版本 v7')
+    expect((panel.props('target') as SitePublishTarget).expectedPublicationVersion).toBe(7)
+    expect(wrapper.get('form fieldset').attributes('disabled')).toBeUndefined()
+  })
+
+  it('accepts a newer concurrent site publication returned by the post-publish refresh', async () => {
+    const refreshed = createSiteFixture()
+    refreshed.value.monogram = 'NEWER'
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(createSiteFixture())
+      .mockResolvedValueOnce(refreshed)
+    const loadPublicationState = vi
+      .fn()
+      .mockResolvedValueOnce(createPublicationState())
+      .mockResolvedValueOnce(createPublicationState(8))
+    const { wrapper } = await mountEditor({ load, loadPublicationState })
+
+    wrapper.getComponent(PublishPanelStub).vm.$emit('published', publicationResult(7))
+    await flushPromises()
+
+    expect(wrapper.find('[data-post-publish-refresh-error]').exists()).toBe(false)
+    expect(wrapper.get('[data-publication-notice]').text()).toContain('较新的发布版本 v8')
+    expect(input(wrapper, 'monogram').element.value).toBe('NEWER')
+  })
+
+  it('handles a publication conflict CTA with workspace and state GETs only', async () => {
+    const refreshed = createSiteFixture()
+    refreshed.value.monogram = 'CONFLICT-REFRESHED'
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(createSiteFixture())
+      .mockResolvedValueOnce(refreshed)
+    const loadPublicationState = vi
+      .fn()
+      .mockResolvedValueOnce(createPublicationState())
+      .mockResolvedValueOnce(createPublicationState(9))
+    const { wrapper } = await mountEditor({ load, loadPublicationState })
+
+    wrapper.getComponent(PublishPanelStub).vm.$emit('reload-requested')
+    await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(loadPublicationState).toHaveBeenCalledTimes(2)
+    expect(input(wrapper, 'monogram').element.value).toBe('CONFLICT-REFRESHED')
+  })
+
+  it('locks after a successful publish refresh failure and retries GETs without repeating publish', async () => {
+    const refreshFailure = new ApiProblem({
+      type: 'upstream',
+      title: '<script>发布后刷新失败</script>',
+      status: 503,
+      code: 'SITE_REFRESH_FAILED',
+      traceId: 'trace-published-refresh',
+    })
+    const refreshed = createSiteFixture()
+    refreshed.value.monogram = 'RECOVERED'
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(createSiteFixture())
+      .mockRejectedValueOnce(refreshFailure)
+      .mockResolvedValueOnce(refreshed)
+    const loadPublicationState = vi
+      .fn()
+      .mockResolvedValueOnce(createPublicationState())
+      .mockResolvedValueOnce(createPublicationState(7))
+      .mockResolvedValueOnce(createPublicationState(7))
+    const { wrapper } = await mountEditor({ load, loadPublicationState })
+    const panel = wrapper.getComponent(PublishPanelStub)
+
+    panel.vm.$emit('published', publicationResult())
+    await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(loadPublicationState).toHaveBeenCalledTimes(2)
+    expect(panel.emitted('published')).toHaveLength(1)
+    expect(wrapper.get('[data-post-publish-refresh-error]').text()).toContain(
+      '<script>发布后刷新失败</script>',
+    )
+    expect(wrapper.find('[data-post-publish-refresh-error] script').exists()).toBe(false)
+    expect(wrapper.get('form fieldset').attributes('disabled')).toBeDefined()
+    expect(panel.props('disabled')).toBe(true)
+
+    await wrapper.get('[data-action="retry-post-publish-refresh"]').trigger('click')
+    await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(3)
+    expect(loadPublicationState).toHaveBeenCalledTimes(3)
+    expect(panel.emitted('published')).toHaveLength(1)
+    expect(wrapper.find('[data-post-publish-refresh-error]').exists()).toBe(false)
+    expect(input(wrapper, 'monogram').element.value).toBe('RECOVERED')
+    expect(wrapper.get('form fieldset').attributes('disabled')).toBeUndefined()
+  })
+
+  it('keeps the GET-only latch when post-publish workspace GET is older than the submitted version', async () => {
+    const staleFixture = createSiteFixture()
+    const stale: VersionedDraft<SiteWorkspaceDto> = {
+      version: 3,
+      value: { ...staleFixture.value, version: 3 },
+    }
+    const current = createSiteFixture()
+    current.value.monogram = 'CURRENT'
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(createSiteFixture())
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(current)
+    const loadPublicationState = vi
+      .fn()
+      .mockResolvedValueOnce(createPublicationState())
+      .mockResolvedValueOnce(createPublicationState(7))
+      .mockResolvedValueOnce(createPublicationState(7))
+    const { wrapper } = await mountEditor({ load, loadPublicationState })
+    const panel = wrapper.getComponent(PublishPanelStub)
+
+    panel.vm.$emit('published', publicationResult())
+    await flushPromises()
+
+    expect(wrapper.get('[data-post-publish-refresh-error]').text()).toContain(
+      '未能确认最新发布状态',
+    )
+    expect(panel.props('disabled')).toBe(true)
+
+    await wrapper.get('[data-action="retry-post-publish-refresh"]').trigger('click')
+    await flushPromises()
+
+    expect(panel.emitted('published')).toHaveLength(1)
+    expect(load).toHaveBeenCalledTimes(3)
+    expect(wrapper.find('[data-post-publish-refresh-error]').exists()).toBe(false)
+    expect(input(wrapper, 'monogram').element.value).toBe('CURRENT')
+  })
+
+  it('keeps publication disabled when state is unavailable and retries only the state GET safely', async () => {
+    const stateFailure = new ApiProblem({
+      type: 'upstream',
+      title: '<img src=x onerror=alert(1)>状态失败',
+      status: 503,
+      code: 'PUBLICATION_STATE_FAILED',
+      traceId: 'trace-state-failed',
+    })
+    const loadPublicationState = vi
+      .fn()
+      .mockRejectedValueOnce(stateFailure)
+      .mockResolvedValueOnce(createPublicationState())
+    const { wrapper, load } = await mountEditor({ loadPublicationState })
+    const panel = wrapper.getComponent(PublishPanelStub)
+
+    expect(panel.props('disabled')).toBe(true)
+    expect(wrapper.get('[data-publication-state-error]').text()).toContain(
+      '<img src=x onerror=alert(1)>状态失败',
+    )
+    expect(wrapper.find('[data-publication-state-error] img').exists()).toBe(false)
+
+    await wrapper.get('[data-action="retry-publication-state"]').trigger('click')
+    await flushPromises()
+
+    expect(loadPublicationState).toHaveBeenCalledTimes(2)
+    expect(load).toHaveBeenCalledOnce()
+    expect(panel.props('disabled')).toBe(false)
+  })
+
+  it('rejects a publication state belonging to another aggregate', async () => {
+    const foreignState: PublicationStateDto = {
+      ...createPublicationState(),
+      aggregateType: 'PROJECT_CATALOG',
+      aggregateId: PROJECT_CATALOG_ID,
+      projectIdsInOrder: [],
+    }
+    const { wrapper } = await mountEditor({ publicationState: foreignState })
+
+    expect(wrapper.getComponent(PublishPanelStub).props('disabled')).toBe(true)
+    expect(wrapper.get('[data-publication-state-error]').text()).toContain(
+      '发布状态响应与当前站点不匹配',
+    )
   })
 
   it('switches one typed form between locales while retaining both completion counts and edits', async () => {
