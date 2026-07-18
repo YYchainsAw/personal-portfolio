@@ -26,6 +26,7 @@ export interface SessionGuardPort {
 
 const adminShell = () => import('@/components/layout/AdminShell.vue')
 const dashboard = () => import('@/views/DashboardView.vue')
+const siteEditor = () => import('@/views/site/SiteEditorView.vue')
 const feature = () => import('@/views/FeatureShellView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
@@ -80,8 +81,7 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'site',
             name: 'site',
-            component: feature,
-            props: { title: '站点内容' },
+            component: siteEditor,
           },
           {
             path: 'projects',

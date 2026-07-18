@@ -296,6 +296,48 @@ describe('useVersionedDraft', () => {
     expect(model.dirty.value).toBe(false)
   })
 
+  it('retries a local validation failure only after the draft changes again', async () => {
+    const validation = new ApiProblem({
+      type: 'client_validation',
+      title: '请先修正草稿',
+      status: 0,
+      code: 'CLIENT_VALIDATION_FAILED',
+      traceId: 'client',
+    })
+    const save = vi
+      .fn()
+      .mockRejectedValueOnce(validation)
+      .mockResolvedValueOnce(workspace(2, 'valid', 'valid-label'))
+    const model = tracked(
+      useVersionedDraft<Workspace>({
+        load: vi.fn().mockResolvedValue(workspace(1, 'server')),
+        save,
+        retryValidationAfterEdit: (problem) =>
+          problem.body.code === 'CLIENT_VALIDATION_FAILED',
+      }),
+    )
+    await model.reload()
+    model.draft.value!.title = 'invalid'
+    await nextTick()
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(save).toHaveBeenCalledOnce()
+    expect(model.error.value).toBeNull()
+    expect(model.dirty.value).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(save).toHaveBeenCalledOnce()
+
+    model.draft.value!.title = 'valid'
+    model.draft.value!.meta.label = 'valid-label'
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(model.version.value).toBe(2)
+    expect(model.dirty.value).toBe(false)
+  })
+
   it('stops only on an exact 409 and resumes after an explicit server reload', async () => {
     const conflict = new ApiProblem({
       type: 'conflict',

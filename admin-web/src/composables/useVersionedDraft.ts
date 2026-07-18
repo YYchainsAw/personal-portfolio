@@ -15,6 +15,7 @@ const DEFAULT_AUTOSAVE_INTERVAL_MS = 15_000
 export interface VersionedDraftOptions<T> {
   load(): Promise<VersionedDraft<T>>
   save(request: SaveWorkspaceRequest<T>): Promise<VersionedDraft<T>>
+  retryValidationAfterEdit?(problem: ApiProblem): boolean
   readonly intervalMs?: number
 }
 
@@ -92,6 +93,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
   let disposed = false
   let hydrating = false
   let editRevision = 0
+  let validationBlockedRevision: number | null = null
   let operationGeneration = 0
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -108,6 +110,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
       !loading.value &&
       !saving.value &&
       error.value === null &&
+      validationBlockedRevision !== editRevision &&
       conflict.value === null
     )
   }
@@ -130,6 +133,7 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
       dirty.value = false
       error.value = null
       conflict.value = null
+      validationBlockedRevision = null
       editRevision += 1
     } finally {
       hydrating = false
@@ -202,6 +206,9 @@ export function useVersionedDraft<T>(options: VersionedDraftOptions<T>) {
         cause instanceof ApiProblem ? cause : safeProblem('保存失败', 'SAVE_FAILED')
       if (problem.body.status === 409) {
         conflict.value = problem
+        error.value = null
+      } else if (options.retryValidationAfterEdit?.(problem) === true) {
+        validationBlockedRevision = savedRevision
         error.value = null
       } else {
         error.value = problem

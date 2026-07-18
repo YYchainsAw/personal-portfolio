@@ -3,7 +3,9 @@ import { defineComponent, nextTick, reactive } from 'vue'
 import { createMemoryHistory, RouterView, type Router } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { siteApi } from '@/api/siteApi'
 import { createSessionStore } from '@/stores/session'
+import { createSiteFixture } from '@/tests/fixtures/siteWorkspace'
 
 import { createAdminRouter, disposeAdminRouter, sanitizeAdminRedirect } from './index'
 
@@ -18,6 +20,7 @@ function createTestRouter(session: Parameters<typeof createAdminRouter>[0]): Rou
 
 afterEach(() => {
   for (const router of routers.splice(0)) disposeAdminRouter(router)
+  vi.restoreAllMocks()
 })
 
 function createGuardSession(initial: GuardPhase, bootstrapped: GuardPhase = initial) {
@@ -199,7 +202,8 @@ describe('admin route guard', () => {
     )
   })
 
-  it('provides one main landmark around dashboard and temporary destinations', async () => {
+  it('provides one main landmark around dashboard and the complete SITE editor', async () => {
+    vi.spyOn(siteApi, 'get').mockResolvedValue(createSiteFixture())
     const router = createTestRouter(createGuardSession('AUTHENTICATED'))
     await router.push('/admin/dashboard')
     await router.isReady()
@@ -219,7 +223,11 @@ describe('admin route guard', () => {
     await flushPromises()
 
     expect(wrapper.findAll('main')).toHaveLength(1)
-    expect(wrapper.get('main#admin-main > [data-feature-shell]').element.tagName).toBe('SECTION')
+    expect(
+      wrapper.get('main#admin-main > section[aria-labelledby="site-editor-title"]').element
+        .tagName,
+    ).toBe('SECTION')
+    expect(wrapper.text()).toContain('双语简历')
 
     wrapper.unmount()
   })

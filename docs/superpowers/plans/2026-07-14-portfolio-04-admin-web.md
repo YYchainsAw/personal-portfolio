@@ -888,22 +888,29 @@ git commit -m "feat(admin): add bilingual conflict-safe autosave"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Modify: `admin-web/src/types/content.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.ts`
+- Modify: `admin-web/src/composables/useVersionedDraft.spec.ts`
 - Create: `admin-web/src/api/siteApi.ts`
+- Test: `admin-web/src/api/siteApi.spec.ts`
 - Create: `admin-web/src/api/mediaApi.ts`
+- Test: `admin-web/src/api/mediaApi.spec.ts`
 - Create: `admin-web/src/components/media/MediaPickerDialog.vue`
 - Create: `admin-web/src/components/site/SiteIdentityForm.vue`
 - Create: `admin-web/src/components/site/SiteTranslationForm.vue`
 - Create: `admin-web/src/components/site/OrderedLocalizedList.vue`
+- Create: `admin-web/src/tests/fixtures/siteWorkspace.ts`
 - Create: `admin-web/src/views/site/SiteEditorView.vue`
 - Test: `admin-web/src/components/media/MediaPickerDialog.spec.ts`
+- Test: `admin-web/src/components/site/*.spec.ts`
 - Test: `admin-web/src/views/site/SiteEditorView.spec.ts`
 
 **Interfaces:**
 - Consumes: UI-only `VersionedDraft<T>`, `useVersionedDraft`, locale tabs, conflict banner, plan-03 `GET/PUT /api/admin/site/workspace`, and plan-02 READY media search.
 - Produces: `SiteWorkspaceDto`, `MediaAssetSummaryDto`, `siteApi`, `mediaApi`, and a complete editor for the approved `SITE` aggregate workspace.
 
-- [ ] **Step 1: Write failing tests for every SITE content group and READY-only selection**
+- [x] **Step 1: Write failing tests for every SITE content group and READY-only selection**
 
 ```ts
 // admin-web/src/views/site/SiteEditorView.spec.ts
@@ -941,13 +948,13 @@ it('returns only a READY compatible asset', async () => {
 })
 ```
 
-- [ ] **Step 2: Run focused tests and verify the editor contracts are absent**
+- [x] **Step 2: Run focused tests and verify the editor contracts are absent**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/site src/components/media`
 
 Expected: FAIL because SITE/media DTOs and components do not exist.
 
-- [ ] **Step 3: Define the SITE/media DTOs and clients**
+- [x] **Step 3: Define the SITE/media DTOs and clients**
 
 Append these exact TypeScript mirrors of plan 03's `SiteWorkspaceDto` records to `types/content.ts`; every ordered item uses its backend field name `sortOrder`:
 
@@ -957,7 +964,7 @@ export interface SeoCopy { title: string; description: string }
 export interface AccessibilityCopy { skip: string; primaryNav: string; mobileNav: string; openMenu: string; closeMenu: string; language: string; backToTop: string; projectTags: string }
 export interface NavigationItem { id: string; target: string; sortOrder: number; visible: boolean; labels: Localized<string> }
 export interface HeroCopy { eyebrow: string; displayName: string; secondaryName: string; role: string; headline: string; introduction: string; availability: string; primaryCta: string; secondaryCta: string; visualLabel: string; stageLabel: string }
-export interface Hero { id: string; version: number; mediaAssetId: string; objectPosition: string; credit: string; sourceUrl: string; copy: Localized<HeroCopy> }
+export interface Hero { id: string; version: number; mediaAssetId: string | null; objectPosition: string | null; credit: string | null; sourceUrl: string | null; copy: Localized<HeroCopy> }
 export interface AboutCopy { label: string; title: string; statement: string; focusLabel: string; focusTitle: string; focusIntro: string }
 export interface LabelValueCopy { label: string; value: string }
 export interface ProfileFact { id: string; externalKey: string; sortOrder: number; copy: Localized<LabelValueCopy> }
@@ -1007,7 +1014,7 @@ export const siteApi = {
 
 `mediaApi.search` always sends `status=READY`, normalizes the plan-02 `MediaPageView` into `Page<MediaAssetSummaryDto>`, and filters `kind`/text locally because the backend list contract exposes only `page`, `size`, and `status`. It constructs authenticated previews exclusively as `/api/admin/media/{encodeURIComponent(id)}/preview/{encodeURIComponent(variant)}`. `MediaPickerDialog` rejects a returned asset if its status is not `READY` or its kind is outside `accept`, even if a faulty response includes it.
 
-- [ ] **Step 4: Implement and verify the complete SITE form**
+- [x] **Step 4: Implement and verify the complete SITE form**
 
 `SiteEditorView.vue` must:
 
@@ -1028,10 +1035,12 @@ Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0; every SITE field is typed and no `any` is introduced.
 
-- [ ] **Step 5: Commit the SITE editor slice**
+Verification (2026-07-18): focused tests first failed for the missing SITE editor and for the invalid-draft autosave recovery defect. The completed slice passed the full Node 22.18 admin suite with 160/160 tests across 21 files, strict `vue-tsc`, the Vite production build, and npm audit with zero vulnerabilities. The production build keeps `SiteEditorView` in an independent lazy chunk (18.68 kB gzip). Coverage includes exact Java DTO and Jackson `non_null` wire normalization, all-or-none Hero media attribution, bilingual completion and language-of-parts, contiguous ordered lists, nested accessible field errors, complete reload/409 states, local-validation autosave recovery, save/media races, strict READY/MIME/UUID selection, preview path binding, malformed pagination, focus trapping/restoration, idempotent close, and late-request invalidation. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the SITE editor slice**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/content.ts admin-web/src/api/siteApi.ts admin-web/src/api/mediaApi.ts admin-web/src/components/media admin-web/src/components/site admin-web/src/views/site
+git add admin-web/src/router admin-web/src/types/content.ts admin-web/src/composables/useVersionedDraft.ts admin-web/src/composables/useVersionedDraft.spec.ts admin-web/src/api/siteApi.ts admin-web/src/api/siteApi.spec.ts admin-web/src/api/mediaApi.ts admin-web/src/api/mediaApi.spec.ts admin-web/src/components/media admin-web/src/components/site admin-web/src/tests/fixtures/siteWorkspace.ts admin-web/src/views/site docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add bilingual site workspace editor"
 ```
 
