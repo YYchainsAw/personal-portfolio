@@ -711,12 +711,14 @@ git commit -m "feat(admin): add authenticated shell and dashboard"
 - Create: `admin-web/src/components/common/ConflictBanner.vue`
 - Test: `admin-web/src/composables/useTranslationStatus.spec.ts`
 - Test: `admin-web/src/composables/useVersionedDraft.spec.ts`
+- Test: `admin-web/src/components/common/TranslationTabs.spec.ts`
+- Test: `admin-web/src/components/common/ConflictBanner.spec.ts`
 
 **Interfaces:**
 - Consumes: `ApiProblem`, UI-only `VersionedDraft<T>`, and the backend's version-bearing workspace DTOs.
 - Produces: `Locale`, `Localized<T>`, `translationStatus`, and `useVersionedDraft<T>`. Site and project editors must use these rather than independent timers.
 
-- [ ] **Step 1: Write failing tests for completion, 15-second save, and 409 stop state**
+- [x] **Step 1: Write failing tests for completion, 15-second save, and 409 stop state**
 
 ```ts
 // admin-web/src/composables/useTranslationStatus.spec.ts
@@ -768,13 +770,13 @@ describe('useVersionedDraft', () => {
 })
 ```
 
-- [ ] **Step 2: Run the focused tests and observe missing-composable failures**
+- [x] **Step 2: Run the focused tests and observe missing-composable failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/composables/useTranslationStatus.spec.ts src/composables/useVersionedDraft.spec.ts`
 
 Expected: FAIL because both composables are absent.
 
-- [ ] **Step 3: Implement exact locale and autosave state**
+- [x] **Step 3: Implement exact locale and autosave state**
 
 ```ts
 // admin-web/src/types/content.ts (shared beginning)
@@ -865,16 +867,20 @@ export function useVersionedDraft<T>(options: {
 
 Implement `TranslationTabs.vue` as a two-button tablist with `aria-selected`, visible `complete/total`, and emitted `update:modelValue`. Implement `ConflictBanner.vue` with the server trace ID, `保留当前页面` (dismisses no state and therefore keeps autosave stopped), and `重新载入服务器版本` (emits `reload` after an explicit confirmation); do not provide a force-overwrite action.
 
-- [ ] **Step 4: Verify timing, conflict, and accessibility behavior**
+The completed primitives serialize saves, deep-clone recursively unwrapped reactive workspaces, preserve edits made during in-flight saves, ignore stale save/reload responses, and require an explicit manual retry after non-409 mutation failures. Each locale tab owns a unique panel and renders only its active scoped slot. `ConflictBanner` requires a controlled `reloading` prop so failed reloads can recover without duplicate requests; confirmation, cancellation, replacement, and completion preserve keyboard focus without pulling it back after the user leaves the banner.
+
+- [x] **Step 4: Verify timing, conflict, and accessibility behavior**
 
 Run: `npm --prefix admin-web run test:unit -- src/composables src/components/common/TranslationTabs.spec.ts src/components/common/ConflictBanner.spec.ts`
 
 Expected: PASS; fake timers cause exactly one save at 15 seconds, `409` stops later calls, and both locale tabs expose completion counts.
 
-- [ ] **Step 5: Commit the reusable editor state**
+Verification (2026-07-18): the focused tests first failed because the content types, composables, and components were absent, then passed 33/33 under exact Node 22.18. The final full admin suite passed 100/100 across 14 files; strict `vue-tsc` and the Vite production build exited 0; npm audit reported zero vulnerabilities. Coverage includes trimmed bilingual completion with deduplicated requirements, exact one-shot 15-second autosave, manual-only retry after non-409 failures, hard stop and explicit reload after any real 409, edits during saves, stale reload/save responses, deep reactive ordered-list cloning, clone failures, scope/unload cleanup, unique tab/panel associations, active-only scoped slots, keyboard and multi-instance isolation, safe conflict text, required controlled reload state, duplicate-request prevention, and focus preservation without focus theft. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the reusable editor state**
 
 ```bash
-git add admin-web/src/types/content.ts admin-web/src/composables admin-web/src/components/common/TranslationTabs.vue admin-web/src/components/common/ConflictBanner.vue
+git add admin-web/src/types/content.ts admin-web/src/composables admin-web/src/components/common/TranslationTabs.vue admin-web/src/components/common/TranslationTabs.spec.ts admin-web/src/components/common/ConflictBanner.vue admin-web/src/components/common/ConflictBanner.spec.ts docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add bilingual conflict-safe autosave"
 ```
 
