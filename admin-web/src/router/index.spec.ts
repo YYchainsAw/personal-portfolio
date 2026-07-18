@@ -212,6 +212,16 @@ describe('admin route guard', () => {
     expect(media.matched.at(-1)?.props.default).toBe(false)
   })
 
+  it('routes messages and analytics to their complete authenticated views', () => {
+    const router = createTestRouter(createGuardSession('AUTHENTICATED'))
+
+    for (const path of ['/admin/messages', '/admin/analytics']) {
+      const route = router.resolve(path)
+      expect(route.matched.at(-1)?.path).toBe(path)
+      expect(route.matched.at(-1)?.props.default).toBe(false)
+    }
+  })
+
   it('keeps the admin root and not-found destination behind authentication', async () => {
     const authenticatedRouter = createTestRouter(createGuardSession('AUTHENTICATED'))
     await authenticatedRouter.push('/admin')

@@ -31,6 +31,8 @@ const projectList = () => import('@/views/projects/ProjectListView.vue')
 const projectEditor = () => import('@/views/projects/ProjectEditorView.vue')
 const mediaLibrary = () => import('@/views/media/MediaLibraryView.vue')
 const publishingHistory = () => import('@/views/publishing/PublishingHistoryView.vue')
+const messages = () => import('@/views/messages/MessagesView.vue')
+const analytics = () => import('@/views/analytics/AnalyticsView.vue')
 const feature = () => import('@/views/FeatureShellView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
@@ -124,14 +126,12 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'messages',
             name: 'messages',
-            component: feature,
-            props: { title: '留言' },
+            component: messages,
           },
           {
             path: 'analytics',
             name: 'analytics',
-            component: feature,
-            props: { title: '访问统计' },
+            component: analytics,
           },
           {
             path: 'settings',

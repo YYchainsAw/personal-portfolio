@@ -533,6 +533,7 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 **Files:**
 - Modify: `admin-web/vite.config.ts`
 - Modify: `admin-web/src/router/index.ts`
+- Test: `admin-web/src/router/index.spec.ts`
 - Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/router/redirect.ts`
 - Create: `admin-web/src/views/auth/LoginView.vue`
@@ -1640,7 +1641,7 @@ git commit -m "feat(admin): complete media management"
 - Consumes: the exact plan-06 admin message and analytics endpoints; execute this task only after plan 06's controllers are available.
 - Produces: complete cursor inbox/detail/status/retry/delete behavior and summary/timeseries/breakdown analytics with definitions and delay.
 
-- [ ] **Step 1: Write failing inbox mutation and analytics-definition tests**
+- [x] **Step 1: Write failing inbox mutation and analytics-definition tests**
 
 ```ts
 // admin-web/src/views/messages/MessagesView.spec.ts
@@ -1681,19 +1682,21 @@ it('labels PV, anonymous daily UV, definitions, zone, and data delay', async () 
 })
 ```
 
-- [ ] **Step 2: Run focused tests and observe missing complete pages**
+- [x] **Step 2: Run focused tests and observe missing complete pages**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/messages src/views/analytics src/api/operationsApi.spec.ts`
 
 Expected: FAIL because the complete views and clients do not exist.
 
-- [ ] **Step 3: Define exact plan-06 DTOs and clients**
+- [x] **Step 3: Define exact plan-06 DTOs and clients**
 
 ```ts
 // admin-web/src/types/operations.ts
 export type MessageStatus = 'UNREAD' | 'READ' | 'ARCHIVED' | 'SPAM'
-export interface MessageSummaryDto { id: string; visitorName: string; visitorEmail: string; subject: string; status: MessageStatus; emailStatus: string; createdAt: string; version: number }
-export interface EmailDeliveryView { status: string; attempts: number; nextAttemptAt: string | null; sentAt: string | null; updatedAt: string; errorCategory: string | null }
+export type EmailDeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'DEAD' | 'CANCELED'
+export type EmailErrorCategory = 'SMTP_AUTHENTICATION_FAILED' | 'SMTP_CONNECTION_FAILED' | 'MESSAGE_PREPARATION_FAILED' | 'SMTP_DELIVERY_FAILED' | 'UNEXPECTED_DELIVERY_FAILURE' | 'DELIVERY_INTERRUPTED'
+export interface MessageSummaryDto { id: string; visitorName: string; visitorEmail: string; subject: string; status: MessageStatus; emailStatus: EmailDeliveryStatus; createdAt: string; version: number }
+export interface EmailDeliveryView { status: EmailDeliveryStatus; attempts: number; nextAttemptAt: string; sentAt: string | null; updatedAt: string; errorCategory: EmailErrorCategory | null }
 export interface MessageDetailDto { id: string; visitorName: string; visitorEmail: string; subject: string; body: string; status: MessageStatus; email: EmailDeliveryView; privacyAcceptedAt: string; createdAt: string; updatedAt: string; version: number }
 export interface UpdateMessageStatusRequest { status: MessageStatus; version: number }
 export interface AnalyticsSummaryDto { pageViews: number; dailyUniqueVisitors: number; projectViews: number; resumeDownloads: number; demoDownloads: number; outboundClicks: number; dataCompleteThrough: string | null; zone: string; definitions: Record<string, string> }
@@ -1704,7 +1707,7 @@ export interface AnalyticsBreakdownItemDto { dimensionValue: string; value: numb
 
 `operationsApi` implements every fixed message path from Cross-Task Interfaces: cursor list with `limit=30`, detail GET, versioned status PATCH, email retry POST, and delete. It also implements the exact analytics queries: summary sends `from,to,locale,zone`; timeseries sends `from,to,metric,eventType,zone`; breakdown sends `from,to,metric,eventType,dimension,limit,zone`. The zone is always `Asia/Hong_Kong`; range is at most 366 days; mutations never retry.
 
-- [ ] **Step 4: Implement the complete inbox and analytics UX**
+- [x] **Step 4: Implement the complete inbox and analytics UX**
 
 - Inbox status changes reset the cursor; “load more” appends without duplicates by UUID. Selecting a row loads full detail, renders subject/body only by Vue text interpolation, and moves focus to the detail heading.
 - Status actions send the detail's current version and replace both detail/list row from the response. A `409 MESSAGE_VERSION_CONFLICT` reloads that message and asks the operator to retry explicitly.
@@ -1716,10 +1719,12 @@ Run: `npm --prefix admin-web run test:unit -- src/views/messages src/views/analy
 
 Expected: PASS for cursor reset/append, escaped detail, all six email-delivery fields, safe error category/next-attempt display, all status transitions, version conflict, retry/delete confirmation, exact analytics queries, definitions, delay, empty data, and retry.
 
-- [ ] **Step 5: Commit complete inbox and analytics**
+Verification (2026-07-18): under exact Node 22.18, the final operations API, inbox, analytics, and route suites passed 89/89; the complete admin unit gate passed 664/664 across 49 files. TypeScript checking and the Vite production build exited 0, `git diff --check` was clean, and both full and production npm audits reported zero vulnerabilities. Coverage includes strict wire normalization, Java `INTEGER` version boundaries, cursor reset/append and monotonic dedupe, late-response isolation, GET-only mutation reconciliation, concurrent deletion tombstones without PATCH/POST replay, pure-text PII rendering, route/browser leave protection, atomic three-endpoint analytics snapshots, fixed Hong Kong dates, metric/event coupling, duplicate-label-safe breakdown keys, six KPI cards, exact definitions, accessible trend tables, and the null aggregation watermark. Independent inbox and analytics audits found one P2 and one P3 respectively; both were regression-tested, remediated, and independently rechecked with no remaining P1/P2/P3 findings. The protected PostgreSQL container remained `0 running healthy` and was never accessed by these frontend gates.
+
+- [x] **Step 5: Commit complete inbox and analytics**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/operations.ts admin-web/src/api/operationsApi.ts admin-web/src/views/messages admin-web/src/views/analytics
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/operations.ts admin-web/src/api/operationsApi.ts admin-web/src/api/operationsApi.spec.ts admin-web/src/views/messages admin-web/src/views/analytics docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): complete inbox and analytics"
 ```
 
