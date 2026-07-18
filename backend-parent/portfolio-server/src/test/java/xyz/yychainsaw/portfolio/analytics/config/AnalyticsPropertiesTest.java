@@ -7,6 +7,7 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AnalyticsPropertiesTest {
     @Test
@@ -76,13 +77,39 @@ class AnalyticsPropertiesTest {
     @Test
     void productionValidatorFailsClosedWithoutPrintingSecretMaterial() {
         String encoded = Base64.getEncoder().encodeToString(secretBytes());
+        MockEnvironment enabled = new MockEnvironment()
+                .withProperty("portfolio.jobs.worker-enabled", "true")
+                .withProperty(
+                        "portfolio.analytics.maintenance-scheduling-enabled", "true");
 
-        new AnalyticsProductionConfigurationValidator(new AnalyticsProperties(encoded));
+        new AnalyticsProductionConfigurationValidator(
+                new AnalyticsProperties(encoded), enabled);
         assertThatThrownBy(() -> new AnalyticsProductionConfigurationValidator(
-                        new AnalyticsProperties("")))
+                        new AnalyticsProperties(""), enabled))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("analytics HMAC secret must be configured in production")
                 .hasMessageNotContaining(encoded);
+    }
+
+    @Test
+    void productionValidatorRequiresTheWorkerAndRetentionScheduler() {
+        AnalyticsProperties properties = new AnalyticsProperties(
+                Base64.getEncoder().encodeToString(secretBytes()));
+
+        for (MockEnvironment disabled : new MockEnvironment[] {
+            new MockEnvironment().withProperty(
+                    "portfolio.analytics.maintenance-scheduling-enabled", "true"),
+            new MockEnvironment()
+                    .withProperty("portfolio.jobs.worker-enabled", "true")
+                    .withProperty(
+                            "portfolio.analytics.maintenance-scheduling-enabled", "false")
+        }) {
+            assertThatThrownBy(() -> new AnalyticsProductionConfigurationValidator(
+                            properties, disabled))
+                    .isExactlyInstanceOf(IllegalStateException.class)
+                    .hasMessage("analytics maintenance must be enabled in production")
+                    .hasNoCause();
+        }
     }
 
     private static byte[] secretBytes() {

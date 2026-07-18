@@ -79,7 +79,7 @@ class PublicAnalyticsControllerTest extends PostgresIntegrationTestBase {
 
     @BeforeEach
     void prepare() {
-        events.deleteAll();
+        clearEvents();
         reset(limiter, publications);
         when(limiter.consume(anyString(), anyString())).thenReturn(RateLimitDecision.allow());
         when(publications.isCurrentPublishedProject(PROJECT_ID)).thenReturn(true);
@@ -88,7 +88,7 @@ class PublicAnalyticsControllerTest extends PostgresIntegrationTestBase {
     @AfterEach
     void cleanUp() {
         try {
-            events.deleteAll();
+            clearEvents();
         } finally {
             reset(limiter, publications);
         }
@@ -352,11 +352,11 @@ class PublicAnalyticsControllerTest extends PostgresIntegrationTestBase {
     void onlyTrustedProxyAddressAffectsHashedSubject() throws Exception {
         byte[] noCrawler = json.writeValueAsBytes(validBatch());
         performJson(csrf(), noCrawler, client("198.51.100.20", "203.0.113.41"), USER_AGENT);
-        events.deleteAll();
+        clearEvents();
         performJson(csrf(), noCrawler, client("198.51.100.20"), USER_AGENT);
-        events.deleteAll();
+        clearEvents();
         performJson(csrf(), noCrawler, client("127.0.0.1", "203.0.113.42"), USER_AGENT);
-        events.deleteAll();
+        clearEvents();
         performJson(csrf(), noCrawler, client("203.0.113.42"), USER_AGENT);
 
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
@@ -391,6 +391,10 @@ class PublicAnalyticsControllerTest extends PostgresIntegrationTestBase {
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
                 .content(body);
+    }
+
+    private void clearEvents() {
+        migratorJdbc().sql("truncate table portfolio.analytics_event").update();
     }
 
     private CsrfExchange csrf() throws Exception {

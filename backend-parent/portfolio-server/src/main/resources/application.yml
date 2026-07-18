@@ -98,6 +98,7 @@ portfolio:
     mail-id-domain: ${PORTFOLIO_MAIL_ID_DOMAIN:yychainsaw.xyz}
   analytics:
     hmac-secret: ${PORTFOLIO_ANALYTICS_HMAC_SECRET:}
+    maintenance-scheduling-enabled: ${PORTFOLIO_ANALYTICS_MAINTENANCE_SCHEDULING_ENABLED:true}
   email:
     enabled: ${PORTFOLIO_EMAIL_ENABLED:false}
     from: ${PORTFOLIO_EMAIL_FROM:}

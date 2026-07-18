@@ -28,6 +28,7 @@
 
 - `backend-parent/portfolio-server/src/main/resources/db/migration/V9__contact_and_email.sql`: messages and dedicated email outbox.
 - `backend-parent/portfolio-server/src/main/resources/db/migration/V10__privacy_analytics.sql`: raw events and daily aggregates.
+- `backend-parent/portfolio-server/src/main/resources/db/migration/V11__analytics_retention_checkpoint.sql`: immutable per-date purge checkpoints and database guards for safe recovery.
 - `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/message/*`: contact intake, inbox, outbox worker, SMTP adapter, and retention.
 - `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics/*`: event validation, privacy transforms, aggregation, retention, and reports.
 - `backend-parent/portfolio-server/src/main/resources/analytics/analytics-rules-v1.yml`: versioned event, page, and crawler rules.
@@ -780,7 +781,7 @@ git commit -m "feat(analytics): collect opt-in private events"
 - Consumes: plan-02 `BackgroundJobService`, `JobHandler`, `maintenance_run`, and V10 events.
 - Produces: reproducible `analytics_daily` rows and daily job types `ANALYTICS_AGGREGATE` and `ANALYTICS_RETENTION`.
 
-- [ ] **Step 1: Write a fixed-fixture aggregation test**
+- [x] **Step 1: Write a fixed-fixture aggregation test**
 
 Insert a fixture spanning `2026-07-14` Hong Kong time with:
 
@@ -792,7 +793,7 @@ Insert a fixture spanning `2026-07-14` Hong Kong time with:
 
 Assert exact rows for ALL, PAGE, PROJECT, REFERRER, DEVICE, and LOCALE dimensions, including `PV=3`, `DAILY_UV=2` for all page views, and each event count.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AnalyticsAggregationServiceTest,AnalyticsRetentionJobHandlerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -800,7 +801,7 @@ Assert exact rows for ALL, PAGE, PROJECT, REFERRER, DEVICE, and LOCALE dimension
 
 Expected: FAIL because no aggregates or retention handlers exist.
 
-- [ ] **Step 3: Implement deterministic rebuild-and-upsert**
+- [x] **Step 3: Implement deterministic rebuild-and-upsert**
 
 Within one transaction for a requested `siteDate`:
 
@@ -814,19 +815,27 @@ Within one transaction for a requested `siteDate`:
 
 The job idempotency key is `analytics-aggregate:{siteDate}:analytics-rules-v1`. Re-running produces byte-equivalent result rows apart from `updated_at`.
 
-- [ ] **Step 4: Schedule late-arrival-safe daily work**
+Implementation note: the rebuild uses one materialized SQL snapshot after stable date/version advisory locks. The queued payload carries the exact aggregation version so a rules deployment cannot silently execute an old key with new semantics.
+
+- [x] **Step 4: Schedule late-arrival-safe daily work**
 
 At 00:15 `Asia/Hong_Kong`, enqueue aggregation for the previous day and the current day. Every hour, enqueue the current day again with an hour-suffixed job idempotency key so the dashboard catches late events. The aggregation itself remains date-idempotent.
 
-- [ ] **Step 5: Implement 30-day event retention**
+Implementation note: the daily previous-day job and hourly current-day job both run at minute 15 without sharing a key. At minute 45, a bounded recent-window scan enqueues the first incomplete date with an independent hour-scoped repair key, so a dead original job cannot permanently strand a date.
+
+- [x] **Step 5: Implement 30-day event retention**
 
 The daily `ANALYTICS_RETENTION` handler first verifies that every date being purged has aggregate rows, then deletes events in batches of 5,000 where `received_at < now - 30 days`. Do not delete aggregate rows. Record only deleted row count and cutoff in `maintenance_run`.
 
-- [ ] **Step 6: Run tests and commit**
+Implementation note: V11 writes an immutable checkpoint under the same date lock before the first raw deletion and compares the full expected dimension rowset against the stored aggregates. Runtime has no direct raw-delete capability; a scoped database function enforces the database-clock 30-day boundary and the 5,000-row limit. Database triggers reject uncheckpointed raw deletion, late raw insertion, and aggregate mutation after retention starts. A missing expired aggregate may be rebuilt only while no checkpoint exists. Each leased job handles at most ten 5,000-row batches; its final batch atomically creates an attempt-fenced idempotent successor when more rows remain.
+
+- [x] **Step 6: Run tests and commit**
 
 Run the Step 2 command twice.
 
 Expected: both runs PASS and the second aggregation leaves the same metric keys and counts.
+
+Verification note: the focused command passed twice with 31 tests each. A clean full Maven verify passed 1,888 tests with zero failures and zero errors; an independent concurrency, recovery, and retention review found no remaining P1/P2 findings.
 
 ```powershell
 git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/analytics backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics

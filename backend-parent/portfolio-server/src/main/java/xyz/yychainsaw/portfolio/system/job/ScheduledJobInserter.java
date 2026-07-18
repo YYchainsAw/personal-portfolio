@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -69,6 +70,62 @@ public class ScheduledJobInserter {
                 .param("delaySeconds", delaySeconds)
                 .query(INSERT_RESULT_MAPPER)
                 .single();
+    }
+
+    public UUID insertAfterIfAbsent(
+            String jobType,
+            String idempotencyKey,
+            Map<String, ?> payload,
+            Duration delay) {
+        requireAmbientTransaction();
+        JobPayloadCodec.requireJobType(jobType);
+        JobPayloadCodec.requireIdempotencyKey(idempotencyKey);
+        long delaySeconds = requireDelaySeconds(delay);
+        String payloadJson = payloadCodec.serialize(payload);
+        UUID jobId = UUID.randomUUID();
+
+        Optional<UUID> inserted = jdbc.sql("""
+                        with database_time as materialized (
+                            select clock_timestamp() as database_now
+                        )
+                        insert into portfolio.background_job(
+                            id, job_type, idempotency_key, payload, status,
+                            attempts, next_run_at, created_at, updated_at
+                        )
+                        select :id, :jobType, :idempotencyKey,
+                               cast(:payloadJson as jsonb), 'PENDING', 0,
+                               database_time.database_now
+                                   + (:delaySeconds * interval '1 second'),
+                               database_time.database_now,
+                               database_time.database_now
+                        from database_time
+                        on conflict (idempotency_key) do nothing
+                        returning id
+                        """)
+                .param("id", jobId)
+                .param("jobType", jobType)
+                .param("idempotencyKey", idempotencyKey)
+                .param("payloadJson", payloadJson)
+                .param("delaySeconds", delaySeconds)
+                .query(UUID.class)
+                .optional();
+        if (inserted.isPresent()) {
+            return inserted.get();
+        }
+        return jdbc.sql("""
+                        select job.id
+                        from portfolio.background_job job
+                        where job.idempotency_key=:idempotencyKey
+                          and job.job_type=:jobType
+                          and job.payload=cast(:payloadJson as jsonb)
+                        """)
+                .param("idempotencyKey", idempotencyKey)
+                .param("jobType", jobType)
+                .param("payloadJson", payloadJson)
+                .query(UUID.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "JOB_IDEMPOTENCY_CONFLICT"));
     }
 
     private static void requireAmbientTransaction() {

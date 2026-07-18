@@ -43,12 +43,12 @@ class AnalyticsDeduplicationIntegrationTest extends PostgresIntegrationTestBase 
 
     @BeforeEach
     void clearBefore() {
-        mapper.deleteAll();
+        clearEvents();
     }
 
     @AfterEach
     void clearAfter() {
-        mapper.deleteAll();
+        clearEvents();
     }
 
     @Test
@@ -187,6 +187,10 @@ class AnalyticsDeduplicationIntegrationTest extends PostgresIntegrationTestBase 
         ready.countDown();
         assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
         return deduplicator.persist(event);
+    }
+
+    private void clearEvents() {
+        migratorJdbc().sql("truncate table portfolio.analytics_event").update();
     }
 
     private static AnalyticsEventRecord event(

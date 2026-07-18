@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.tuple;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
@@ -24,6 +27,7 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
     private static final List<String> TABLES = List.of(
             "analytics_daily",
             "analytics_event",
+            "analytics_retention_checkpoint",
             "contact_message",
             "email_outbox");
 
@@ -51,7 +55,7 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                 .query(String.class)
                 .list();
 
-        assertThat(versions).endsWith("9", "10");
+        assertThat(versions).endsWith("9", "10", "11");
         assertThat(tables).containsExactlyElementsOf(TABLES);
     }
 
@@ -95,6 +99,10 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                         tuple("analytics_event", "locale"),
                         tuple("analytics_event", "rules_version"),
                         tuple("analytics_event", "created_at"),
+                        tuple("analytics_retention_checkpoint", "site_date"),
+                        tuple("analytics_retention_checkpoint", "aggregation_version"),
+                        tuple("analytics_retention_checkpoint", "first_cutoff"),
+                        tuple("analytics_retention_checkpoint", "created_at"),
                         tuple("contact_message", "id"),
                         tuple("contact_message", "visitor_name"),
                         tuple("contact_message", "visitor_email"),
@@ -170,6 +178,7 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                 varchar("analytics_event", "device_class", 16),
                 varchar("analytics_event", "locale", 10),
                 varchar("analytics_event", "rules_version", 32),
+                varchar("analytics_retention_checkpoint", "aggregation_version", 32),
                 varchar("contact_message", "visitor_name", 100),
                 varchar("contact_message", "visitor_email", 320),
                 varchar("contact_message", "subject", 160),
@@ -286,6 +295,9 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                 "analytics_event:analytics_event_session_day_key_ck",
                 "analytics_event:analytics_event_site_date_ck",
                 "analytics_event:analytics_event_visitor_day_key_ck",
+                "analytics_retention_checkpoint:analytics_retention_checkpoint_date_ck",
+                "analytics_retention_checkpoint:analytics_retention_checkpoint_pk",
+                "analytics_retention_checkpoint:analytics_retention_checkpoint_version_ck",
                 "contact_message:contact_message_dedupe_key_ck",
                 "contact_message:contact_message_pk",
                 "contact_message:contact_message_privacy_time_ck",
@@ -338,11 +350,32 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
         assertThat(triggers).containsExactly(
                 new TriggerShape(
                         "analytics_daily",
+                        "analytics_daily_freeze_retained_date",
+                        "O",
+                        31,
+                        "portfolio",
+                        "reject_analytics_daily_after_retention_checkpoint"),
+                new TriggerShape(
+                        "analytics_daily",
                         "analytics_daily_set_updated_at",
                         "O",
                         19,
                         "portfolio",
                         "set_updated_at"),
+                new TriggerShape(
+                        "analytics_event",
+                        "analytics_event_reject_retained_date",
+                        "O",
+                        7,
+                        "portfolio",
+                        "reject_analytics_event_after_retention_checkpoint"),
+                new TriggerShape(
+                        "analytics_event",
+                        "analytics_event_require_retention_checkpoint",
+                        "O",
+                        11,
+                        "portfolio",
+                        "reject_uncheckpointed_analytics_event_delete"),
                 new TriggerShape(
                         "contact_message",
                         "contact_message_set_updated_at",
@@ -375,8 +408,10 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                     .filter(privilege -> hasTablePrivilege(table, privilege))
                     .toList();
             List<String> expected = switch (table) {
-                case "analytics_daily", "analytics_event", "contact_message" ->
+                case "analytics_daily", "contact_message" ->
                     List.of("SELECT", "INSERT", "DELETE");
+                case "analytics_event" -> List.of("SELECT", "INSERT");
+                case "analytics_retention_checkpoint" -> List.of("SELECT");
                 case "email_outbox" -> List.of("SELECT", "INSERT");
                 default -> throw new IllegalStateException("unexpected table " + table);
             };
@@ -392,7 +427,8 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                     .single();
             assertThat(canUpdateAnyColumn)
                     .as(table + " effective column UPDATE")
-                    .isEqualTo(!table.equals("analytics_event"));
+                    .isEqualTo(!table.equals("analytics_event")
+                            && !table.equals("analytics_retention_checkpoint"));
         }
         assertThat(jdbc.sql("""
                         select has_schema_privilege(current_user, 'portfolio', 'CREATE')
@@ -400,6 +436,59 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                 .query(Boolean.class)
                 .single())
                 .isFalse();
+    }
+
+    @Test
+    void runtimeCanOnlyExecuteTheControlledRetentionFunctions() {
+        assertThat(canExecute(
+                        "portfolio.prepare_analytics_retention_checkpoint(date,timestamptz)"))
+                .isTrue();
+        assertThat(canExecute(
+                        "portfolio.purge_analytics_event_batch(date,timestamptz,integer)"))
+                .isTrue();
+        assertThat(canExecute(
+                        "portfolio.analytics_date_has_exact_aggregate_coverage(date)"))
+                .isTrue();
+        assertThat(canExecute("portfolio.analytics_date_lock_key(date)")).isFalse();
+        assertThat(canExecute(
+                        "portfolio.reject_analytics_event_after_retention_checkpoint()"))
+                .isFalse();
+        assertThat(canExecute(
+                        "portfolio.reject_uncheckpointed_analytics_event_delete()"))
+                .isFalse();
+        assertThat(canExecute(
+                        "portfolio.reject_analytics_daily_after_retention_checkpoint()"))
+                .isFalse();
+        assertThat(migratorJdbc().sql("""
+                        select bool_and(prosecdef)
+                        from pg_catalog.pg_proc
+                        where oid in (
+                            'portfolio.prepare_analytics_retention_checkpoint(date,timestamptz)'
+                                ::regprocedure,
+                            'portfolio.purge_analytics_event_batch(date,timestamptz,integer)'
+                                ::regprocedure,
+                            'portfolio.reject_analytics_event_after_retention_checkpoint()'
+                                ::regprocedure,
+                            'portfolio.reject_analytics_daily_after_retention_checkpoint()'
+                                ::regprocedure
+                        )
+                        """)
+                .query(Boolean.class)
+                .single()).isTrue();
+    }
+
+    @Test
+    void databaseAndJavaUseTheSameStableAnalyticsDateLockKey() throws Exception {
+        String namespaced = "portfolio:analytics:date:2026-07-18";
+        long expected = ByteBuffer.wrap(MessageDigest.getInstance("SHA-256")
+                        .digest(namespaced.getBytes(StandardCharsets.UTF_8)))
+                .getLong();
+
+        assertThat(migratorJdbc().sql("""
+                        select portfolio.analytics_date_lock_key('2026-07-18'::date)
+                        """)
+                .query(Long.class)
+                .single()).isEqualTo(expected);
     }
 
     @Test
@@ -514,9 +603,9 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                 new TablePrivilege("analytics_daily", "DELETE", false),
                 new TablePrivilege("analytics_daily", "INSERT", false),
                 new TablePrivilege("analytics_daily", "SELECT", false),
-                new TablePrivilege("analytics_event", "DELETE", false),
                 new TablePrivilege("analytics_event", "INSERT", false),
                 new TablePrivilege("analytics_event", "SELECT", false),
+                new TablePrivilege("analytics_retention_checkpoint", "SELECT", false),
                 new TablePrivilege("contact_message", "DELETE", false),
                 new TablePrivilege("contact_message", "INSERT", false),
                 new TablePrivilege("contact_message", "SELECT", false),
@@ -761,9 +850,7 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                                  'LOCALE', 'zh-CN', 1, 'analytics-rules-v1')
                             """).update()).isEqualTo(6);
         } finally {
-            migratorJdbc().sql("delete from portfolio.analytics_event where id = :id")
-                    .param("id", validEventId)
-                    .update();
+            migratorJdbc().sql("truncate table portfolio.analytics_event").update();
             migratorJdbc().sql("delete from portfolio.analytics_daily where site_date = '2099-01-01'")
                     .update();
             deleteContact(messageId);
@@ -839,6 +926,19 @@ class ContactAnalyticsSchemaMigrationTest extends PostgresIntegrationTestBase {
                         """)
                 .param("table", "portfolio." + table)
                 .param("privilege", privilege)
+                .query(Boolean.class)
+                .single();
+    }
+
+    private boolean canExecute(String signature) {
+        return jdbc.sql("""
+                        select has_function_privilege(
+                            current_user,
+                            cast(:signature as regprocedure),
+                            'EXECUTE'
+                        )
+                        """)
+                .param("signature", signature)
                 .query(Boolean.class)
                 .single();
     }
