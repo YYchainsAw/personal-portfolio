@@ -289,7 +289,7 @@ git commit -m "build: create traceable portfolio releases"
 - Consumes: plan-01 application profiles, plan-02 Local/COS configuration, plan-06 SMTP/HMAC configuration.
 - Produces: two-container production topology and `127.0.0.1:18080` API boundary.
 
-- [ ] **Step 1: Write the failing Compose contract**
+- [x] **Step 1: Write the failing Compose contract**
 
 ```bash
 #!/usr/bin/env bash
@@ -304,7 +304,7 @@ jq -e '.services["portfolio-api"].depends_on.postgres.condition == "service_heal
 
 Create a test env containing dummy non-secret values, run `bash deploy/tests/compose-contract.sh`, and expect failure because the Compose file is missing.
 
-- [ ] **Step 2: Create production Compose**
+- [x] **Step 2: Create production Compose**
 
 ```yaml
 name: portfolio
@@ -365,7 +365,7 @@ volumes:
 
 The Task-1 runtime stage installs `curl`, so the health check validates the local readiness response rather than only testing that a TCP port is open. The rendered Compose contract requires `java.io.tmpdir` and `PORTFOLIO_COS_STAGING_ROOT` to remain under this size-limited ephemeral tmpfs, rejects persistent/unbounded process temporary storage, and verifies no scratch path resolves inside the durable Local media volume. Provision `local-media` once with an owner-only, no-follow `.portfolio-volume-id` containing a random opaque value stored separately as protected `PORTFOLIO_LOCAL_VOLUME_ID`; a new or wrong empty volume must not be accepted merely because it is writable.
 
-- [ ] **Step 3: Add production configuration safeguards**
+- [x] **Step 3: Add production configuration safeguards**
 
 `application-prod.yml` must disable Hibernate/schema initialization, expose only Actuator health, trust native forwarded headers only under the loopback proxy policy, emit structured JSON logs, reject blank encryption/HMAC secrets, keep SQL/session/media initialization under Flyway, and set the administrator session cookie to `Secure`, `HttpOnly`, and `SameSite=Strict` exactly as plan 01 specifies.
 
@@ -379,7 +379,13 @@ The Task-1 runtime stage installs `curl`, so the health check validates the loca
 
 Generate passwords with `openssl rand -base64 32` and application secrets with `openssl rand -base64 48`; never print generated values after writing protected files.
 
-- [ ] **Step 4: Run config checks**
+- [x] **Step 4: Run config checks**
+
+Verification (2026-07-18): the production Compose contract passed after a real
+Compose v2 JSON render without starting either service. Java 17/Maven 3.9.11
+focused suites passed 70/70 across production profile safeguards, Local-only,
+COS-default, mixed Local/COS bean selection, and COS staging behavior. No
+database connection or container data mutation occurred.
 
 ```bash
 bash deploy/tests/compose-contract.sh
@@ -388,7 +394,7 @@ docker compose --env-file /etc/portfolio/release.env -f deploy/docker-compose.pr
 
 Expected: PASS, exactly two services, no PostgreSQL port, API loopback only.
 
-- [ ] **Step 5: Commit the topology**
+- [x] **Step 5: Commit the topology**
 
 ```bash
 git add deploy/docker-compose.prod.yml deploy/.env.example deploy/tests/compose-contract.sh backend-parent/portfolio-server/src/main/resources/application-prod.yml

@@ -1,12 +1,80 @@
+spring:
+  config:
+    activate:
+      on-profile: prod
+  sql:
+    init:
+      mode: never
+  jpa:
+    generate-ddl: false
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+    clean-disabled: true
+    baseline-on-migrate: false
+  session:
+    jdbc:
+      initialize-schema: never
+      cleanup-cron: "-"
+
+server:
+  forward-headers-strategy: native
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        secure: true
+        same-site: strict
+  error:
+    include-binding-errors: never
+    include-exception: false
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  structured:
+    format:
+      console: logstash
+
 portfolio:
   release-id: ${PORTFOLIO_RELEASE_ID}
+  preview:
+    hmac-key: ${PORTFOLIO_PREVIEW_HMAC_KEY}
+  contact:
+    dedupe-secret: ${PORTFOLIO_CONTACT_DEDUPE_SECRET}
+  analytics:
+    hmac-secret: ${PORTFOLIO_ANALYTICS_HMAC_SECRET}
+  security:
+    totp:
+      active-key-version: ${PORTFOLIO_TOTP_ACTIVE_KEY_VERSION}
+      key-ring: ${PORTFOLIO_TOTP_KEY_RING}
+    session:
+      trusted-proxy-addresses:
+        - 127.0.0.1
+        - "::1"
+  web:
+    allow-development-cors: false
   jobs:
     worker-enabled: ${PORTFOLIO_JOBS_WORKER_ENABLED:false}
   storage:
-    default-provider: TENCENT_COS
+    default-provider: ${PORTFOLIO_STORAGE_DEFAULT_PROVIDER}
     local:
       root: ${PORTFOLIO_LOCAL_STORAGE:/var/lib/portfolio/media}
     cos:
+      enabled: ${PORTFOLIO_COS_ENABLED:false}
       region: ${COS_REGION}
       bucket: ${COS_BUCKET}
       secret-id: ${COS_SECRET_ID}

@@ -1,0 +1,77 @@
+name: portfolio
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE digest reference is required}
+    restart: unless-stopped
+    env_file: /etc/portfolio/postgres.env
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  portfolio-api:
+    image: ${PORTFOLIO_IMAGE:?PORTFOLIO_IMAGE is required}
+    restart: unless-stopped
+    user: "10001:10001"
+    env_file: /etc/portfolio/portfolio.env
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      PORTFOLIO_RELEASE_ID: ${PORTFOLIO_RELEASE_ID:?PORTFOLIO_RELEASE_ID is required}
+      PORTFOLIO_BIND_ADDRESS: 0.0.0.0
+      PORTFOLIO_PORT: "8080"
+      PORTFOLIO_LOCAL_STORAGE: /var/lib/portfolio/media
+      PORTFOLIO_COS_STAGING_ROOT: /tmp/portfolio-cos-staging
+      JAVA_TOOL_OPTIONS: >-
+        -Djava.io.tmpdir=/tmp
+        -XX:ErrorFile=/tmp/hs_err_pid%p.log
+        -XX:HeapDumpPath=/tmp
+        -XX:+ExitOnOutOfMemoryError
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - local-media:/var/lib/portfolio/media
+    tmpfs:
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:8080/actuator/health/readiness
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  postgres-data:
+  local-media:
+    name: portfolio-local-media
+    external: true

@@ -13,8 +13,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.logging.LogLevel;
 import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Condition;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.type.AnnotatedTypeMetadata;
 import xyz.yychainsaw.portfolio.media.domain.StorageProvider;
 import xyz.yychainsaw.portfolio.media.staging.LocalStagingPolicyProperties;
 
@@ -48,6 +52,7 @@ public class StorageConfiguration {
 
     @Bean
     @Profile("prod")
+    @Conditional(TencentCosRequiredCondition.class)
     TencentCosProperties tencentCosProperties(
             @Value("${portfolio.storage.cos.region}") String region,
             @Value("${portfolio.storage.cos.bucket}") String bucket,
@@ -59,6 +64,7 @@ public class StorageConfiguration {
 
     @Bean(destroyMethod = "close")
     @Profile("prod")
+    @Conditional(TencentCosRequiredCondition.class)
     @ConditionalOnMissingBean(CosSdkLogSilencer.class)
     CosSdkLogSilencer cosSdkLogSilencer() {
         LoggingSystem loggingSystem = LoggingSystem.get(
@@ -68,6 +74,7 @@ public class StorageConfiguration {
 
     @Bean
     @Profile("prod")
+    @Conditional(TencentCosRequiredCondition.class)
     @ConditionalOnMissingBean(CosAdapterFactory.class)
     CosAdapterFactory cosAdapterFactory() {
         return QcloudCosClientAdapter::create;
@@ -75,6 +82,7 @@ public class StorageConfiguration {
 
     @Bean(destroyMethod = "close")
     @Profile("prod")
+    @Conditional(TencentCosRequiredCondition.class)
     QcloudCosClientAdapter tencentCosClient(
             TencentCosProperties properties,
             CosSdkLogSilencer logSilencer,
@@ -92,6 +100,7 @@ public class StorageConfiguration {
 
     @Bean(name = "cosStagingRoot")
     @Profile("prod")
+    @Conditional(TencentCosRequiredCondition.class)
     Path cosStagingRootPath(
             @Value("${portfolio.storage.cos.staging-root}") String configuredRoot,
             LocalStorageProperties localProperties) {
@@ -100,6 +109,7 @@ public class StorageConfiguration {
 
     @Bean(destroyMethod = "close")
     @Profile("prod")
+    @Conditional(TencentCosRequiredCondition.class)
     TencentCosStorageService tencentCosStorageService(
             QcloudCosClientAdapter client,
             TencentCosProperties properties,
@@ -145,6 +155,23 @@ public class StorageConfiguration {
             throw new StorageException("COS_WRITE_FAILED");
         }
         return stagingRoot;
+    }
+}
+
+final class TencentCosRequiredCondition implements Condition {
+    private static final String DEFAULT_PROVIDER = "portfolio.storage.default-provider";
+    private static final String COS_ENABLED = "portfolio.storage.cos.enabled";
+
+    @Override
+    public boolean matches(
+            ConditionContext context, AnnotatedTypeMetadata metadata) {
+        String configuredDefault = context.getEnvironment().getProperty(DEFAULT_PROVIDER);
+        if (configuredDefault != null
+                && StorageProvider.TENCENT_COS.name().equalsIgnoreCase(
+                        configuredDefault.trim())) {
+            return true;
+        }
+        return context.getEnvironment().getProperty(COS_ENABLED, Boolean.class, false);
     }
 }
 

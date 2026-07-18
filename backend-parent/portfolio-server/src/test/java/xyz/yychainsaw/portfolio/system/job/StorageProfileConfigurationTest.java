@@ -33,17 +33,19 @@ class StorageProfileConfigurationTest {
     private static final String RELEASE = "release-20260717";
     private static final Clock CLOCK = Clock.fixed(
             Instant.parse("2026-07-17T03:00:00Z"), ZoneOffset.UTC);
-    private static final Map<String, Object> PRODUCTION_ENVIRONMENT = Map.of(
-            "PORTFOLIO_RELEASE_ID", RELEASE,
-            "PORTFOLIO_JOBS_WORKER_ENABLED", "true",
-            "PORTFOLIO_STAGING_CLEANUP_ENABLED", "true",
-            "PORTFOLIO_LOCAL_STORAGE", "/var/lib/portfolio/media",
-            "PORTFOLIO_COS_STAGING_ROOT", "/tmp/portfolio-cos-staging",
-            "COS_REGION", "ap-guangzhou",
-            "COS_BUCKET", "portfolio-1250000000",
-            "COS_SECRET_ID", "example-secret-id",
-            "COS_SECRET_KEY", "example-secret-key",
-            "COS_SESSION_TOKEN", "example-session-token");
+    private static final Map<String, Object> PRODUCTION_ENVIRONMENT = Map.ofEntries(
+            Map.entry("PORTFOLIO_RELEASE_ID", RELEASE),
+            Map.entry("PORTFOLIO_JOBS_WORKER_ENABLED", "true"),
+            Map.entry("PORTFOLIO_STAGING_CLEANUP_ENABLED", "true"),
+            Map.entry("PORTFOLIO_STORAGE_DEFAULT_PROVIDER", "TENCENT_COS"),
+            Map.entry("PORTFOLIO_COS_ENABLED", "true"),
+            Map.entry("PORTFOLIO_LOCAL_STORAGE", "/var/lib/portfolio/media"),
+            Map.entry("PORTFOLIO_COS_STAGING_ROOT", "/tmp/portfolio-cos-staging"),
+            Map.entry("COS_REGION", "ap-guangzhou"),
+            Map.entry("COS_BUCKET", "portfolio-1250000000"),
+            Map.entry("COS_SECRET_ID", "example-secret-id"),
+            Map.entry("COS_SECRET_KEY", "example-secret-key"),
+            Map.entry("COS_SESSION_TOKEN", "example-session-token"));
 
     @Test
     void profilesMapExactStorageLocationsAndKeepArchivedCleanupOff() throws Exception {
@@ -60,6 +62,8 @@ class StorageProfileConfigurationTest {
         assertThat(production.getProperty("portfolio.jobs.worker-enabled")).isEqualTo("true");
         assertThat(production.getProperty("portfolio.storage.default-provider"))
                 .isEqualTo("TENCENT_COS");
+        assertThat(production.getProperty("portfolio.storage.cos.enabled"))
+                .isEqualTo("true");
         assertThat(production.getProperty("portfolio.storage.local.root"))
                 .isEqualTo("/var/lib/portfolio/media");
         assertThat(production.getProperty("portfolio.storage.cos.region"))
@@ -80,6 +84,40 @@ class StorageProfileConfigurationTest {
                 .isEqualTo("false");
         assertThat(production.getProperty("portfolio.media.cleanup.cooling-period"))
                 .isEqualTo("30d");
+    }
+
+    @Test
+    void productionProfileLocksDownFrameworkInitializationProxyAndSessionCookie()
+            throws Exception {
+        ConfigurableEnvironment production =
+                loadProfile("application-prod.yml", PRODUCTION_ENVIRONMENT);
+
+        assertThat(production.getProperty("spring.config.activate.on-profile"))
+                .isEqualTo("prod");
+        assertThat(production.getProperty("spring.sql.init.mode")).isEqualTo("never");
+        assertThat(production.getProperty("spring.jpa.hibernate.ddl-auto"))
+                .isEqualTo("none");
+        assertThat(production.getProperty("spring.flyway.enabled")).isEqualTo("true");
+        assertThat(production.getProperty("spring.flyway.clean-disabled"))
+                .isEqualTo("true");
+        assertThat(production.getProperty("spring.session.jdbc.initialize-schema"))
+                .isEqualTo("never");
+        assertThat(production.getProperty("spring.session.jdbc.cleanup-cron"))
+                .isEqualTo("-");
+        assertThat(production.getProperty("server.forward-headers-strategy"))
+                .isEqualTo("native");
+        assertThat(production.getProperty("server.servlet.session.cookie.secure"))
+                .isEqualTo("true");
+        assertThat(production.getProperty("server.servlet.session.cookie.http-only"))
+                .isEqualTo("true");
+        assertThat(production.getProperty("server.servlet.session.cookie.same-site"))
+                .isEqualTo("strict");
+        assertThat(production.getProperty("management.endpoints.web.exposure.include"))
+                .isEqualTo("health");
+        assertThat(production.getProperty("management.endpoint.health.probes.enabled"))
+                .isEqualTo("true");
+        assertThat(production.getProperty("logging.structured.format.console"))
+                .isEqualTo("logstash");
     }
 
     @Test
