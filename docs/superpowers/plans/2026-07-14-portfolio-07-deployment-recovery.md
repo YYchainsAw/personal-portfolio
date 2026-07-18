@@ -411,7 +411,7 @@ git commit -m "ops: define private production topology"
 - Consumes: shared `/opt/portfolio/assets`, `/opt/portfolio/current-admin`, API loopback port, explicit media origin, Tencent region/jurisdiction, and ICP state.
 - Produces: TLS host routing for `yychainsaw.xyz` and `www.yychainsaw.xyz` after approval.
 
-- [ ] **Step 1: Write failing Nginx and ICP gate checks**
+- [x] **Step 1: Write failing Nginx and ICP gate checks**
 
 The test renders a config and asserts:
 
@@ -429,7 +429,7 @@ The test renders a config and asserts:
 
 Run with `SERVER_JURISDICTION=MAINLAND_CN ICP_APPROVED=false` and expect the preflight to fail with `ICP approval required for mainland public cutover`.
 
-- [ ] **Step 2: Define `http`-scope rate zones**
+- [x] **Step 2: Define `http`-scope rate zones**
 
 ```nginx
 limit_req_zone $binary_remote_addr zone=portfolio_login:10m rate=5r/m;
@@ -439,7 +439,7 @@ limit_req_zone $binary_remote_addr zone=portfolio_events:10m rate=60r/m;
 
 Install this once through BaoTa's Nginx `http` include mechanism. Application limits remain mandatory because Nginx limits are only the outer layer.
 
-- [ ] **Step 3: Create the site routing contract**
+- [x] **Step 3: Create the site routing contract**
 
 The rendered `server` configuration must include these location semantics:
 
@@ -490,13 +490,13 @@ location / {
 
 The proxy include sets `Host $host`, `X-Real-IP $remote_addr`, `X-Forwarded-For $remote_addr`, `X-Forwarded-Proto $scheme`, timeouts, request size, and buffering without using `$proxy_add_x_forwarded_for`. Preserve `Range`/`If-Range` for LocalStorage media.
 
-- [ ] **Step 4: Add strict headers and render allowlists**
+- [x] **Step 4: Add strict headers and render allowlists**
 
 Render HSTS only in the HTTPS server after TLS is verified. Add CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, a restricted `Permissions-Policy`, and frame denial. The render script accepts a single validated HTTPS `MEDIA_ORIGIN` and an allowlist of external video frame origins; it rejects whitespace, semicolons, quotes, paths, HTTP, and wildcard hosts.
 
 Do not duplicate headers inconsistently between nested locations. Put the generated security headers in one included file and use `always`.
 
-- [ ] **Step 5: Implement jurisdiction and approval preflight**
+- [x] **Step 5: Implement jurisdiction and approval preflight**
 
 Require the operator to record:
 
@@ -521,7 +521,16 @@ Resolve all four Nginx paths with `realpath`, require absolute values beneath th
 
 Until review completes, use `PUBLIC_DOMAIN_ENABLED=false`; run private smoke tests through `curl --resolve yychainsaw.xyz:443:127.0.0.1` only after a local test certificate is configured, or use direct loopback API checks.
 
-- [ ] **Step 6: Validate and commit**
+- [x] **Step 6: Validate and commit**
+
+Verification (2026-07-18): the isolated Nginx contract passed in Ubuntu 22.04,
+ShellCheck reported zero findings, and a real temporary Nginx instance passed
+syntax validation plus request-level checks for the shared public asset alias,
+administrator asset alias, administrator SPA fallback, and missing-asset 404.
+The contract uses only fixtures/stubs and does not contact public DNS, Tencent
+COS, BaoTa, or a database. The mainland public-cutover branch remains fail
+closed until the final ICP approval, record number, DNS answers, and TLS/runtime
+evidence are installed on the production host.
 
 ```bash
 bash deploy/tests/nginx-contract.sh
