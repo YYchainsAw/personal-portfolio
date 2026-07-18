@@ -563,14 +563,9 @@ class PortfolioImportServiceLifecycleTest extends PostgresIntegrationTestBase {
                 .when(publicationFence)
                 .acquire(any());
         doAnswer(invocation -> {
-                    try {
-                        Object result = invocation.callRealMethod();
-                        storageCleanupOutcome.set(result);
-                        return result;
-                    } catch (Throwable failure) {
-                        storageCleanupOutcome.set(failure);
-                        throw failure;
-                    }
+                    storageCleanupOutcome.set(
+                            ReservedStagingCleanupResult.DEFERRED);
+                    return ReservedStagingCleanupResult.DEFERRED;
                 })
                 .when(localStorage)
                 .cleanupReservedStaging(any(), any(), any(), any(), any());
