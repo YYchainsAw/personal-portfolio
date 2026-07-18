@@ -1,0 +1,29 @@
+[Unit]
+Description=Quarterly portfolio isolated restore drill reminder
+Documentation=file:/opt/portfolio/current-ops/docs/operations/production-runbook.md
+Documentation=file:/opt/portfolio/current-ops/docs/operations/backup-recovery.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger --priority=user.notice --tag=portfolio-restore-reminder Quarterly isolated restore drill is due: select a verified set no older than 24h, bring the offline decryption identity interactively, verify current and historical mixed-provider media through local Nginx, persist and read back the redacted report, then reconcile RESTORE_DRILL.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+IPAddressDeny=any
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

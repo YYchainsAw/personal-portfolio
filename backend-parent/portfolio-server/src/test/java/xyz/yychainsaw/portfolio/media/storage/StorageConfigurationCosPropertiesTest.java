@@ -53,6 +53,47 @@ class StorageConfigurationCosPropertiesTest {
     }
 
     @Test
+    void productionConfigDataBindsTheReviewedRestoreEnvironmentKeys() {
+        AtomicReference<TencentCosProperties> adapterProperties = new AtomicReference<>();
+        Path boundary = safeBoundary();
+
+        new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withUserConfiguration(StorageConfiguration.class)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(
+                        CosSdkLogSilencer.class,
+                        () -> new CosSdkLogSilencer((loggerName, level) -> {}))
+                .withBean(CosAdapterFactory.class, () -> properties -> {
+                    adapterProperties.set(properties);
+                    return mock(QcloudCosClientAdapter.class);
+                })
+                .withPropertyValues(
+                        "spring.profiles.active=prod",
+                        "PORTFOLIO_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb",
+                        "PORTFOLIO_STORAGE_DEFAULT_PROVIDER=LOCAL",
+                        "PORTFOLIO_COS_ENABLED=true",
+                        "PORTFOLIO_LOCAL_STORAGE=" + boundary.resolve("local-media"),
+                        "PORTFOLIO_COS_STAGING_ROOT=" + boundary.resolve("cos-scratch"),
+                        "COS_REGION=" + REGION,
+                        "COS_BUCKET=" + BUCKET,
+                        "COS_SECRET_ID=restore-secret-id",
+                        "COS_SECRET_KEY=restore-secret-key",
+                        "COS_SESSION_TOKEN=restore-session-token")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    TencentCosProperties properties =
+                            context.getBean(TencentCosProperties.class);
+                    assertThat(properties.region()).isEqualTo(REGION);
+                    assertThat(properties.bucket()).isEqualTo(BUCKET);
+                    assertThat(properties.secretId()).isEqualTo("restore-secret-id");
+                    assertThat(properties.secretKey()).isEqualTo("restore-secret-key");
+                    assertThat(properties.sessionToken()).isEqualTo("restore-session-token");
+                    assertThat(adapterProperties.get()).isSameAs(properties);
+                });
+    }
+
+    @Test
     void rawEnvironmentStyleKeysCannotBypassCanonicalCosProperties() {
         AtomicReference<TencentCosProperties> adapterProperties = new AtomicReference<>();
 

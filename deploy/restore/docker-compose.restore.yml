@@ -1,0 +1,146 @@
+name: ${RESTORE_COMPOSE_PROJECT_NAME:?RESTORE_COMPOSE_PROJECT_NAME is required}
+
+services:
+  restore-postgres:
+    image: ${RESTORE_POSTGRES_IMAGE:?RESTORE_POSTGRES_IMAGE digest reference is required}
+    pull_policy: never
+    restart: "no"
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
+    env_file: ${RESTORE_POSTGRES_ENV:?RESTORE_POSTGRES_ENV is required}
+    volumes:
+      - restore-postgres-data:/var/lib/postgresql/data
+    networks:
+      restore-internal:
+        aliases:
+          - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  restore-api:
+    image: ${RESTORE_API_IMAGE:?RESTORE_API_IMAGE digest reference is required}
+    pull_policy: never
+    restart: "no"
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
+    user: "10001:10001"
+    env_file: ${RESTORE_APP_ENV:?RESTORE_APP_ENV is required}
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      PORTFOLIO_BIND_ADDRESS: 0.0.0.0
+      PORTFOLIO_PORT: "8080"
+      PORTFOLIO_LOCAL_STORAGE: /var/lib/portfolio/media
+      PORTFOLIO_COS_STAGING_ROOT: /tmp/portfolio-cos-staging
+      PORTFOLIO_JOBS_WORKER_ENABLED: "false"
+      PORTFOLIO_STAGING_CLEANUP_ENABLED: "false"
+      PORTFOLIO_MEDIA_CLEANUP_ENABLED: "false"
+      PORTFOLIO_EMAIL_ENABLED: "false"
+      PORTFOLIO_ANALYTICS_MAINTENANCE_SCHEDULING_ENABLED: "false"
+      PORTFOLIO_JOBS_RETENTION_ENABLED: "false"
+      JAVA_TOOL_OPTIONS: >-
+        -Djava.io.tmpdir=/tmp
+        -XX:ErrorFile=/tmp/hs_err_pid%p.log
+        -XX:HeapDumpPath=/tmp
+        -XX:+ExitOnOutOfMemoryError
+    depends_on:
+      restore-postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${RESTORE_API_PORT:-28080}:8080"
+    volumes:
+      - restore-local-media:/var/lib/portfolio/media
+    tmpfs:
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      restore-internal:
+        aliases:
+          - api
+      restore-egress:
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  restore-nginx:
+    image: ${RESTORE_NGINX_IMAGE:?RESTORE_NGINX_IMAGE digest reference is required}
+    pull_policy: never
+    restart: "no"
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
+    depends_on:
+      restore-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${RESTORE_NGINX_PORT:-28443}:443"
+    volumes:
+      - ${RESTORE_NGINX_CONFIG_DIR:?RESTORE_NGINX_CONFIG_DIR is required}:/etc/nginx:ro
+      - ${RESTORE_ADMIN_ASSETS_ROOT:?RESTORE_ADMIN_ASSETS_ROOT is required}:/srv/portfolio-release/admin:ro
+      - ${RESTORE_PUBLIC_ASSETS_ROOT:?RESTORE_PUBLIC_ASSETS_ROOT is required}:/srv/portfolio-release/public-assets:ro
+      - ${RESTORE_TLS_CERTIFICATE:?RESTORE_TLS_CERTIFICATE is required}:/run/portfolio-restore-secrets/tls.crt:ro
+      - ${RESTORE_TLS_PRIVATE_KEY:?RESTORE_TLS_PRIVATE_KEY is required}:/run/portfolio-restore-secrets/tls.key:ro
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=0755,noexec,nosuid,nodev
+      - /var/run:size=8m,mode=0755,noexec,nosuid,nodev
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - restore-internal
+      - restore-egress
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+volumes:
+  restore-postgres-data:
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
+  restore-local-media:
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${RESTORE_LOCAL_MEDIA_ROOT:?RESTORE_LOCAL_MEDIA_ROOT is required}
+
+networks:
+  restore-internal:
+    internal: true
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
+  restore-egress:
+    labels:
+      com.yychainsaw.portfolio.restore.drill: ${RESTORE_DRILL_ID:?RESTORE_DRILL_ID is required}
