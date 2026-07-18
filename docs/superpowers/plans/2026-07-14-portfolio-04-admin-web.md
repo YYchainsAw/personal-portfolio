@@ -47,6 +47,7 @@ admin-web/
 │   ├── App.vue                          top-level RouterView
 │   ├── assets/admin.css                 Tailwind import and admin design tokens
 │   ├── router/index.ts                  authenticated route graph and guard factory
+│   ├── router/redirect.ts               pure same-origin admin redirect sanitizer
 │   ├── api/http.ts                      same-origin Axios, CSRF, problem conversion
 │   ├── api/authApi.ts                   password/TOTP/session/logout calls
 │   ├── api/siteApi.ts                   versioned SITE workspace calls
@@ -530,6 +531,7 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Create: `admin-web/src/router/redirect.ts`
 - Create: `admin-web/src/views/auth/LoginView.vue`
 - Create: `admin-web/src/views/auth/TotpView.vue`
 - Create: `admin-web/src/views/FeatureShellView.vue`
@@ -542,7 +544,7 @@ git commit -m "feat(admin): add session and CSRF API foundation"
 - Consumes: `createSessionStore` contract and the production `sessionStore` from Task 2.
 - Produces: named routes `login`, `totp`, `dashboard`, `site`, `projects`, `project-new`, `project-edit`, `media`, `publishing-history`, `messages`, `analytics`, `settings`, and `admin-not-found`.
 
-- [ ] **Step 1: Write failing guard and two-step form tests**
+- [x] **Step 1: Write failing guard and two-step form tests**
 
 ```ts
 // admin-web/src/router/index.spec.ts
@@ -570,7 +572,13 @@ import TotpView from './TotpView.vue'
 
 it('submits exactly six TOTP digits to the session store', async () => {
   const verifySecondFactor = vi.fn().mockResolvedValue(undefined)
-  const wrapper = mount(TotpView, { props: { session: { verifySecondFactor }, onAuthenticated: vi.fn() } })
+  const wrapper = mount(TotpView, {
+    props: {
+      session: { verifySecondFactor, invalidate: vi.fn() },
+      onAuthenticated: vi.fn(),
+      onRestart: vi.fn(),
+    },
+  })
   await wrapper.get('input[autocomplete="one-time-code"]').setValue('123456')
   await wrapper.get('form').trigger('submit')
   expect(verifySecondFactor).toHaveBeenCalledWith('TOTP', '123456')
@@ -579,70 +587,21 @@ it('submits exactly six TOTP digits to the session store', async () => {
 
 Also test that the password form uses `autocomplete="username"` and `autocomplete="current-password"`, disables itself while submitting, and displays only `ApiProblem.body.title` plus `traceId`.
 
-- [ ] **Step 2: Run the focused tests and observe route/view failures**
+- [x] **Step 2: Run the focused tests and observe route/view failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/router/index.spec.ts src/views/auth`
 
 Expected: FAIL because guarded router and auth views do not exist.
 
-- [ ] **Step 3: Implement the route factory and accessible auth views**
+- [x] **Step 3: Implement the route factory and accessible auth views**
 
-```ts
-// admin-web/src/router/index.ts
-import { createRouter, createWebHistory, type RouterHistory } from 'vue-router'
-import { defineComponent, h } from 'vue'
-import { RouterView } from 'vue-router'
-import { sessionStore } from '@/stores/sessionInstance'
+Implement `createAdminRouter(session, history)` with the complete named route graph and a phase-first guard over `UNKNOWN`, `AUTHENTICATED`, `TOTP_REQUIRED`, and `ANONYMOUS`. The guard tolerates bootstrap failure on the login destination, requires a live challenge before TOTP, invalidates expired challenges, and redirects authenticated users away from authentication pages. A reactive phase watcher returns a protected/TOTP page to login after exact global session invalidation; `disposeAdminRouter(router)` releases that watcher for tests and HMR. Keep canonical redirect parsing in side-effect-free `router/redirect.ts`, including length, control/backslash, cross-origin, encoded-path, dot-segment, nested-slash, and authentication-destination rejection.
 
-type SessionGuardPort = { state: { phase: string }; bootstrap(): Promise<string> }
-const RouteOutlet = defineComponent(() => () => h(RouterView))
-const feature = () => import('@/views/FeatureShellView.vue')
+`FeatureShellView.vue` is a small accessible compile-time route destination with required `title` and optional route-ID props; it exists only so Task 3 type-checks before later slices create their real views. The temporary parent outlet owns the single `main` landmark and `FeatureShellView` is a section, so Task 4 can replace that outlet with `AdminShell` without nested landmarks. Tasks 6, 7, 9, and 10 replace every remaining named temporary destination when their files exist.
 
-export function createAdminRouter(session: SessionGuardPort, history: RouterHistory) {
-  const router = createRouter({
-    history,
-    routes: [
-      { path: '/admin/login', name: 'login', component: () => import('@/views/auth/LoginView.vue'), meta: { public: true } },
-      { path: '/admin/totp', name: 'totp', component: () => import('@/views/auth/TotpView.vue'), meta: { public: true } },
-      {
-        path: '/admin', component: RouteOutlet,
-        children: [
-          { path: '', redirect: { name: 'dashboard' } },
-          { path: 'dashboard', name: 'dashboard', component: feature, props: { title: '仪表盘' } },
-          { path: 'site', name: 'site', component: feature, props: { title: '站点内容' } },
-          { path: 'projects', name: 'projects', component: feature, props: { title: '项目' } },
-          { path: 'projects/new', name: 'project-new', component: feature, props: { title: '新建项目' } },
-          { path: 'projects/:projectId', name: 'project-edit', component: feature, props: (route) => ({ title: '编辑项目', projectId: route.params.projectId }) },
-          { path: 'media', name: 'media', component: feature, props: { title: '媒体库' } },
-          { path: 'publishing/:aggregateType/:aggregateId/history', name: 'publishing-history', component: feature, props: (route) => ({ title: '发布历史', ...route.params }) },
-          { path: 'messages', name: 'messages', component: feature, props: { title: '留言' } },
-          { path: 'analytics', name: 'analytics', component: feature, props: { title: '访问统计' } },
-          { path: 'settings', name: 'settings', component: feature, props: { title: '设置' } },
-        ],
-      },
-      { path: '/admin/:pathMatch(.*)*', name: 'admin-not-found', component: () => import('@/views/NotFoundView.vue') },
-    ],
-  })
-  router.beforeEach(async (to) => {
-    if (session.state.phase === 'UNKNOWN') await session.bootstrap()
-    if (!to.meta.public && session.state.phase !== 'AUTHENTICATED') {
-      return { name: 'login', query: { redirect: to.fullPath } }
-    }
-    if (to.name === 'totp' && session.state.phase !== 'TOTP_REQUIRED') return { name: 'login' }
-    if ((to.name === 'login' || to.name === 'totp') && session.state.phase === 'AUTHENTICATED') return { name: 'dashboard' }
-    return true
-  })
-  return router
-}
+`LoginView.vue` accepts injectable `session` and `onChallenge` props with production defaults (`sessionStore` and safe router navigation), calls `session.login`, clears the password before invoking navigation, and can retry a failed route load without resubmitting credentials. It observes the challenge phase and deadline so a stranded, expired challenge unlocks the password form. `TotpView.vue` likewise accepts injectable `session`, `onAuthenticated`, and `onRestart` props. Its default `TOTP` mode validates the raw value against `^[0-9]{6}$`; its explicit fallback normalizes one recovery-code format. Verification and post-authentication navigation are separate states, so a failed lazy route retries only navigation. Expiry/restart never invalidates an in-flight verification; a successful response wins, while a failed response after the deadline invalidates locally. Both pages clear secrets before completion callbacks, use only a pure canonical same-origin `/admin/` redirect sanitizer, and neither logs form values nor writes them to storage.
 
-export default createAdminRouter(sessionStore, createWebHistory('/'))
-```
-
-`FeatureShellView.vue` is a small accessible compile-time route destination with required `title` and optional route-ID props; it exists only so Task 3 type-checks before later slices create their real views. Task 4 replaces the parent `RouteOutlet` and temporary dashboard destination; Tasks 6, 7, 9, and 10 replace every remaining named temporary destination when their files exist.
-
-`LoginView.vue` accepts injectable `session` and `onChallenge` props with production defaults (`sessionStore` and safe router navigation), calls `session.login`, clears the password immediately in `finally`, and navigates to `totp`. `TotpView.vue` likewise accepts injectable `session` and `onAuthenticated` props. Its default `TOTP` mode validates `^[0-9]{6}$`; its explicit fallback mode accepts one recovery-code format; both call `session.verifySecondFactor(method, code)`, clear the code in `finally`, then invoke the production callback that replaces the sanitized `redirect` query only when it begins with `/admin/`; otherwise it replaces `/admin/dashboard`. Neither page logs form values or writes them to storage.
-
-- [ ] **Step 4: Verify auth routing and forms**
+- [x] **Step 4: Verify auth routing and forms**
 
 Run: `npm --prefix admin-web run test:unit -- src/router/index.spec.ts src/views/auth`
 
@@ -652,10 +611,12 @@ Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0.
 
-- [ ] **Step 5: Commit the authenticated entry flow**
+Verification (2026-07-18): the focused suites first failed on the intentionally missing router/views, then passed 29/29 under exact Node 22.18. The final full admin suite passed 51/51 across seven files; strict `vue-tsc`, the Vite production build, and `git diff --check` exited 0; npm audit reported zero vulnerabilities. Coverage includes the complete phase matrix, bootstrap failure, live invalidation, expired challenges, canonical redirect attacks, lazy-route retry without duplicate credentials, both sides of the in-flight expiry race, secret clearing, safe problem rendering, and accessible landmarks. Three independent final audits reported no remaining P1, P2, or P3 findings.
+
+- [x] **Step 5: Commit the authenticated entry flow**
 
 ```bash
-git add admin-web/src/router admin-web/src/views/auth admin-web/src/views/FeatureShellView.vue admin-web/src/views/NotFoundView.vue admin-web/src/stores/sessionInstance.ts
+git add admin-web/src/router admin-web/src/views/auth admin-web/src/views/FeatureShellView.vue admin-web/src/views/NotFoundView.vue docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add password and TOTP entry flow"
 ```
 
