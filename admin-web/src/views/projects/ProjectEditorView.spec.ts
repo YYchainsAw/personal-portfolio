@@ -65,6 +65,7 @@ async function mountEdit(options: {
   )
   const saveProject = vi.fn(options.saveProject ?? (async (_projectId, request) => savedProject(request)))
   const wrapper = mount(ProjectEditorView, {
+    attachTo: document.body,
     props: {
       mode: 'edit',
       projectId: PROJECT_IDS.first,
@@ -88,6 +89,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount()
+  vi.useRealTimers()
 })
 
 describe('ProjectEditorView', () => {
@@ -119,7 +121,8 @@ describe('ProjectEditorView', () => {
     ).toBe('回声计划')
     expect(wrapper.text()).toContain('玩法')
     expect(wrapper.text()).toContain('虚幻引擎')
-    expect(wrapper.get('[data-block-placeholder]').text()).toContain('2 个内容模块')
+    expect(wrapper.findAll('[data-block-id]')).toHaveLength(2)
+    expect(wrapper.get('[data-project-block-editor]').text()).toContain('项目内容块')
 
     await wrapper.get<HTMLInputElement>('[data-field="translations.zh-CN.title"]').setValue('新的中文标题')
     await wrapper.get('[data-action="save"]').trigger('click')
@@ -138,6 +141,70 @@ describe('ProjectEditorView', () => {
     ).toBe(precise)
   })
 
+  it('keeps an incomplete block local, then saves the exact nested payload after repair', async () => {
+    const { wrapper, saveProject } = await mountEdit()
+
+    await wrapper.get('[data-add-block="LINK"]').trigger('click')
+    await wrapper.get('[data-action="save"]').trigger('click')
+    await flushPromises()
+
+    expect(saveProject).not.toHaveBeenCalled()
+    const url = wrapper.get<HTMLInputElement>(
+      '[data-block-type="LINK"] [data-field="url"]',
+    )
+    expect(url.attributes('aria-invalid')).toBe('true')
+    expect(document.activeElement).toBe(url.element)
+
+    await url.setValue('https://yychainsaw.xyz/projects/echoes')
+    await wrapper.get('[data-action="save"]').trigger('click')
+    await flushPromises()
+
+    expect(saveProject).toHaveBeenCalledOnce()
+    const request = saveProject.mock.calls[0]![1]
+    expect(request.workspace.blocks).toHaveLength(1)
+    expect(request.workspace.blocks[0]).toMatchObject({
+      sortOrder: 0,
+      visible: true,
+      width: 'STANDARD',
+      alignment: 'LEFT',
+      emphasis: 'NONE',
+      columns: 1,
+      payload: {
+        type: 'LINK',
+        url: 'https://yychainsaw.xyz/projects/echoes',
+        openNewTab: true,
+        copy: {
+          'zh-CN': { label: '', description: '' },
+          en: { label: '', description: '' },
+        },
+      },
+    })
+  })
+
+  it('suspends invalid block autosave and resumes one interval after the draft is repaired', async () => {
+    const { wrapper, saveProject } = await mountEdit()
+    vi.useFakeTimers()
+
+    await wrapper.get('[data-add-block="LINK"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(saveProject).not.toHaveBeenCalled()
+
+    await wrapper
+      .get<HTMLInputElement>('[data-block-type="LINK"] [data-field="url"]')
+      .setValue('https://yychainsaw.xyz/projects/autosave')
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(saveProject).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(saveProject).toHaveBeenCalledOnce()
+    expect(saveProject.mock.calls[0]![1].workspace.blocks[0]?.payload).toMatchObject({
+      type: 'LINK',
+      url: 'https://yychainsaw.xyz/projects/autosave',
+    })
+  })
+
   it('switches locale tabs while retaining independent project copy edits', async () => {
     const { wrapper } = await mountEdit()
 
@@ -151,6 +218,24 @@ describe('ProjectEditorView', () => {
     expect(
       wrapper.get<HTMLInputElement>('[data-field="translations.zh-CN.title"]').element.value,
     ).toBe('中文草稿')
+  })
+
+  it('keeps metadata and blocks in the controlled locale panel with explicit save semantics', async () => {
+    const { wrapper } = await mountEdit()
+    const tabs = wrapper.findAll('button[role="tab"]')
+
+    expect(tabs[0]!.attributes('aria-label')).toContain('元数据翻译完成度')
+    const blockEditor = wrapper.get('[data-project-block-editor]')
+    const activePanel = blockEditor.element.closest('[role="tabpanel"]')
+    expect(activePanel).not.toBeNull()
+    expect(activePanel?.getAttribute('aria-labelledby')).toBe(tabs[0]!.attributes('id'))
+
+    const saveStatus = wrapper.get('[data-save-state][role="status"]')
+    expect(saveStatus.attributes('aria-live')).toBe('polite')
+    expect(wrapper.get('[data-project-editor-form]').attributes('aria-busy')).toBe('false')
+    expect(wrapper.get('[data-action="save-bottom"]').attributes('aria-describedby')).toBe(
+      saveStatus.attributes('id'),
+    )
   })
 
   it('validates a new slug and number before one explicit POST, then navigates by the server UUID', async () => {

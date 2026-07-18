@@ -115,6 +115,12 @@ class AdminMediaControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(
                         MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+        mvc.perform(get("/api/admin/media/{id}", ASSET_ID))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
+                .andExpect(content().contentTypeCompatibleWith(
+                        MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
 
         verifyNoInteractions(uploads, media, previews);
     }
@@ -216,6 +222,25 @@ class AdminMediaControllerTest {
                 .andExpect(jsonPath("$.items[0].id").value(ASSET_ID.toString()));
 
         verify(media).list(0, 24, null);
+    }
+
+    @Test
+    void getReturnsTheExactAssetJsonWithNoStore() throws Exception {
+        given(media.get(ASSET_ID)).willReturn(asset());
+
+        mvc.perform(get("/api/admin/media/{id}", ASSET_ID)
+                        .session(session)
+                        .with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, NO_STORE))
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.id").value(ASSET_ID.toString()))
+                .andExpect(jsonPath("$.originalFilename").value("hero.png"))
+                .andExpect(jsonPath("$.mimeType").value("image/png"))
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.sha256").value(SHA256));
+
+        verify(media).get(ASSET_ID);
     }
 
     @Test

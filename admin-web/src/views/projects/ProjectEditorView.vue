@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router'
 
 import { projectApi } from '@/api/projectApi'
 import AsyncPanel from '@/components/common/AsyncPanel.vue'
 import ConflictBanner from '@/components/common/ConflictBanner.vue'
 import TranslationTabs from '@/components/common/TranslationTabs.vue'
+import BlockEditor from '@/components/editor/BlockEditor.vue'
+import { validateBlocks } from '@/components/editor/blockValidation'
+import type { MediaPickerLoad } from '@/components/media/MediaPickerDialog.vue'
 import ProjectMetadataForm from '@/components/projects/ProjectMetadataForm.vue'
 import { useVersionedDraft } from '@/composables/useVersionedDraft'
 import { ApiProblem, type FieldErrors, type VersionedDraft } from '@/types/api'
+import type { ContentBlockDto } from '@/types/blocks'
 import type {
   Locale,
+  MediaAssetView,
   ProjectWorkspaceDto,
   SaveWorkspaceRequest,
   TaxonomyWorkspaceDto,
@@ -39,6 +44,8 @@ const props = withDefaults(
     listProjects?: ListProjects
     loadTags?: LoadTaxonomy
     loadSkills?: LoadTaxonomy
+    loadMedia?: MediaPickerLoad
+    resolveMedia?: (id: string) => Promise<MediaAssetView>
   }>(),
   {
     projectId: '',
@@ -55,6 +62,8 @@ const props = withDefaults(
 )
 
 const router = useRouter()
+const editorForm = ref<HTMLFormElement | null>(null)
+const saveStatusId = `${useId()}-project-save-status`
 const activeLocale = ref<Locale>('zh-CN')
 const tags = ref<TaxonomyWorkspaceDto[]>([])
 const skills = ref<TaxonomyWorkspaceDto[]>([])
@@ -163,6 +172,7 @@ function validateWorkspace(workspace: ProjectWorkspaceDto): FieldErrors {
       errors[`media.${index}.objectPosition`] = '图片焦点位置不能超过 64 个字符'
     }
   })
+  Object.assign(errors, validateBlocks(workspace.blocks))
   return errors
 }
 
@@ -266,12 +276,32 @@ function replaceDraft(workspace: ProjectWorkspaceDto): void {
   draft.value = workspace
 }
 
+function replaceBlocks(blocks: ContentBlockDto[]): void {
+  if (draft.value === null) return
+  replaceDraft({ ...draft.value, blocks })
+}
+
+async function focusFirstValidationError(): Promise<void> {
+  await nextTick()
+  editorForm.value
+    ?.querySelector<HTMLElement>(
+      '[data-block-error-summary], [data-metric-error-summary], [aria-invalid="true"]',
+    )
+    ?.focus()
+}
+
 async function manualSave(): Promise<void> {
   if (draft.value === null) return
   const validation = validateWorkspace(draft.value)
   localErrors.value = validation
-  if (Object.keys(validation).length > 0) return
+  if (Object.keys(validation).length > 0) {
+    await focusFirstValidationError()
+    return
+  }
   await saveNow()
+  if (Object.keys(error.value?.body.fieldErrors ?? {}).length > 0) {
+    await focusFirstValidationError()
+  }
 }
 
 function freshWorkspace(slug: string, number: string, sortOrder: number): ProjectWorkspaceDto {
@@ -477,12 +507,20 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="mode === 'edit'" class="text-right">
           <p class="text-xs font-semibold tracking-wide text-slate-500">保存状态</p>
-          <p class="mt-1 text-sm font-semibold text-slate-800" data-save-state>{{ saveState }}</p>
+          <p
+            :id="saveStatusId"
+            class="mt-1 text-sm font-semibold text-slate-800"
+            data-save-state
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >{{ saveState }}</p>
           <button
             class="mt-3 rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-55"
             type="button"
             data-action="save"
             :disabled="loading || saving || draft === null || conflict !== null || !dirty"
+            :aria-describedby="saveStatusId"
             @click="manualSave"
           >
             {{ saving ? '正在保存…' : '立即保存' }}
@@ -616,46 +654,55 @@ onBeforeUnmount(() => {
         :trace-id="draft === null ? error?.body.traceId : undefined"
         :on-retry="reloadEverything"
       >
-        <form v-if="draft" class="space-y-6" novalidate @submit.prevent="manualSave">
+        <form
+          v-if="draft"
+          ref="editorForm"
+          class="space-y-6"
+          data-project-editor-form
+          novalidate
+          :aria-busy="loading || saving"
+          @submit.prevent="manualSave"
+        >
           <fieldset :disabled="loading || saving" class="space-y-6">
             <TranslationTabs
               v-model="activeLocale"
               :status="completion"
+              status-label="元数据翻译完成度"
               :disabled="loading || saving"
             >
-              <ProjectMetadataForm
-                :model-value="draft"
-                :locale="activeLocale"
-                :tag-catalog="tags"
-                :skill-catalog="skills"
-                :disabled="loading || saving || catalogLoading"
-                :field-errors="fieldErrors"
-                @update:model-value="replaceDraft"
-              />
-            </TranslationTabs>
+              <div class="space-y-6">
+                <ProjectMetadataForm
+                  :model-value="draft"
+                  :locale="activeLocale"
+                  :tag-catalog="tags"
+                  :skill-catalog="skills"
+                  :disabled="loading || saving || catalogLoading"
+                  :field-errors="fieldErrors"
+                  @update:model-value="replaceDraft"
+                />
 
-            <section
-              class="rounded-2xl border border-dashed border-blue-300 bg-blue-50/60 p-6"
-              data-block-placeholder
-              aria-labelledby="project-blocks-title"
-            >
-              <p class="text-xs font-semibold tracking-[0.16em] text-blue-700">CONTENT BLOCKS</p>
-              <h2 id="project-blocks-title" class="mt-2 text-xl font-semibold text-slate-950">
-                {{ draft.blocks.length }} 个内容模块
-              </h2>
-              <p class="mt-2 text-sm leading-6 text-slate-600">
-                现有模块会在每次元数据保存时原样保留。下一阶段将在这里加入九种可排序模块编辑器。
-              </p>
-            </section>
+                <BlockEditor
+                  data-project-block-editor
+                  :blocks="draft.blocks"
+                  :locale="activeLocale"
+                  :disabled="loading || saving"
+                  :field-errors="fieldErrors"
+                  :load-media="loadMedia"
+                  :resolve-media="resolveMedia"
+                  @update:blocks="replaceBlocks"
+                />
+              </div>
+            </TranslationTabs>
           </fieldset>
 
           <div class="sticky bottom-4 z-10 flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
-            <p class="pl-2 text-sm text-slate-600" data-save-state>{{ saveState }}</p>
+            <p class="pl-2 text-sm text-slate-600" data-save-state aria-hidden="true">{{ saveState }}</p>
             <button
               class="rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-55"
               type="submit"
               data-action="save-bottom"
               :disabled="loading || saving || conflict !== null || !dirty"
+              :aria-describedby="saveStatusId"
             >
               {{ saving ? '正在保存…' : '保存项目资料' }}
             </button>

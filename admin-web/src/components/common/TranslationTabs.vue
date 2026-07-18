@@ -7,9 +7,10 @@ const props = withDefaults(
   defineProps<{
     modelValue: Locale
     status: TranslationStatus
+    statusLabel?: string
     disabled?: boolean
   }>(),
-  { disabled: false },
+  { disabled: false, statusLabel: '翻译完成度' },
 )
 
 const emit = defineEmits<{
@@ -77,7 +78,7 @@ function onKeydown(event: KeyboardEvent, locale: Locale): void {
         :data-locale="locale"
         :aria-controls="panelId(locale)"
         :aria-selected="modelValue === locale"
-        :aria-label="`${labels[locale]}，完成 ${status[locale].complete}/${status[locale].total}`"
+        :aria-label="`${labels[locale]}，${statusLabel} ${status[locale].complete}/${status[locale].total}`"
         :tabindex="modelValue === locale ? 0 : -1"
         :disabled="disabled"
         @click="select(locale)"
@@ -85,6 +86,7 @@ function onKeydown(event: KeyboardEvent, locale: Locale): void {
       >
         <span>{{ labels[locale] }}</span>
         <span class="ml-2 text-xs text-slate-500">
+          <span class="sr-only">{{ statusLabel }} </span>
           {{ status[locale].complete }}/{{ status[locale].total }}
         </span>
       </button>

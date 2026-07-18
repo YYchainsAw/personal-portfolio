@@ -121,6 +121,16 @@ public final class MediaManagementService {
                 items, page, size, result.totalItems(), (int) pages);
     }
 
+    public MediaAssetView get(UUID assetId) {
+        if (assetId == null) {
+            throw notFound();
+        }
+        MediaAssetRecord record = assets.findById(assetId)
+                .filter(asset -> asset.status() != MediaStatus.PENDING_DELETE)
+                .orElseThrow(MediaManagementService::notFound);
+        return toDetailedView(record);
+    }
+
     public MediaAssetView updateTranslations(
             UUID assetId, List<MediaTranslationInput> input) {
         List<MediaTranslationRecord> replacements = requireTranslations(assetId, input);

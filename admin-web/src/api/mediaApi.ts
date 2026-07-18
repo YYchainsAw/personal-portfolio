@@ -1,7 +1,14 @@
 import type { AxiosInstance } from 'axios'
 
 import { ApiProblem, type Page } from '@/types/api'
-import type { MediaAssetSummaryDto, MediaKind, MediaMimeType } from '@/types/content'
+import type {
+  MediaAssetSummaryDto,
+  MediaAssetView,
+  MediaKind,
+  MediaMimeType,
+  MediaTranslationView,
+  MediaVariantView,
+} from '@/types/content'
 
 import { http } from './http'
 
@@ -10,6 +17,9 @@ const MAXIMUM_PAGE_SIZE = 100
 const UUID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
 const IMAGE_PREVIEW_VARIANT_PATTERN = /^w[1-9][0-9]{0,9}$/
 const PREVIEW_VARIANT_PATTERN = /^(?:document|w[1-9][0-9]{0,9})$/
+const SHA256_PATTERN = /^[0-9a-f]{64}$/
+const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/
+const MAXIMUM_DIMENSION = 2_147_483_647
 const MEDIA_KINDS = new Set<MediaKind>(['IMAGE', 'PDF', 'FILE'])
 const MEDIA_MIME_TYPES = new Set<MediaMimeType>([
   'image/jpeg',
@@ -22,6 +32,41 @@ const MEDIA_STATUSES = new Set<MediaAssetSummaryDto['status']>([
   'FAILED',
   'ARCHIVED',
 ])
+const DETAILED_MEDIA_STATUSES = new Set<MediaAssetView['status']>([
+  'PROCESSING',
+  'READY',
+  'FAILED',
+  'ARCHIVED',
+])
+const MEDIA_VARIANT_STATUSES = new Set<MediaVariantView['status']>([
+  'PROCESSING',
+  'READY',
+  'FAILED',
+])
+const MEDIA_LOCALES = new Set<MediaTranslationView['locale']>(['zh-CN', 'en'])
+const MEDIA_ASSET_VIEW_KEYS = [
+  'id',
+  'originalFilename',
+  'mimeType',
+  'byteSize',
+  'width',
+  'height',
+  'sha256',
+  'status',
+  'version',
+  'createdAt',
+  'updatedAt',
+  'translations',
+  'variants',
+] as const
+const MEDIA_TRANSLATION_VIEW_KEYS = [
+  'locale',
+  'altText',
+  'caption',
+  'credit',
+  'sourceUrl',
+] as const
+const MEDIA_VARIANT_VIEW_KEYS = ['name', 'width', 'height', 'status'] as const
 
 export interface MediaSearchOptions {
   readonly page?: number
@@ -32,11 +77,23 @@ export interface MediaSearchOptions {
 
 export interface MediaApi {
   search(options?: Readonly<MediaSearchOptions>): Promise<Page<MediaAssetSummaryDto>>
+  get(id: string): Promise<MediaAssetView>
   previewUrl(id: string, variant: string): string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const actualKeys = Object.keys(value)
+  return (
+    actualKeys.length === keys.length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  )
 }
 
 function invalidServerResponse(): ApiProblem {
@@ -71,6 +128,197 @@ function isMediaId(value: unknown): value is string {
 
 function isPreviewVariant(value: unknown): value is string {
   return typeof value === 'string' && PREVIEW_VARIANT_PATTERN.test(value)
+}
+
+function isPositiveSafeInteger(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= maximum
+}
+
+function isInstant(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    INSTANT_PATTERN.test(value) &&
+    Number.isFinite(Date.parse(value))
+  )
+}
+
+function isStrictHttpsSourceUrl(value: unknown): value is string | null {
+  if (value === null) return true
+  if (
+    typeof value !== 'string' ||
+    value.length > 2048 ||
+    value.trim() !== value ||
+    !/^https:\/\//i.test(value) ||
+    /[\u0000-\u0020\u007f]/u.test(value)
+  ) {
+    return false
+  }
+
+  const authority = value.slice('https://'.length).split(/[/?#]/u, 1)[0] ?? ''
+  if (authority.length === 0 || authority.endsWith(':')) return false
+
+  try {
+    const parsed = new URL(value)
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname.length === 0 ||
+      parsed.username.length > 0 ||
+      parsed.password.length > 0 ||
+      parsed.hash.length > 0
+    ) {
+      return false
+    }
+    if (parsed.port.length > 0) {
+      const port = Number(parsed.port)
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function normalizeTranslation(value: unknown): MediaTranslationView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, MEDIA_TRANSLATION_VIEW_KEYS) ||
+    typeof value.locale !== 'string' ||
+    !MEDIA_LOCALES.has(value.locale as MediaTranslationView['locale']) ||
+    typeof value.altText !== 'string' ||
+    value.altText.length > 500 ||
+    typeof value.caption !== 'string' ||
+    value.caption.length > 1000 ||
+    typeof value.credit !== 'string' ||
+    value.credit.length > 300 ||
+    !isStrictHttpsSourceUrl(value.sourceUrl)
+  ) {
+    return null
+  }
+
+  return {
+    locale: value.locale as MediaTranslationView['locale'],
+    altText: value.altText,
+    caption: value.caption,
+    credit: value.credit,
+    sourceUrl: value.sourceUrl,
+  }
+}
+
+function normalizeTranslations(value: unknown): MediaTranslationView[] | null {
+  if (!Array.isArray(value)) return null
+  const result: MediaTranslationView[] = []
+  const locales = new Set<MediaTranslationView['locale']>()
+  for (const candidate of value) {
+    const translation = normalizeTranslation(candidate)
+    if (translation === null || locales.has(translation.locale)) return null
+    locales.add(translation.locale)
+    result.push(translation)
+  }
+  return result
+}
+
+function normalizeVariant(value: unknown): MediaVariantView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, MEDIA_VARIANT_VIEW_KEYS) ||
+    !isPreviewVariant(value.name) ||
+    typeof value.status !== 'string' ||
+    !MEDIA_VARIANT_STATUSES.has(value.status as MediaVariantView['status'])
+  ) {
+    return null
+  }
+
+  if (value.name === 'document') {
+    if (value.width !== null || value.height !== null) return null
+    return {
+      name: value.name,
+      width: null,
+      height: null,
+      status: value.status as MediaVariantView['status'],
+    }
+  }
+
+  if (
+    !isPositiveSafeInteger(value.width, MAXIMUM_DIMENSION) ||
+    !isPositiveSafeInteger(value.height, MAXIMUM_DIMENSION) ||
+    value.name !== `w${value.width}`
+  ) {
+    return null
+  }
+  return {
+    name: value.name,
+    width: value.width,
+    height: value.height,
+    status: value.status as MediaVariantView['status'],
+  }
+}
+
+function normalizeVariants(value: unknown): MediaVariantView[] | null {
+  if (!Array.isArray(value)) return null
+  const result: MediaVariantView[] = []
+  const names = new Set<string>()
+  for (const candidate of value) {
+    const variant = normalizeVariant(candidate)
+    if (variant === null || names.has(variant.name)) return null
+    names.add(variant.name)
+    result.push(variant)
+  }
+  return result
+}
+
+function normalizeDetailedAsset(value: unknown, requestedId: string): MediaAssetView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, MEDIA_ASSET_VIEW_KEYS) ||
+    !isMediaId(value.id) ||
+    value.id.toLocaleLowerCase() !== requestedId.toLocaleLowerCase() ||
+    typeof value.originalFilename !== 'string' ||
+    value.originalFilename.trim() !== value.originalFilename ||
+    value.originalFilename.length === 0 ||
+    Array.from(value.originalFilename).length > 255 ||
+    typeof value.mimeType !== 'string' ||
+    !MEDIA_MIME_TYPES.has(value.mimeType as MediaMimeType) ||
+    !isPositiveSafeInteger(value.byteSize) ||
+    typeof value.sha256 !== 'string' ||
+    !SHA256_PATTERN.test(value.sha256) ||
+    typeof value.status !== 'string' ||
+    !DETAILED_MEDIA_STATUSES.has(value.status as MediaAssetView['status']) ||
+    !Number.isSafeInteger(value.version) ||
+    (value.version as number) < 0 ||
+    !isInstant(value.createdAt) ||
+    !isInstant(value.updatedAt)
+  ) {
+    return null
+  }
+
+  const mimeType = value.mimeType as MediaMimeType
+  const hasValidDimensions =
+    mimeType === 'application/pdf'
+      ? value.width === null && value.height === null
+      : (value.width === null && value.height === null) ||
+        (isPositiveSafeInteger(value.width, MAXIMUM_DIMENSION) &&
+          isPositiveSafeInteger(value.height, MAXIMUM_DIMENSION))
+  if (!hasValidDimensions) return null
+
+  const translations = normalizeTranslations(value.translations)
+  const variants = normalizeVariants(value.variants)
+  if (translations === null || variants === null) return null
+
+  return {
+    id: value.id,
+    originalFilename: value.originalFilename,
+    mimeType,
+    byteSize: value.byteSize,
+    width: value.width as number | null,
+    height: value.height as number | null,
+    sha256: value.sha256,
+    status: value.status as MediaAssetView['status'],
+    version: value.version as number,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    translations,
+    variants,
+  }
 }
 
 function mediaKind(mimeType: string): MediaKind {
@@ -244,6 +492,15 @@ export function createMediaApi(client: AxiosInstance): MediaApi {
         params: { page, size, status: 'READY' },
       })
       return normalizePage(response.data, options, previewUrl, page, size)
+    },
+    async get(id) {
+      if (!isMediaId(id)) throw new TypeError('media id must be a UUID')
+      const response = await client.get<unknown>(
+        `/api/admin/media/${encodeURIComponent(id)}`,
+      )
+      const asset = normalizeDetailedAsset(response.data, id)
+      if (asset === null) throw invalidServerResponse()
+      return asset
     },
     previewUrl,
   }

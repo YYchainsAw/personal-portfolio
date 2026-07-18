@@ -86,6 +86,13 @@ public final class AdminMediaController {
                 .body(media.list(page, size, status));
     }
 
+    @GetMapping("/{id}")
+    public ResponseEntity<MediaAssetView> get(@PathVariable UUID id) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(media.get(id));
+    }
+
     @PutMapping("/{id}/translations")
     public ResponseEntity<MediaAssetView> translations(
             @PathVariable UUID id,

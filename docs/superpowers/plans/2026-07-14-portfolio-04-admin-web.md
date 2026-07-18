@@ -147,7 +147,7 @@ The frontend fixes these management endpoints so backend and browser work can pr
 | `GET /api/admin/site/workspace` | none | `SiteWorkspaceDto` |
 | `PUT /api/admin/site/workspace` | `{ expectedVersion, workspace: SiteWorkspaceDto }` | `SiteWorkspaceDto` |
 | `GET /api/admin/projects` | none | `ProjectWorkspaceDto[]` |
-| `POST /api/admin/projects` | `ProjectWorkspaceDto` | `ProjectWorkspaceDto` |
+| `POST /api/admin/projects` | `CreateProjectWorkspaceRequest { workspace }` | `ProjectWorkspaceDto` |
 | `GET /api/admin/projects/{projectId}/workspace` | none | `ProjectWorkspaceDto` |
 | `PUT /api/admin/projects/{projectId}/workspace` | `{ expectedVersion, workspace: ProjectWorkspaceDto }` | `ProjectWorkspaceDto` |
 | `GET /api/admin/tags` | none | `TaxonomyWorkspaceDto[]` |
@@ -155,6 +155,7 @@ The frontend fixes these management endpoints so backend and browser work can pr
 | `GET /api/admin/skills` | none | `TaxonomyWorkspaceDto[]` |
 | `PUT /api/admin/skills/{skillId}` | `UpdateTaxonomyRequest` | `TaxonomyWorkspaceDto` |
 | `GET /api/admin/media` | query `page,size,status=READY` | `MediaPageView` |
+| `GET /api/admin/media/{id}` | none | exact `MediaAssetView`; `404` for missing/pending-delete |
 | `POST /api/admin/media` | multipart part `file` | `MediaAssetView` |
 | `PUT /api/admin/media/{id}/translations` | `MediaTranslationInput[]` | `MediaAssetView` |
 | `GET /api/admin/media/{id}/preview/{variant}` | none | authenticated stream or `302` signed URL |
@@ -1227,6 +1228,7 @@ git commit -m "feat(admin): add bilingual project workspace editor"
 
 **Files:**
 - Create: `admin-web/src/components/editor/blockOrder.ts`
+- Create: `admin-web/src/components/editor/blockValidation.ts`
 - Create: `admin-web/src/components/editor/BlockEditor.vue`
 - Create: `admin-web/src/components/editor/BlockCard.vue`
 - Create: `admin-web/src/components/editor/blocks/MarkdownBlockEditor.vue`
@@ -1238,16 +1240,26 @@ git commit -m "feat(admin): add bilingual project workspace editor"
 - Create: `admin-web/src/components/editor/blocks/MetricsBlockEditor.vue`
 - Create: `admin-web/src/components/editor/blocks/DownloadBlockEditor.vue`
 - Create: `admin-web/src/components/editor/blocks/LinkBlockEditor.vue`
+- Modify: `admin-web/src/components/common/TranslationTabs.vue`
 - Modify: `admin-web/src/views/projects/ProjectEditorView.vue`
+- Modify: `admin-web/src/api/mediaApi.ts`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java`
+- Modify: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java`
 - Test: `admin-web/src/components/editor/blockOrder.spec.ts`
+- Test: `admin-web/src/components/editor/blockValidation.spec.ts`
 - Test: `admin-web/src/components/editor/BlockEditor.spec.ts`
 - Test: `admin-web/src/components/editor/BlockCard.spec.ts`
+- Test: focused `*.spec.ts` beside all nine block editors and their media helpers
+- Test: `admin-web/src/components/common/TranslationTabs.spec.ts`
+- Test: `admin-web/src/api/mediaApi.spec.ts`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaManagementServiceTest.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/web/AdminMediaControllerTest.java`
 
 **Interfaces:**
-- Consumes: `ContentBlockDto`, `createBlock`, current `Locale`, and `MediaPickerDialog`.
-- Produces: `BlockEditor` with `v-model:blocks`, stable ordering, keyboard controls, pointer drag/drop, exhaustive typed child editors, and no raw HTML input.
+- Consumes: `ContentBlockDto`, `createBlock`, current `Locale`, `MediaPickerDialog`, and exact media detail lookup.
+- Produces: `BlockEditor` with `v-model:blocks`, stable ordering, keyboard controls, dedicated-handle drag/drop, exhaustive typed child editors, lossless decimal editing, media translation completion, and no raw HTML input.
 
-- [ ] **Step 1: Write failing reorder and exhaustive-render tests**
+- [x] **Step 1: Write failing reorder and exhaustive-render tests**
 
 ```ts
 // admin-web/src/components/editor/blockOrder.spec.ts
@@ -1290,13 +1302,13 @@ it('adds every approved block type and emits ordered blocks', async () => {
 
 Add a parameterized `BlockCard.spec.ts` that mounts each union member and asserts the matching editor is visible, then assert unsafe `javascript:` and `data:` URLs produce an inline error before save.
 
-- [ ] **Step 2: Run block tests and observe missing editor failures**
+- [x] **Step 2: Run block tests and observe missing editor failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/components/editor`
 
 Expected: FAIL because the ordering utility and block components do not exist.
 
-- [ ] **Step 3: Implement immutable ordering and the block list**
+- [x] **Step 3: Implement immutable ordering and the block list**
 
 ```ts
 // admin-web/src/components/editor/blockOrder.ts
@@ -1354,36 +1366,40 @@ const remove = (id: string) => emit('update:blocks', props.blocks.filter((block)
 
 `BlockCard.vue` uses an exhaustive `switch` over `block.payload.type`, passes the narrowed payload plus shared block layout and current locale to the matching editor, and emits a complete `ContentBlockDto`. A final `never` assertion guarantees a new backend payload type cannot compile without an editor.
 
-- [ ] **Step 4: Implement all nine focused editors and media rules**
+- [x] **Step 4: Implement all nine focused editors and media rules**
 
 Each editor must bind the following complete fields and emit a new object rather than mutating props:
 
 | Editor | Required controls |
 |---|---|
 | `MarkdownBlockEditor` | exact `payload.markdown` bilingual textareas; no HTML mode and no rendered editable DOM |
-| `ImageBlockEditor` | exact `payload.mediaAssetId` READY image picker; show selected media's bilingual alt/caption completeness from plan-02 media translations without copying it into the block DTO |
-| `GalleryBlockEditor` | exact ordered `payload.mediaAssetIds` with at least two READY images; show per-asset media-translation completeness without adding per-item objects |
+| `ImageBlockEditor` | exact `payload.mediaAssetId` READY image picker; resolve selected/existing media by ID and show bilingual alt/caption completeness from plan-02 media translations without copying it into the block DTO |
+| `GalleryBlockEditor` | exact ordered, duplicate-free `payload.mediaAssetIds` with at least two READY images; repeatedly use the hardened single picker, resolve each ID, and show per-asset media-translation completeness without adding per-item objects |
 | `VideoBlockEditor` | exact `provider`, HTTPS `url`, optional READY `coverAssetId`, and bilingual `copy`; no upload or embed field |
 | `CodeBlockEditor` | code textarea, language identifier, line-number toggle, bilingual title/description; preview uses text content, never `v-html` |
 | `QuoteBlockEditor` | exact bilingual `copy.quote/source` |
 | `MetricsBlockEditor` | exact ordered `metrics` with stable IDs, `sortOrder`, optional `numericValue`, and bilingual `copy.label/value/suffix` |
-| `DownloadBlockEditor` | exact `mediaAssetId`/`externalUrl` choice plus bilingual `copy`; require one READY PDF/FILE or one allowlisted HTTPS URL |
+| `DownloadBlockEditor` | exact `mediaAssetId`/`externalUrl` choice plus bilingual `copy`; atomically require one READY PDF (the current backend has no reachable generic FILE MIME) or one safe HTTPS URL |
 | `LinkBlockEditor` | exact HTTPS `url`, `openNewTab`, and bilingual `copy` |
 
-Shared layout controls bind only the exact `width`, `alignment`, `emphasis`, and integer `columns` fields from plan 03. Client URL validation is `new URL(value).protocol === 'https:'`; the backend remains authoritative and returns path-specific `422` errors. Integrate `<BlockEditor v-model:blocks="draft.blocks" :locale="activeLocale" />` into `ProjectEditorView` and include the exact nested `payload` union in the existing autosave request.
+Shared layout controls bind only the exact `visible`, `width`, `alignment`, `emphasis`, and integer `columns` fields from plan 03. Safe URL validation requires the untrimmed value to start with lowercase `https://`, parse to an absolute host, omit userinfo and fragments, use no port other than 443, contain no literal or percent-encoded CR/LF, reject malformed percent escapes, and reject raw characters that WHATWG would silently normalize but Java `URI` cannot persist. The backend remains authoritative and returns path-specific `422` errors. `VideoBlockEditor` additionally keeps the provider enum explicit so Task 9's authoritative preview can report provider/host canonicalization errors.
+
+`GET /api/admin/media/{id}` returns the exact authenticated, no-store `MediaAssetView` and treats missing or `PENDING_DELETE` assets as `404`; `mediaApi.get` validates the complete response and never retries. Media translations are legitimately zero, one, or two unique locale rows, so the editor reports each alt/caption field as complete, missing, loading, or unreadable without inventing copy. Every picker handler independently rechecks READY status, UUID, kind, and MIME before writing only the asset ID into a payload.
+
+Integrate `<BlockEditor v-model:blocks="draft.blocks" :locale="activeLocale" />` into `ProjectEditorView` and include the exact nested `payload` union in the existing autosave request. Before either manual or automatic save, merge `validateBlocks` into the workspace gate. It blocks only structures the backend necessarily rejects (identity/order uniqueness, column range, required media, gallery cardinality/uniqueness, safe URLs, non-empty metrics, decimal syntax, and exclusive download targets); incomplete publish copy remains a valid persisted draft. A later edit clears `CLIENT_PROJECT_VALIDATION` and resumes autosave.
 
 Run: `npm --prefix admin-web run test:unit -- src/components/editor src/views/projects/ProjectEditorView.spec.ts`
 
-Expected: PASS for all types, locale switching without losing the other locale, pointer and keyboard ordering, media constraints, URL protocol rejection, deletion renumbering, and autosave payload preservation.
+Expected: PASS for all types, locale switching without losing the other locale, dedicated-handle and keyboard ordering, media constraints and resolver races, strict URL rejection, deletion renumbering, invalid-draft save suspension/recovery, lossless BigDecimal strings, and autosave payload preservation.
 
 Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0 with no unhandled `BlockType` branch.
 
-- [ ] **Step 5: Commit the block-editor slice**
+- [x] **Step 5: Commit the block-editor slice**
 
 ```bash
-git add admin-web/src/components/editor admin-web/src/views/projects/ProjectEditorView.vue
+git add admin-web/src/components/editor admin-web/src/components/common/TranslationTabs.vue admin-web/src/components/common/TranslationTabs.spec.ts admin-web/src/views/projects/ProjectEditorView.vue admin-web/src/views/projects/ProjectEditorView.spec.ts admin-web/src/api/mediaApi.ts admin-web/src/api/mediaApi.spec.ts backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/application/MediaManagementService.java backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/media/web/AdminMediaController.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/application/MediaManagementServiceTest.java backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/media/web/AdminMediaControllerTest.java docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "feat(admin): add typed sortable project blocks"
 ```
 

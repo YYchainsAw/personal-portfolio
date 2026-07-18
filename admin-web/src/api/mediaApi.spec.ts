@@ -22,9 +22,209 @@ function image(id: string, overrides: Record<string, unknown> = {}): Record<stri
   }
 }
 
+function detailedAsset(id: string) {
+  return {
+    id,
+    originalFilename: 'hero.png',
+    mimeType: 'image/png',
+    byteSize: 4096,
+    width: 1280,
+    height: 720,
+    sha256: 'a'.repeat(64),
+    status: 'READY',
+    version: 2,
+    createdAt: '2026-07-17T00:00:00Z',
+    updatedAt: '2026-07-17T00:00:01.123456789Z',
+    translations: [
+      {
+        locale: 'zh-CN',
+        altText: 'Gameplay zh',
+        caption: 'Caption zh',
+        credit: 'Credit zh',
+        sourceUrl: null,
+      },
+      {
+        locale: 'en',
+        altText: 'Gameplay',
+        caption: 'Caption',
+        credit: 'Credit',
+        sourceUrl: 'https://example.com/source',
+      },
+    ],
+    variants: [
+      { name: 'w640', width: 640, height: 360, status: 'READY' },
+      { name: 'w1280', width: 1280, height: 720, status: 'PROCESSING' },
+    ],
+  }
+}
+
 describe('mediaApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('gets and strictly normalizes one complete media asset view', async () => {
+    const assetId = uuid(10)
+    const response = detailedAsset(assetId)
+    const get = vi.spyOn(http, 'get').mockResolvedValue({ data: response } as never)
+
+    const result = await mediaApi.get(assetId)
+
+    expect(get).toHaveBeenCalledOnce()
+    expect(get).toHaveBeenCalledWith(`/api/admin/media/${assetId}`)
+    expect(result).toEqual(response)
+    expect(result).not.toBe(response)
+    expect(result.translations).not.toBe(response.translations)
+    expect(result.variants).not.toBe(response.variants)
+  })
+
+  it.each([
+    {
+      name: 'no translations or variants',
+      build: (id: string) => ({
+        ...detailedAsset(id),
+        translations: [],
+        variants: [],
+      }),
+    },
+    {
+      name: 'one existing translation',
+      build: (id: string) => {
+        const asset = detailedAsset(id)
+        return { ...asset, translations: [asset.translations[1]] }
+      },
+    },
+    {
+      name: 'paired null dimensions on a processing image',
+      build: (id: string) => ({
+        ...detailedAsset(id),
+        status: 'PROCESSING',
+        width: null,
+        height: null,
+      }),
+    },
+  ])('accepts a complete get response with $name', async ({ build }) => {
+    const assetId = uuid(15)
+    const response = build(assetId)
+    vi.spyOn(http, 'get').mockResolvedValue({ data: response } as never)
+
+    await expect(mediaApi.get(assetId)).resolves.toEqual(response)
+  })
+
+  it('rejects unsafe get ids before making a request', async () => {
+    const get = vi.spyOn(http, 'get')
+
+    for (const invalidId of ['', '.', '..', 'asset/id', `${uuid(11)}/..`, 'not-a-uuid']) {
+      await expect(mediaApi.get(invalidId)).rejects.toThrow(TypeError)
+    }
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a failed get request', async () => {
+    const assetId = uuid(14)
+    const failure = new Error('network failed')
+    const get = vi.spyOn(http, 'get').mockRejectedValue(failure)
+
+    await expect(mediaApi.get(assetId)).rejects.toBe(failure)
+    expect(get).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    {
+      name: 'a mismatched response id',
+      build: (id: string) => ({ ...detailedAsset(id), id: uuid(12) }),
+    },
+    {
+      name: 'an unexpected root field',
+      build: (id: string) => ({ ...detailedAsset(id), objectKey: 'private/secret' }),
+    },
+    {
+      name: 'a blank filename',
+      build: (id: string) => ({ ...detailedAsset(id), originalFilename: ' ' }),
+    },
+    {
+      name: 'an unsupported MIME type',
+      build: (id: string) => ({ ...detailedAsset(id), mimeType: 'image/webp' }),
+    },
+    {
+      name: 'an unsafe byte size',
+      build: (id: string) => ({ ...detailedAsset(id), byteSize: Number.MAX_SAFE_INTEGER + 1 }),
+    },
+    {
+      name: 'invalid image dimensions',
+      build: (id: string) => ({ ...detailedAsset(id), width: null }),
+    },
+    {
+      name: 'dimensions on a PDF',
+      build: (id: string) => ({ ...detailedAsset(id), mimeType: 'application/pdf' }),
+    },
+    {
+      name: 'an invalid sha256',
+      build: (id: string) => ({ ...detailedAsset(id), sha256: 'A'.repeat(64) }),
+    },
+    {
+      name: 'an invalid asset status',
+      build: (id: string) => ({ ...detailedAsset(id), status: 'DELETED' }),
+    },
+    {
+      name: 'a pending-delete asset status',
+      build: (id: string) => ({ ...detailedAsset(id), status: 'PENDING_DELETE' }),
+    },
+    {
+      name: 'an invalid version',
+      build: (id: string) => ({ ...detailedAsset(id), version: -1 }),
+    },
+    {
+      name: 'an invalid timestamp',
+      build: (id: string) => ({ ...detailedAsset(id), updatedAt: '2026-07-17' }),
+    },
+    {
+      name: 'duplicate translations',
+      build: (id: string) => {
+        const asset = detailedAsset(id)
+        return { ...asset, translations: [asset.translations[0], asset.translations[0]] }
+      },
+    },
+    {
+      name: 'an unsupported translation locale',
+      build: (id: string) => {
+        const asset = detailedAsset(id)
+        return {
+          ...asset,
+          translations: [{ ...asset.translations[0], locale: 'fr' }],
+        }
+      },
+    },
+    {
+      name: 'an unsafe translation source URL',
+      build: (id: string) => {
+        const asset = detailedAsset(id)
+        return {
+          ...asset,
+          translations: [
+            asset.translations[0],
+            { ...asset.translations[1], sourceUrl: 'https://user:secret@example.com/#private' },
+          ],
+        }
+      },
+    },
+    {
+      name: 'a malformed variant',
+      build: (id: string) => {
+        const asset = detailedAsset(id)
+        return {
+          ...asset,
+          variants: [{ name: 'w640', width: 641, height: 360, status: 'READY' }],
+        }
+      },
+    },
+  ])('rejects a get response containing $name', async ({ build }) => {
+    const assetId = uuid(13)
+    vi.spyOn(http, 'get').mockResolvedValue({ data: build(assetId) } as never)
+
+    await expect(mediaApi.get(assetId)).rejects.toMatchObject({
+      body: { code: 'INVALID_MEDIA_RESPONSE', traceId: 'client' },
+    })
   })
 
   it('sends only page, size, and READY while applying kind and text filters locally', async () => {

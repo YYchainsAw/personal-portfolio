@@ -135,6 +135,53 @@ class MediaManagementServiceTest {
     }
 
     @Test
+    void getReturnsTheCompleteMediaAssetView() {
+        MediaAssetRecord ready = asset(MediaStatus.READY, 1, null);
+        when(assets.findById(ASSET_ID)).thenReturn(Optional.of(ready));
+        when(translations.findByAssetId(ASSET_ID)).thenReturn(List.of(
+                new MediaTranslationRecord(
+                        ASSET_ID, "zh-CN", "Gameplay zh", "Caption zh", "Credit zh", null),
+                new MediaTranslationRecord(
+                        ASSET_ID, "en", "Gameplay", "Caption", "Credit", "https://example.com/en")));
+        when(variants.findByAssetId(ASSET_ID)).thenReturn(List.of(variant()));
+
+        var view = service.get(ASSET_ID);
+
+        assertThat(view.id()).isEqualTo(ASSET_ID);
+        assertThat(view.originalFilename()).isEqualTo("work.png");
+        assertThat(view.status()).isEqualTo("READY");
+        assertThat(view.translations()).extracting(value -> value.locale())
+                .containsExactly("zh-CN", "en");
+        assertThat(view.translations().get(1).sourceUrl())
+                .isEqualTo("https://example.com/en");
+        assertThat(view.variants()).singleElement().satisfies(value -> {
+            assertThat(value.name()).isEqualTo("w640");
+            assertThat(value.width()).isEqualTo(640);
+            assertThat(value.height()).isEqualTo(360);
+            assertThat(value.status()).isEqualTo("READY");
+        });
+    }
+
+    @Test
+    void getTreatsMissingAndPendingDeleteAssetsAsNotFound() {
+        when(assets.findById(ASSET_ID))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(asset(MediaStatus.PENDING_DELETE, 2, NOW)));
+
+        assertDomainFailure(
+                () -> service.get(ASSET_ID),
+                "MEDIA_NOT_FOUND",
+                HttpStatus.NOT_FOUND);
+        assertDomainFailure(
+                () -> service.get(ASSET_ID),
+                "MEDIA_NOT_FOUND",
+                HttpStatus.NOT_FOUND);
+
+        verify(translations, never()).findByAssetId(ASSET_ID);
+        verify(variants, never()).findByAssetId(ASSET_ID);
+    }
+
+    @Test
     void translationUpdateRequiresExactlyBothLocalesAndStrictHttps() {
         assertDomainFailure(
                 () -> service.updateTranslations(ASSET_ID, List.of(
