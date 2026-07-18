@@ -33,7 +33,7 @@ const mediaLibrary = () => import('@/views/media/MediaLibraryView.vue')
 const publishingHistory = () => import('@/views/publishing/PublishingHistoryView.vue')
 const messages = () => import('@/views/messages/MessagesView.vue')
 const analytics = () => import('@/views/analytics/AnalyticsView.vue')
-const feature = () => import('@/views/FeatureShellView.vue')
+const settings = () => import('@/views/settings/SettingsView.vue')
 
 function singleParam(value: string | string[] | undefined): string {
   return typeof value === 'string' ? value : ''
@@ -136,8 +136,7 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
           {
             path: 'settings',
             name: 'settings',
-            component: feature,
-            props: { title: '设置' },
+            component: settings,
           },
         ],
       },

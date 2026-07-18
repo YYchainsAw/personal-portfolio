@@ -778,18 +778,21 @@ git commit -m "ops: back up database and media independently"
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusService.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatus.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapper.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceView.java`
 - Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsController.java`
 - Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsControllerTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapperTest.java`
+- Create: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusServiceTest.java`
 
 **Interfaces:**
 - Consumes: plan-02 `maintenance_run` and plan-01 admin authentication.
 - Produces: the sole `GET /api/admin/system/operations` status contract, consumed only by plan 04's admin `SettingsView` operations section (`OperationsStatus.vue`); the dashboard makes no operations request.
 
-- [ ] **Step 1: Write the failing status API test**
+- [x] **Step 1: Write the failing status API test**
 
 Seed successful/failed maintenance rows and verify the endpoint returns the latest database backup, media backup, analytics aggregation, contact retention, media cleanup, deployment, and restore drill. Assert `401` when logged out and prove that artifact paths, bucket names, object keys, credentials, exception messages, PII, and raw job payloads are absent.
 
-- [ ] **Step 2: Run the focused test and verify failure**
+- [x] **Step 2: Run the focused test and verify failure**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest=AdminOperationsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test
@@ -797,7 +800,7 @@ Seed successful/failed maintenance rows and verify the endpoint returns the late
 
 Expected: FAIL because the operations endpoint does not exist.
 
-- [ ] **Step 3: Implement a redacted status model**
+- [x] **Step 3: Implement a redacted status model**
 
 ```java
 public record OperationsStatus(
@@ -819,15 +822,17 @@ public record MaintenanceView(
 
 Return only allowlisted run types and a mapped error category. Set `Cache-Control: no-store`. The endpoint is read-only; backup scripts remain host-owned and no web endpoint may start restore, shell, backup, deployment, or key rotation.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run the Step 2 command.
 
 Expected: PASS and no operational secret/path appears.
 
+Verification (2026-07-18): this endpoint was delivered early with plan-04 Task 12 so the complete settings route has no missing backend dependency. The isolated suite passed 10/10 under Java 17 and Maven 3.9.11. It covers authenticated 200/no-store and anonymous 401/no-store behavior, all eight stable root keys and six nested keys including explicit nulls, seven exact allowlisted run types, latest-row ordering, safe failure categories, lowercase SHA-256, read-only `REPEATABLE_READ`, real CGLIB proxy creation, and source/SQL scans proving `error_summary`, `details`, paths, buckets, object keys, credentials, and payloads are never read or exposed. No database was connected by the suite.
+
 ```powershell
 git add backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations
-git commit -m "feat(system): report redacted maintenance status"
+git commit -m "feat(admin): complete security and operations settings"
 ```
 
 ---

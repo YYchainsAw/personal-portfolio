@@ -212,10 +212,10 @@ describe('admin route guard', () => {
     expect(media.matched.at(-1)?.props.default).toBe(false)
   })
 
-  it('routes messages and analytics to their complete authenticated views', () => {
+  it('routes messages, analytics, and settings to complete authenticated views', () => {
     const router = createTestRouter(createGuardSession('AUTHENTICATED'))
 
-    for (const path of ['/admin/messages', '/admin/analytics']) {
+    for (const path of ['/admin/messages', '/admin/analytics', '/admin/settings']) {
       const route = router.resolve(path)
       expect(route.matched.at(-1)?.path).toBe(path)
       expect(route.matched.at(-1)?.props.default).toBe(false)

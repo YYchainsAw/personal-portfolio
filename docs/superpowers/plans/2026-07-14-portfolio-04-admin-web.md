@@ -1732,6 +1732,7 @@ git commit -m "feat(admin): complete inbox and analytics"
 
 **Files:**
 - Modify: `admin-web/src/router/index.ts`
+- Modify: `admin-web/src/router/index.spec.ts`
 - Create: `admin-web/src/types/settings.ts`
 - Create: `admin-web/src/api/settingsApi.ts`
 - Create: `admin-web/src/views/settings/SettingsView.vue`
@@ -1744,13 +1745,24 @@ git commit -m "feat(admin): complete inbox and analytics"
 - Test: `admin-web/src/views/settings/SettingsView.spec.ts`
 - Test: `admin-web/src/components/settings/SecuritySettings.spec.ts`
 - Test: `admin-web/src/components/settings/SessionTable.spec.ts`
+- Test: `admin-web/src/components/settings/AuditTable.spec.ts`
+- Test: `admin-web/src/components/settings/OperationsStatus.spec.ts`
 - Test: `admin-web/src/api/settingsApi.spec.ts`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsController.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapper.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceView.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatus.java`
+- Create: `backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusService.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/AdminOperationsControllerTest.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/MaintenanceRunMapperTest.java`
+- Test: `backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations/OperationsStatusServiceTest.java`
+- Modify: `docs/superpowers/plans/2026-07-14-portfolio-07-deployment-recovery.md`
 
 **Interfaces:**
-- Consumes: the exact plan-01 credential/session/audit contracts and the single fixed plan-07 system endpoint in Cross-Task Interfaces; the matching auth/system backend slice must land before this task.
+- Consumes: the exact plan-01 credential/session/audit contracts and the single fixed plan-07 system endpoint in Cross-Task Interfaces. The previously scheduled plan-07 read-only operations slice is deliberately delivered in this task so the settings route never lands against a missing production endpoint.
 - Produces: complete password/TOTP/recovery forms, local-only TOTP QR rendering, acknowledged one-time recovery-code handling, current/other-session revocation, immutable cursor audit browsing, plan-07 backup/maintenance/deployment status, and links to SITE SEO/resume editors.
 
-- [ ] **Step 1: Write failing one-time-secret and session-revocation tests**
+- [x] **Step 1: Write failing one-time-secret and session-revocation tests**
 
 ```ts
 // admin-web/src/components/settings/SecuritySettings.spec.ts
@@ -1783,13 +1795,13 @@ Add tests that:
 - `SessionTable` marks `current`, a selected other ACTIVE session uses normal confirmation, selected current ACTIVE session uses stronger confirmation and redirects to login after `204`, and the exact mutation is POST `/{metadataId}/revoke`;
 - audit cursor/filter append/reset has no mutation control, and operations status never displays secret/config values.
 
-- [ ] **Step 2: Run focused settings tests and observe missing modules**
+- [x] **Step 2: Run focused settings tests and observe missing modules**
 
 Run: `npm --prefix admin-web run test:unit -- src/views/settings src/components/settings src/api/settingsApi.spec.ts`
 
 Expected: FAIL because settings contracts, API, and components are absent.
 
-- [ ] **Step 3: Define exact security and system contracts**
+- [x] **Step 3: Define exact security and system contracts**
 
 ```ts
 // admin-web/src/types/settings.ts
@@ -1798,8 +1810,8 @@ export interface PasswordChangeRequest { currentPassword: string; currentTotp: s
 export interface ReauthenticationRequest { currentPassword: string; currentTotp: string }
 export interface TotpConfirmRequest { enrollmentId: string; newTotp: string }
 export interface TotpEnrollmentResponse { enrollmentId: string; provisioningUri: string; expiresAt: string }
-export interface RecoveryCodesResponse { recoveryCodes: string[] }
-export interface AdminAuditItem { id: string; actorAdminId: string; action: string; targetType: string; targetId: string | null; outcome: string; traceId: string; metadata: Record<string, string>; timestamp: string }
+export interface RecoveryCodesResponse { recoveryCodes: readonly string[] }
+export interface AdminAuditItem { id: string; actorAdminId: string | null; action: string; targetType: string; targetId: string | null; outcome: string; traceId: string; metadata: Readonly<Record<string, string>>; timestamp: string }
 export interface AdminAuditPage { items: AdminAuditItem[]; nextCursor: string | null }
 export interface MaintenanceView { type: string; status: string; startedAt: string; finishedAt: string | null; artifactChecksum: string | null; errorCategory: string | null }
 export interface OperationsStatus { databaseBackup: MaintenanceView | null; mediaBackup: MaintenanceView | null; analyticsAggregation: MaintenanceView | null; contactRetention: MaintenanceView | null; mediaCleanup: MaintenanceView | null; deployment: MaintenanceView | null; restoreDrill: MaintenanceView | null; serverTime: string }
@@ -1809,11 +1821,11 @@ export interface OperationsStatus { databaseBackup: MaintenanceView | null; medi
 
 `getAudit({ cursor, action, outcome, from, to, limit })` returns exact `AdminAuditPage`, omits blank query values, enforces limit 1–100, and resets cursor whenever a filter changes. Credential, provisioning, and recovery responses remain only in component memory and are cleared by overwriting reactive fields before dismissal/unmount; none enters a store, URL, storage, logger, toast payload, analytics, error report, or screenshot.
 
-`getOperations(): Promise<OperationsStatus>` calls only `GET /api/admin/system/operations`, validates the seven named maintenance keys plus `serverTime`, and sends no action. No second system-status shape or host-action API is defined.
+`getOperations(): Promise<OperationsStatus>` calls only `GET /api/admin/system/operations`, requires exact HTTP 200 plus all seven named maintenance keys and `serverTime`, and sends no action. Every non-null maintenance view requires all six stable keys, including explicit nullable fields. No second system-status shape or host-action API is defined.
 
-- [ ] **Step 4: Implement complete settings behavior and verify**
+- [x] **Step 4: Implement complete settings behavior and verify**
 
-- `SecuritySettings` has three isolated forms. Password change requires current password/current TOTP, a 14–128 character new password, and an equal local confirmation; only the three backend fields are sent. TOTP enrollment reauthenticates, renders the QR locally plus a guarded copyable provisioning URI, shows the exact expiry countdown, and confirms only `enrollmentId/newTotp`. Recovery regeneration reauthenticates and requires a destructive confirmation. Disable duplicate submit and clear every password/TOTP field in `finally`.
+- `SecuritySettings` has three isolated forms. Password change requires current password/current TOTP, a well-formed 14–128 Unicode-code-point new password with uppercase/lowercase Unicode properties, Unicode `Nd`, punctuation or symbol, and an equal local confirmation; only the three backend fields are sent. The Java 17 backend remains authoritative for the rare code points whose Unicode property assignment differs from the browser runtime. TOTP enrollment reauthenticates, renders the QR locally plus a guarded copyable provisioning URI, shows the exact expiry countdown, and confirms only `enrollmentId/newTotp`. Recovery regeneration reauthenticates and requires a destructive confirmation. Disable duplicate submit and clear every password/TOTP field in `finally`.
 - `OneTimeRecoveryCodes` receives only `recoveryCodes`, labels them one-use, supports explicit clipboard copy and print without network/storage, and requires a “saved offline” checkbox before Dismiss. While unacknowledged it warns on in-app navigation and `beforeunload`; regardless of path, unmount clears the array. Confirmation/regeneration cannot replay the one-time response. After acknowledgement, clear codes before closing and return focus to the originating control.
 - Map safe errors per form: local `401 AUTHENTICATION_FAILED` does not clear authenticated app state; global `401 AUTHENTICATION_REQUIRED` does. A `409 TOTP_ENROLLMENT_EXPIRED` immediately blanks URI/ID/canvas and offers a fresh reauthenticated start. `422` attaches `fieldErrors` to named fields/summary. `429` uses server retry seconds with a maximum displayed one-hour countdown; other failures show trace ID plus explicit retry without resending automatically.
 - Every successful credential action renders “All other sessions were revoked; this session remains active,” then refreshes the session list. Do not claim this before a success response.
@@ -1826,10 +1838,12 @@ Run: `npm --prefix admin-web run test:unit -- src/views/settings src/components/
 
 Expected: PASS for exact security bodies/responses, local-only QR generation, password clearing, TOTP expiry/confirm, saved-offline acknowledgement and one-time code clearing, current/other-session revoke behavior, audit cursor/filter immutability, SEO/resume links, all seven redacted plan-07 operation statuses, safe 401/409/422/429 handling, and explicit retry states.
 
-- [ ] **Step 5: Commit complete settings**
+Verification (2026-07-18): exact Node 22.18 focused settings/API/router coverage passed 122/122; the complete admin unit gate passed 770/770 across 55 files. TypeScript checking, the Vite production build, full npm audit, and production-only npm audit all exited clean with zero vulnerabilities. Review-driven regressions prove late one-time responses cannot repopulate an unmounted component, pending security/current-revoke mutations block route and unload loss, stale QR work renders only offscreen and cannot overwrite a newer secret, recovery codes use a native modal plus acknowledgement and codes-only print treatment, the shared security limiter disables every security action, audit filters fail locally, session millisecond values remain renderable, and exact operations/status HTTP and JSON shapes fail closed. The isolated Java 17/Maven operations suite passed 10/10 with all four reactor modules successful; it verifies global admin authentication, `no-store`, stable explicit nulls, minimum-column allowlisted SQL, read-only `REPEATABLE_READ`, CGLIB proxying, and zero raw error/details leakage. No database was connected or modified by these gates.
+
+- [x] **Step 5: Commit complete settings**
 
 ```bash
-git add admin-web/src/router/index.ts admin-web/src/types/settings.ts admin-web/src/api/settingsApi.ts admin-web/src/views/settings admin-web/src/components/settings
+git add admin-web/src/router/index.ts admin-web/src/router/index.spec.ts admin-web/src/types/settings.ts admin-web/src/api/settingsApi.ts admin-web/src/api/settingsApi.spec.ts admin-web/src/views/settings admin-web/src/components/settings backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/system/operations backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/system/operations docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md docs/superpowers/plans/2026-07-14-portfolio-07-deployment-recovery.md
 git commit -m "feat(admin): complete security and operations settings"
 ```
 
