@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "packages": {
+    "crcmod==1.7": {
+      "artifactSha256": "dc7051a0db5f2bd48665a990d3ec1cc305a466a77358ca4492826f41f283601e",
+      "files": [
+        {
+          "file": "license-texts/crcmod-1.7-LICENSE.txt",
+          "sha256": "89480768826f408daea1f3caff0509c2cc9606e10f6bb0ccfd12a3d604842c35",
+          "source": "https://files.pythonhosted.org/packages/6b/b0/e595ce2a2527e169c3bcd6c33d2473c1918e0b7f6826a043ca1245dd4e5b/crcmod-1.7.tar.gz#crcmod-1.7/LICENSE"
+        }
+      ]
+    },
+    "tencentcloud-sdk-python-common==3.1.135": {
+      "artifactSha256": "9236d898fcad96f11579f4e5b3f2e85ad8ae933f7ff32675323701d12de49fe5",
+      "files": [
+        {
+          "file": "license-texts/apache-2.0-gosu-1.19-LICENSE.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        },
+        {
+          "file": "license-texts/tencentcloud-sdk-python-NOTICE.txt",
+          "sha256": "d591787d3268744d65d71e2800b60ba251123d6590ac875535d76eeda88278df",
+          "source": "https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-python/b7ef785ee6e9818c890b087c5ecfc0db6bd77b4a/LICENSE"
+        }
+      ]
+    },
+    "tencentcloud-sdk-python-sts==3.0.1459": {
+      "artifactSha256": "296aa9b1607e013c3cca7c4a829b77d2a105a55bc8ccaf5e705dfed97acd6ec5",
+      "files": [
+        {
+          "file": "license-texts/apache-2.0-gosu-1.19-LICENSE.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        },
+        {
+          "file": "license-texts/tencentcloud-sdk-python-NOTICE.txt",
+          "sha256": "d591787d3268744d65d71e2800b60ba251123d6590ac875535d76eeda88278df",
+          "source": "https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-python/b7ef785ee6e9818c890b087c5ecfc0db6bd77b4a/LICENSE"
+        }
+      ]
+    }
+  }
+}

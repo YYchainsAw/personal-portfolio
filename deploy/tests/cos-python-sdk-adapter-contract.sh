@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+readonly REPOSITORY_ROOT
 readonly INSTALLER="$REPOSITORY_ROOT/deploy/scripts/install-cos-staging-lifecycle.sh"
 readonly VERIFIER="$REPOSITORY_ROOT/deploy/scripts/verify-cos-staging-lifecycle.sh"
 readonly CONTRACT_REGION='ap-contract'
@@ -10,7 +11,8 @@ readonly CONTRACT_SECRET_ID='sdk-contract-secret-id-do-not-print'
 readonly CONTRACT_SECRET_KEY='sdk-contract-secret-key-do-not-print'
 readonly CONTRACT_SECURITY_TOKEN='sdk-contract-security-token-do-not-print'
 
-readonly WORK_DIRECTORY="$(mktemp -d)"
+WORK_DIRECTORY="$(mktemp -d)"
+readonly WORK_DIRECTORY
 readonly FAKE_SDK_ROOT="$WORK_DIRECTORY/fake-sdk"
 FAKE_SDK_PYTHONPATH=''
 trap 'rm -rf -- "$WORK_DIRECTORY"' EXIT

@@ -8,6 +8,7 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=/etc/portfolio/backup.env
+UnsetEnvironment=BACKUP_AGE_IDENTITY AGE_SECRET_KEY AGE_SECRET_KEY_FILE COS_SECRET_ID COS_SECRET_KEY SMTP_PASSWORD
 ExecStart=/usr/bin/bash /usr/local/libexec/portfolio/backup-dispatch.sh prune
 TimeoutStartSec=2h
 UMask=0077

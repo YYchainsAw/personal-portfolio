@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "nodeComponents": [
+    "frontend",
+    "admin-web"
+  ],
+  "packages": {
+    "@vue/devtools-api@6.6.4": {
+      "components": [
+        "admin-web"
+      ],
+      "license": "MIT",
+      "file": "license-texts/vue-devtools-api-6.6.4-LICENSE.txt",
+      "sha256": "050bbca6960784db52ff387271bf2ecc5cbed7cf8581b415d528a6ecb6585015",
+      "source": "https://raw.githubusercontent.com/vuejs/vue-devtools/df6ab6bb7791a7a525a97990de73b3ea5e9a1941/LICENSE"
+    },
+    "agent-base@6.0.2": {
+      "components": [
+        "admin-web"
+      ],
+      "license": "MIT",
+      "file": "license-texts/nathan-rajlich-mit-LICENSE.txt",
+      "sha256": "71368fd0f5b4129191e9afcd1e1ef2dc89a9090d3e4d80bbab92dafd032b3bef",
+      "source": "https://raw.githubusercontent.com/TooTallNate/node-agent-base/c4b8ea2e1a11bae023bb09b708050a50418204e9/README.md#license"
+    },
+    "https-proxy-agent@5.0.1": {
+      "components": [
+        "admin-web"
+      ],
+      "license": "MIT",
+      "file": "license-texts/nathan-rajlich-mit-LICENSE.txt",
+      "sha256": "71368fd0f5b4129191e9afcd1e1ef2dc89a9090d3e4d80bbab92dafd032b3bef",
+      "source": "https://raw.githubusercontent.com/TooTallNate/node-https-proxy-agent/d0d80cc0482f20495aa8595f802e1a9f3b1b3409/README.md#license"
+    }
+  },
+  "mavenPackages": {
+    "com.qcloud:cos_api:5.6.227": {
+      "declaredLicense": "cos-java-sdk",
+      "license": "MIT",
+      "file": "license-texts/tencent-cos-java-sdk-v5-5.6.227-LICENSE.txt",
+      "sha256": "33992d01958ef4f7cc2fc12fa06c5c74d8950f43de9dd68aa69d4137c4c96ae8",
+      "source": "https://raw.githubusercontent.com/tencentyun/cos-java-sdk-v5/e3e356d9ba57dad8504d0eaf12c105572faeae70/LICENSE"
+    },
+    "org.bouncycastle:bcprov-jdk18on:1.84": {
+      "declaredLicense": "Bouncy Castle Licence",
+      "license": "MIT",
+      "file": "license-texts/bouncycastle-1.84-LICENSE.html",
+      "sha256": "edbbb10380b1271998b867a2e36b1cbee226e03d438726e1a91f80c5dde11849",
+      "source": "https://raw.githubusercontent.com/bcgit/bc-java/d716d7716a452bad283323aefd88ff21eba8deef/LICENSE.html"
+    },
+    "xmlpull:xmlpull:1.1.3.1": {
+      "declaredLicense": "Public Domain",
+      "license": "LicenseRef-Public-Domain",
+      "file": "license-texts/xmlpull-1.1.3.1-LICENSE.txt",
+      "sha256": "4eeafa29d1d9a0cdbdad0f5178cd553527329b57b5808ffe912cb9c698343612",
+      "source": "https://raw.githubusercontent.com/xmlpull-org/xmlpull-api-v1/21127efba74f6f147e867e2bcf3e8b2a9624cc2c/LICENSE.txt"
+    }
+  }
+}

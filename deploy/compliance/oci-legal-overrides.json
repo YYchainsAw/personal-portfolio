@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "postgres": {
+    "scripts": [
+      {
+        "path": "/usr/local/bin/docker-entrypoint.sh",
+        "sha256": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5",
+        "source": "https://raw.githubusercontent.com/docker-library/postgres/62a714f93cc32220de46fd12235c9d509e3b1ad6/docker-entrypoint.sh",
+        "license": "MIT",
+        "licenseFile": "license-texts/docker-library-postgres-LICENSE.txt",
+        "licenseSha256": "87ffd2c45e3f90cfa3407b5c40ef8333e87c3e875e4895f8b64df758198deafc",
+        "licenseSource": "https://raw.githubusercontent.com/docker-library/postgres/62a714f93cc32220de46fd12235c9d509e3b1ad6/LICENSE"
+      },
+      {
+        "path": "/usr/local/bin/docker-ensure-initdb.sh",
+        "sha256": "922ade6b23a312e65023349b36e873752b15ff38ae4c0ae461d74451e104f312",
+        "source": "https://raw.githubusercontent.com/docker-library/postgres/62a714f93cc32220de46fd12235c9d509e3b1ad6/docker-ensure-initdb.sh",
+        "license": "MIT",
+        "licenseFile": "license-texts/docker-library-postgres-LICENSE.txt",
+        "licenseSha256": "87ffd2c45e3f90cfa3407b5c40ef8333e87c3e875e4895f8b64df758198deafc",
+        "licenseSource": "https://raw.githubusercontent.com/docker-library/postgres/62a714f93cc32220de46fd12235c9d509e3b1ad6/LICENSE"
+      }
+    ],
+    "packages": {
+      "pkg:golang/github.com/moby/sys/user@v0.1.0": {
+        "artifactPath": "/usr/local/bin/gosu",
+        "artifactSha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0",
+        "license": "Apache-2.0",
+        "licenseFile": "license-texts/apache-2.0-gosu-1.19-LICENSE.txt",
+        "licenseSha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "source": "https://raw.githubusercontent.com/moby/sys/user/v0.1.0/LICENSE"
+      },
+      "pkg:golang/github.com/tianon/gosu@v1.19.0": {
+        "artifactPath": "/usr/local/bin/gosu",
+        "artifactSha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0",
+        "license": "Apache-2.0",
+        "licenseFile": "license-texts/apache-2.0-gosu-1.19-LICENSE.txt",
+        "licenseSha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "source": "https://raw.githubusercontent.com/tianon/gosu/6456aaa0f3c854d199d0f037f068eb97515b7513/LICENSE"
+      },
+      "pkg:golang/golang.org/x/sys@v0.1.0": {
+        "artifactPath": "/usr/local/bin/gosu",
+        "artifactSha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0",
+        "license": "BSD-3-Clause",
+        "licenseFile": "license-texts/golang-sys-v0.1.0-LICENSE.txt",
+        "licenseSha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+        "source": "https://raw.githubusercontent.com/golang/sys/95e765b1cc43ac521bd4fd501e00774e34401449/LICENSE"
+      },
+      "pkg:golang/stdlib@1.24.6": {
+        "artifactPath": "/usr/local/bin/gosu",
+        "artifactSha256": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0",
+        "license": "BSD-3-Clause",
+        "licenseFile": "license-texts/golang-go1.24.6-LICENSE.txt",
+        "licenseSha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+        "source": "https://raw.githubusercontent.com/golang/go/7f36edc26d4e3becb6d9c9008ff00f260bb19055/LICENSE"
+      }
+    }
+  }
+}

@@ -25,6 +25,8 @@
     <java.version>17</java.version>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Release builds override this with SOURCE_DATE_EPOCH; local verify remains deterministic. -->
+    <project.build.outputTimestamp>2000-01-01T00:00:00Z</project.build.outputTimestamp>
     <mybatis-plus.version>3.5.7</mybatis-plus.version>
     <springdoc.version>2.8.5</springdoc.version>
     <tencent-cos.version>5.6.227</tencent-cos.version>
@@ -32,6 +34,7 @@
     <bouncycastle.version>1.84</bouncycastle.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <maven-enforcer.version>3.5.0</maven-enforcer.version>
+    <cyclonedx-maven.version>2.9.2</cyclonedx-maven.version>
   </properties>
 
   <dependencyManagement>
@@ -96,6 +99,35 @@
                   <searchTransitive>true</searchTransitive>
                 </bannedDependencies>
               </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.cyclonedx</groupId>
+        <artifactId>cyclonedx-maven-plugin</artifactId>
+        <version>${cyclonedx-maven.version}</version>
+        <inherited>false</inherited>
+        <executions>
+          <execution>
+            <id>aggregate-production-sbom</id>
+            <phase>package</phase>
+            <goals><goal>makeAggregateBom</goal></goals>
+            <configuration>
+              <projectType>application</projectType>
+              <schemaVersion>1.6</schemaVersion>
+              <includeBomSerialNumber>false</includeBomSerialNumber>
+              <includeCompileScope>true</includeCompileScope>
+              <includeProvidedScope>false</includeProvidedScope>
+              <includeRuntimeScope>true</includeRuntimeScope>
+              <includeSystemScope>false</includeSystemScope>
+              <includeTestScope>false</includeTestScope>
+              <includeLicenseText>true</includeLicenseText>
+              <outputTimestamp>${project.build.outputTimestamp}</outputTimestamp>
+              <outputReactorProjects>false</outputReactorProjects>
+              <outputFormat>json</outputFormat>
+              <outputName>portfolio-backend.cdx</outputName>
+              <skipAttach>true</skipAttach>
             </configuration>
           </execution>
         </executions>

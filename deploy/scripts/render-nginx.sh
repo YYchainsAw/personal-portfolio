@@ -20,10 +20,14 @@ cleanup() {
   fi
 }
 on_signal() {
-  exit 130
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
 }
 trap cleanup EXIT
-trap on_signal HUP INT TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 require_value() {
   local name="$1"
@@ -80,6 +84,7 @@ replace_template() {
   local api="$6"
   local include_directory="$7"
   local icp="$8"
+  local nginx_local_port="$9"
 
   awk \
     -v hosts="$hosts" \
@@ -88,6 +93,7 @@ replace_template() {
     -v api="$api" \
     -v include_directory="$include_directory" \
     -v icp="$icp" \
+    -v nginx_local_port="$nginx_local_port" \
     '{
       gsub(/@@PUBLIC_HOSTS@@/, hosts)
       gsub(/@@TLS_CERTIFICATE@@/, certificate)
@@ -95,6 +101,7 @@ replace_template() {
       gsub(/@@API_LOOPBACK@@/, api)
       gsub(/@@NGINX_INCLUDE_DIRECTORY@@/, include_directory)
       gsub(/@@ICP_NUMBER@@/, icp)
+      gsub(/@@NGINX_LOCAL_PORT@@/, nginx_local_port)
       print
     }' "$input" >"$output"
 }
@@ -111,11 +118,21 @@ main() {
   require_value TLS_CERTIFICATE
   require_value TLS_CERTIFICATE_KEY
   require_value NGINX_CONF
+  require_value NGINX_LOCAL_PORT
+  # NGINX_LOCAL_PORT is a required deployment environment value.
+  # shellcheck disable=SC2153
+  local nginx_local_port_value="$NGINX_LOCAL_PORT"
   [[ -f "$TEMPLATE" ]] || fail 'site template is missing'
 
   [[ "$API_LOOPBACK" =~ ^127\.0\.0\.1:([1-9][0-9]{0,4})$ ]] ||
     fail 'API_LOOPBACK must use IPv4 loopback and an explicit port'
   ((10#${BASH_REMATCH[1]} <= 65535)) || fail 'API_LOOPBACK port is invalid'
+  [[ "$nginx_local_port_value" =~ ^[1-9][0-9]{0,4}$ ]] ||
+    fail 'NGINX_LOCAL_PORT must be one canonical integer port'
+  ((10#$nginx_local_port_value <= 65535)) || fail 'NGINX_LOCAL_PORT is invalid'
+  case "$nginx_local_port_value" in
+    80|443|18080) fail 'NGINX_LOCAL_PORT conflicts with a production listener' ;;
+  esac
   validate_origin "$MEDIA_ORIGIN" MEDIA_ORIGIN
   validate_path_value "$TLS_CERTIFICATE" TLS_CERTIFICATE
   validate_path_value "$TLS_CERTIFICATE_KEY" TLS_CERTIFICATE_KEY
@@ -167,7 +184,8 @@ main() {
     "$TLS_CERTIFICATE_KEY" \
     "$API_LOOPBACK" \
     "$include_directory" \
-    "$icp"
+    "$icp" \
+    "$nginx_local_port_value"
 
   cat >"$WORK_DIRECTORY/portfolio-proxy.conf" <<'NGINX'
 proxy_http_version 1.1;

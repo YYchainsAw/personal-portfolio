@@ -19,14 +19,21 @@ require_root_owned_file() {
   (( (8#$mode & 8#022) == 0 )) || fail "$label is group- or world-writable"
 }
 
-[[ $# -eq 1 && ("$1" == backup || "$1" == prune) ]] ||
-  fail 'usage: backup-dispatch.sh backup|prune'
+[[ $# -eq 1 && ("$1" == backup || "$1" == prune || "$1" == prune-dry-run) ]] ||
+  fail 'usage: backup-dispatch.sh backup|prune|prune-dry-run'
 mode="$1"
 
 portfolio_root="${PORTFOLIO_ROOT:-/opt/portfolio}"
 [[ "$portfolio_root" == /* && "$portfolio_root" != / && ! -L "$portfolio_root" &&
    -d "$portfolio_root" ]] || fail 'PORTFOLIO_ROOT is invalid'
 portfolio_root="$(realpath -e -- "$portfolio_root")"
+
+# release.env and the active release pointers are intentionally switched as one
+# durable transaction.  Backup selection must never observe an intermediate
+# phase; only a lock-holding deployment controller is allowed to recover it.
+switch_journal="$portfolio_root/.portfolio-switch-journal.json"
+[[ ! -e "$switch_journal" && ! -L "$switch_journal" ]] ||
+  fail 'pending release switch journal forbids backup dispatch'
 
 marker="$portfolio_root/current-release"
 require_root_owned_file "$marker" 'current-release marker'
@@ -58,6 +65,10 @@ case "$mode" in
   prune)
     script="$release_root/ops/deploy/backup/prune-remote.sh"
     arguments=()
+    ;;
+  prune-dry-run)
+    script="$release_root/ops/deploy/backup/prune-remote.sh"
+    arguments=(--dry-run)
     ;;
 esac
 require_root_owned_file "$script" 'current release backup entry point'

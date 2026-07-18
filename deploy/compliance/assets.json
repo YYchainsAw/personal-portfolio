@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 2,
+  "licenseDefinitions": {
+    "LicenseRef-Pexels": "The Pexels content license, including its permitted uses and restrictions, applies to the identified Pexels photos.",
+    "LicenseRef-Portfolio-Content-All-Rights-Reserved": "Portfolio content is repository-owner controlled and is not granted under an open-source license.",
+    "LicenseRef-Unsplash": "The Unsplash License, including its permitted uses and restrictions, applies to the identified Unsplash visuals."
+  },
+  "licenseNotices": {
+    "LicenseRef-Pexels": {
+      "url": "https://www.pexels.com/license/",
+      "reviewedAt": "2026-07-19",
+      "summary": "Pexels permits free use and modification without required attribution, including website use. Its restrictions include unaltered resale, stock-platform redistribution, endorsement implications, certain harmful depictions, and trademark use."
+    },
+    "LicenseRef-Unsplash": {
+      "url": "https://unsplash.com/license",
+      "reviewedAt": "2026-07-19",
+      "summary": "Unsplash permits free commercial and non-commercial download, copying, modification, distribution, performance, and use without required attribution. It prohibits unmodified resale and compiling visuals to replicate a similar or competing service."
+    }
+  },
+  "assets": [
+    {
+      "path": "frontend/public/favicon.svg",
+      "bytes": 392,
+      "sha256": "7aa808cd3f5f07a8704024df0588ebdee9b510fe71483996c1e7a4be26ac354f",
+      "origin": "original geometric Y portfolio identity mark created for Yi Jiaxuan",
+      "license": "LicenseRef-Portfolio-Content-All-Rights-Reserved"
+    },
+    {
+      "path": "frontend/public/images/development-log.jpg",
+      "bytes": 334566,
+      "sha256": "4d35953c554a67fb9270ffc662ae1ef1f3f922df106bce3b99734504da91a748",
+      "origin": "Pexels photo by Daniil Komov",
+      "license": "LicenseRef-Pexels",
+      "credit": "Daniil Komov",
+      "sourceUrl": "https://www.pexels.com/photo/modern-workspace-with-laptop-and-code-display-34804001/"
+    },
+    {
+      "path": "frontend/public/images/game-dev-hero.jpg",
+      "bytes": 650629,
+      "sha256": "d50628c526414a5c3ed007178004b5deae9eaf6260b7f32680236103165c2441",
+      "origin": "Unsplash visual by Zulian Firmansyah",
+      "license": "LicenseRef-Unsplash",
+      "credit": "Zulian Firmansyah",
+      "sourceUrl": "https://unsplash.com/photos/a-minimalist-room-with-a-surreal-background-zFLn5fDZYw0"
+    },
+    {
+      "path": "frontend/public/images/gameplay-prototype.jpg",
+      "bytes": 634273,
+      "sha256": "5c352e9fa55bef9ebe0bb503c2d9e62b4acd214210567e98ebfcf713d6ec9f6e",
+      "origin": "Pexels photo by Tima Miroshnichenko",
+      "license": "LicenseRef-Pexels",
+      "credit": "Tima Miroshnichenko",
+      "sourceUrl": "https://www.pexels.com/photo/a-person-reaching-for-a-game-controller-7047667/"
+    },
+    {
+      "path": "frontend/public/images/ue-environment-study.jpg",
+      "bytes": 323788,
+      "sha256": "d510ff643f6f7f76b3d3eff6ae46000052b92ef4b0b3654773b28107ef907f03",
+      "origin": "Unsplash visual by BROTHERHOOD STUDIO",
+      "license": "LicenseRef-Unsplash",
+      "credit": "BROTHERHOOD STUDIO",
+      "sourceUrl": "https://unsplash.com/photos/a-small-island-with-palm-trees-in-calm-water-VU7z8SQsBTo"
+    }
+  ]
+}

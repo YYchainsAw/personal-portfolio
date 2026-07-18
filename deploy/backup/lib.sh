@@ -53,25 +53,86 @@ backup_resolve_command() {
 backup_require_private_file() {
   local path="$1"
   local label="$2"
-  [[ "$path" == /* && ! -L "$path" && -f "$path" ]] ||
+  [[ "$path" == /* && ! -L "$path" && -f "$path" &&
+     "$(realpath -e -- "$path")" == "$path" ]] ||
     backup_fail "$label must be an absolute regular file"
-  local mode owner
+  local mode owner group links
   mode="$(stat -Lc '%a' -- "$path")" || backup_fail "$label mode cannot be read"
   owner="$(stat -Lc '%u' -- "$path")" || backup_fail "$label owner cannot be read"
+  group="$(stat -Lc '%g' -- "$path")" || backup_fail "$label group cannot be read"
+  links="$(stat -Lc '%h' -- "$path")" || backup_fail "$label link count cannot be read"
   (( (8#$mode & 8#077) == 0 )) || backup_fail "$label must not be accessible by group or other"
-  [[ "$owner" == 0 ]] || backup_fail "$label must be owned by root"
+  [[ "$owner" == 0 && "$group" == 0 && "$links" == 1 ]] ||
+    backup_fail "$label must be a singly linked root-owned file"
 }
 
 backup_require_private_directory() {
   local path="$1"
   local label="$2"
-  [[ "$path" == /* && ! -L "$path" && -d "$path" ]] ||
+  [[ "$path" == /* && ! -L "$path" && -d "$path" &&
+     "$(realpath -e -- "$path")" == "$path" ]] ||
     backup_fail "$label must be an absolute regular directory"
-  local mode owner
-  mode="$(stat -Lc '%a' -- "$path")" || backup_fail "$label mode cannot be read"
-  owner="$(stat -Lc '%u' -- "$path")" || backup_fail "$label owner cannot be read"
-  (( (8#$mode & 8#077) == 0 )) || backup_fail "$label must not be accessible by group or other"
-  [[ "$owner" == 0 ]] || backup_fail "$label must be owned by root"
+  [[ "$(stat -Lc '%u:%g:%a' -- "$path")" == 0:0:700 ]] ||
+    backup_fail "$label must be root:root mode 0700"
+}
+
+backup_ensure_private_directory() {
+  local path="$1"
+  local label="$2"
+  [[ "$path" == /* && "$path" != / && ! -L "$path" &&
+     "$(realpath -m -- "$path")" == "$path" ]] ||
+    backup_fail "$label path is unsafe"
+  if [[ -e "$path" || -L "$path" ]]; then
+    backup_require_private_directory "$path" "$label"
+    return
+  fi
+  local parent parent_mode
+  parent="$(dirname -- "$path")"
+  [[ -d "$parent" && ! -L "$parent" &&
+     "$(realpath -e -- "$parent")" == "$parent" &&
+     "$(stat -Lc '%u:%g' -- "$parent")" == 0:0 ]] ||
+    backup_fail "$label parent is unsafe"
+  parent_mode="$(stat -Lc '%a' -- "$parent")" ||
+    backup_fail "$label parent mode cannot be read"
+  (( (8#$parent_mode & 8#022) == 0 )) ||
+    backup_fail "$label parent must not be group/world writable"
+  mkdir -m 0700 -- "$path"
+  backup_require_private_directory "$path" "$label"
+}
+
+backup_acquire_operation_lock() {
+  local lock_path="${BACKUP_OPERATION_LOCK:-/var/backups/portfolio/operation.lock}"
+  [[ "$lock_path" == /* && "$lock_path" != / && ! -L "$lock_path" &&
+     "$(realpath -m -- "$lock_path")" == "$lock_path" ]] ||
+    backup_fail 'shared backup/prune operation lock path is unsafe'
+  local parent
+  parent="$(dirname -- "$lock_path")"
+  backup_ensure_private_directory "$parent" 'shared backup/prune operation lock directory'
+  if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+    install -o root -g root -m 0600 -- /dev/null "$lock_path"
+  fi
+  [[ ! -L "$lock_path" && -f "$lock_path" ]] ||
+    backup_fail 'shared backup/prune operation lock is not a regular file'
+  local owner group mode links lock_identity descriptor_identity
+  owner="$(stat -Lc '%u' -- "$lock_path")"
+  group="$(stat -Lc '%g' -- "$lock_path")"
+  mode="$(stat -Lc '%a' -- "$lock_path")"
+  links="$(stat -Lc '%h' -- "$lock_path")"
+  [[ "$owner" == 0 && "$group" == 0 && "$mode" == 600 && "$links" == 1 ]] ||
+    backup_fail 'shared backup/prune operation lock metadata is unsafe'
+  exec {BACKUP_OPERATION_LOCK_FD}<>"$lock_path"
+  lock_identity="$(stat -Lc '%d:%i' -- "$lock_path")"
+  descriptor_identity="$(stat -Lc '%d:%i' -- "/proc/self/fd/$BACKUP_OPERATION_LOCK_FD")"
+  [[ "$lock_identity" == "$descriptor_identity" ]] ||
+    backup_fail 'shared backup/prune operation lock descriptor identity changed'
+  flock -n "$BACKUP_OPERATION_LOCK_FD" ||
+    backup_fail 'another backup or prune operation is already active'
+  lock_identity="$(stat -Lc '%d:%i' -- "$lock_path")"
+  descriptor_identity="$(stat -Lc '%d:%i' -- "/proc/self/fd/$BACKUP_OPERATION_LOCK_FD")"
+  [[ "$lock_identity" == "$descriptor_identity" ]] ||
+    backup_fail 'shared backup/prune operation lock path changed while acquiring it'
+  BACKUP_OPERATION_LOCK_HELD=true
+  export BACKUP_OPERATION_LOCK_HELD
 }
 
 backup_is_sha256() {
@@ -122,7 +183,7 @@ backup_remote_path() {
   local namespace="$1"
   local relative="$2"
   case "$namespace" in
-    sets|blobs|drill-reports|gc-reports) ;;
+    sets|uploading|blobs|drill-reports|gc-reports) ;;
     *) backup_fail 'remote namespace is outside the reviewed allowlist' ;;
   esac
   backup_safe_relative_path "$relative" || backup_fail 'remote relative path is unsafe'
@@ -132,7 +193,7 @@ backup_remote_path() {
 backup_remote_namespace_root() {
   local namespace="$1"
   case "$namespace" in
-    sets|blobs|drill-reports|gc-reports) ;;
+    sets|uploading|blobs|drill-reports|gc-reports) ;;
     *) backup_fail 'remote namespace is outside the reviewed allowlist' ;;
   esac
   printf '%s/%s/%s\n' "$BACKUP_REMOTE" "$BACKUP_PREFIX" "$namespace"
@@ -145,6 +206,24 @@ backup_set_remote_path() {
   [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
     backup_fail 'set artifact filename is invalid'
   backup_remote_path sets "$set_id/$filename"
+}
+
+backup_upload_remote_path() {
+  local set_id="$1"
+  local filename="$2"
+  backup_is_set_id "$set_id" || backup_fail 'upload attempt set ID is invalid'
+  [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+    backup_fail 'upload attempt artifact filename is invalid'
+  backup_remote_path uploading "$set_id/$filename"
+}
+
+backup_set_object_remote_path() {
+  local namespace="${BACKUP_SET_OBJECT_NAMESPACE:-uploading}"
+  case "$namespace" in
+    uploading) backup_upload_remote_path "$1" "$2" ;;
+    sets) backup_set_remote_path "$1" "$2" ;;
+    *) backup_fail 'backup set object namespace is not allowlisted' ;;
+  esac
 }
 
 backup_source_remote_path() {
@@ -173,7 +252,7 @@ backup_validate_topology() {
   local mode="$1"
   local required=(
     BACKUP_REMOTE BACKUP_PREFIX BACKUP_DESTINATION_ACCOUNT_ID
-    BACKUP_DESTINATION_BUCKET BACKUP_UPLOAD_RCLONE_CONFIG
+    BACKUP_DESTINATION_BUCKET BACKUP_DESTINATION_REGION BACKUP_UPLOAD_RCLONE_CONFIG
     BACKUP_VERIFY_RCLONE_CONFIG BACKUP_PRUNE_RCLONE_CONFIG
     MEDIA_SOURCE_RCLONE_REMOTE MEDIA_SOURCE_RCLONE_CONFIG
     MEDIA_SOURCE_ACCOUNT_ID MEDIA_SOURCE_BUCKET MEDIA_SOURCE_REGION
@@ -192,6 +271,8 @@ backup_validate_topology() {
     backup_fail 'media source account identity is invalid'
   [[ "$BACKUP_DESTINATION_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,126}[a-z0-9]$ ]] ||
     backup_fail 'backup destination bucket is invalid'
+  [[ "$BACKUP_DESTINATION_REGION" =~ ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ ]] ||
+    backup_fail 'backup destination region is invalid'
   [[ "$MEDIA_SOURCE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,126}[a-z0-9]$ ]] ||
     backup_fail 'media source bucket is invalid'
   [[ "$MEDIA_SOURCE_REGION" =~ ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ ]] ||

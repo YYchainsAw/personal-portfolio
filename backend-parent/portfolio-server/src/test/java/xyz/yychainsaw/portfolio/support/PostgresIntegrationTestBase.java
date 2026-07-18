@@ -12,7 +12,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 @ActiveProfiles("test")
 public abstract class PostgresIntegrationTestBase {
     protected static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:17-bookworm")
+            new PostgreSQLContainer<>(PostgresTestImage.NAME)
                     .withDatabaseName("portfolio_test")
                     .withUsername("test_owner")
                     .withPassword("test_owner_password")

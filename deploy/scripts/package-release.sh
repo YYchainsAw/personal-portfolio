@@ -139,6 +139,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -303,5 +304,15 @@ if [[ "$install_candidate" == true ]]; then
   mv -- "$candidate_envelope" "$envelope_path"
   validate_envelope "$archive_path" "$envelope_path"
 fi
+
+bootstrap_packager="$release_dir/ops/deploy/scripts/package-bootstrap-kit.sh"
+[[ -f "$bootstrap_packager" && ! -L "$bootstrap_packager" ]] ||
+  die "release-local bootstrap packager is missing or linked"
+note "creating or verifying commit-bound bootstrap kit"
+bootstrap_archive="$(bash "$bootstrap_packager" "$release_dir" "$bundle_root")" ||
+  die "bootstrap kit packaging failed"
+[[ -f "$bootstrap_archive" && ! -L "$bootstrap_archive" ]] ||
+  die "bootstrap packager did not return a regular archive"
+note "bootstrap kit: $bootstrap_archive"
 
 printf '%s\n' "$archive_path"

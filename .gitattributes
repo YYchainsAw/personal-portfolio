@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.env text eol=lf
+*.env.example text eol=lf
+*.conf text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.properties text eol=lf
+Dockerfile text eol=lf
+# Preserve third-party license notices byte-for-byte. Some upstream notices
+# contain significant historical trailing spaces or blank final lines.
+deploy/compliance/license-texts/** -text whitespace=-trailing-space,-blank-at-eof

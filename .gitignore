@@ -15,6 +15,8 @@ Thumbs.db
 **/playwright-report/
 **/test-results/
 **/blob-report/
+**/__pycache__/
+*.py[cod]
 *.tsbuildinfo
 
 # Runtime logs and local secrets
@@ -23,15 +25,42 @@ Thumbs.db
 .env.*
 !.env.example
 !.env.*.example
+!frontend/.env.production
+.envrc
+**/.envrc
+.npmrc
+**/.npmrc
+.netrc
+**/.netrc
+**/backup.env
+**/postgres.env
+**/portfolio.env
+**/release.env
+**/nginx.env
+**/baota.env
+**/application-local.yml
+**/application-local.yaml
+**/rclone*.conf
+**/*rclone*.conf
+**/msmtp*.conf
+**/*age-identity*
+**/identity.age
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
 
 # Local deployment state
 /backups/
+/artifacts/
 
-#Isolated implementation worktrees and generated review bundles
+# Isolated implementation worktrees and generated review bundles
 /.worktrees/
 /frontend/portfolio-dist.zip
 /frontend/artifacts/
 
-#Recovery CLI output (database dumps remain outside Git)
+# Recovery CLI output (database dumps remain outside Git)
 /runtime/recovery/
 /runtime/import/

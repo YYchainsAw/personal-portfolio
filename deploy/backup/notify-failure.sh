@@ -8,7 +8,18 @@ SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIRECTORY/lib.sh"
 
 payload="$(mktemp)"
-trap 'rm -f -- "$payload"' EXIT HUP INT TERM
+cleanup() {
+  rm -f -- "$payload"
+}
+on_signal() {
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 cat >"$payload"
 
 jq -e '

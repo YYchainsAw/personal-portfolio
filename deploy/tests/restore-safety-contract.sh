@@ -15,6 +15,8 @@ readonly MEDIA_VERIFY="$RESTORE_DIRECTORY/verify-restored-media.sh"
 readonly REMINDER_SERVICE="$REPOSITORY_ROOT/deploy/systemd/portfolio-restore-reminder.service"
 readonly REMINDER_TIMER="$REPOSITORY_ROOT/deploy/systemd/portfolio-restore-reminder.timer"
 readonly REMINDER_INSTALLER="$RESTORE_DIRECTORY/install-reminder.sh"
+readonly IMAGE_LOCK_FILE="$REPOSITORY_ROOT/deploy/image-lock.env"
+readonly IMAGE_LOCK_LIB="$REPOSITORY_ROOT/deploy/scripts/image-lock-lib.sh"
 readonly DRILL_ID='44444444-4444-4444-8444-444444444444'
 readonly FAILURE_DRILL_ID='66666666-6666-4666-8666-666666666666'
 readonly REPORT_FAILURE_DRILL_ID='88888888-8888-4888-8888-888888888888'
@@ -107,10 +109,18 @@ for command_name in awk base64 cmp date docker find findmnt jq nginx openssl pyt
 done
 for required in "$DRILL" "$RESTORE_COMPOSE_YAML" "$CLOSURE_SQL" "$MEDIA_VERIFY" \
   "$REMINDER_SERVICE" "$REMINDER_TIMER" "$RESTORE_DIRECTORY/README.md" \
-  "$REMINDER_INSTALLER" \
+  "$REMINDER_INSTALLER" "$IMAGE_LOCK_FILE" "$IMAGE_LOCK_LIB" \
   "$RESTORE_DIRECTORY"/adapters/*.sh; do
   [[ -f "$required" ]] || fail "required restore artifact is missing: $required"
 done
+# shellcheck source=deploy/scripts/image-lock-lib.sh
+source "$IMAGE_LOCK_LIB"
+# Accessed through the image-lock helper's nameref.
+# shellcheck disable=SC2034
+declare -A restore_test_image_lock=()
+portfolio_load_image_lock "$IMAGE_LOCK_FILE" restore_test_image_lock ||
+  fail 'source-pinned image lock is invalid'
+readonly POSTGRES_TEST_IMAGE="${restore_test_image_lock[POSTGRES_IMAGE]}"
 
 # Static invariants make accidental adapter replacement and unsafe topology
 # changes fail even before the executable fixture starts.
@@ -124,11 +134,22 @@ assert_contains "$DRILL" 'DEFAULT_REPORT_COMMAND="$ADAPTER_DIRECTORY/report-tran
 assert_contains "$DRILL" 'DEFAULT_REVOKE_COMMAND="$ADAPTER_DIRECTORY/revoke-drill-credentials.sh"'
 assert_contains "$DRILL" 'DEFAULT_DRILL_CLEANUP_COMMAND="$ADAPTER_DIRECTORY/cleanup-drill.sh"'
 assert_contains "$DRILL" 'cannot replace the tracked production adapter'
+assert_contains "$RESTORE_DIRECTORY/adapters/verify-release-bundle.sh" 'source "$IMAGE_LOCK_LIB"'
+assert_contains "$RESTORE_DIRECTORY/adapters/verify-release-bundle.sh" 'portfolio_load_image_lock "$release/ops/deploy/image-lock.env" release_locked_images'
+assert_contains "$RESTORE_DIRECTORY/adapters/verify-release-bundle.sh" 'portfolio_require_release_image_lock "$release/release.json" release_locked_images'
+assert_not_contains "$RESTORE_DIRECTORY/adapters/verify-release-bundle.sh" 'source "$release/ops/deploy/scripts/image-lock-lib.sh"'
 assert_contains "$DRILL" 'SECRETS_DIRECTORY="/run/portfolio-restore-secrets/$DRILL_ID"'
 assert_contains "$DRILL" 'jdbc:postgresql://postgres:5432/$database'
 assert_contains "$DRILL" 'production, backup, and drill COS locations must all be distinct'
 assert_contains "$DRILL" 'dispose_identity'
 assert_contains "$DRILL" 'if ! "$AGE_COMMAND" --decrypt'
+assert_contains "$DRILL" 'trap on_exit EXIT'
+assert_contains "$DRILL" 'local status="$1"'
+assert_contains "$DRILL" 'trap - HUP INT TERM'
+assert_contains "$DRILL" 'ERROR_CATEGORY=INTERRUPTED'
+assert_contains "$DRILL" "trap 'on_signal 129' HUP"
+assert_contains "$DRILL" "trap 'on_signal 130' INT"
+assert_contains "$DRILL" "trap 'on_signal 143' TERM"
 assert_contains "$DRILL" 'compose --project-name "$RESTORE_COMPOSE_PROJECT_NAME"'
 assert_contains "$DRILL" 'up -d --wait --wait-timeout 180 restore-postgres'
 assert_contains "$DRILL" 'caller-supplied RCLONE_* environment is forbidden'
@@ -173,6 +194,20 @@ STATE="$WORK_DIRECTORY/state"
 FIXTURE="$WORK_DIRECTORY/fixture"
 mkdir -p "$BIN" "$REMOTE" "$STATE/docker-images" "$FIXTURE/local-source/originals" \
   "$FIXTURE/local-source/variants"
+COMPLIANCE_STUB="$WORK_DIRECTORY/verify-compliance-fixture.py"
+cat >"$COMPLIANCE_STUB" <<'PY'
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--tree", required=True)
+parser.add_argument("--release-json", required=True)
+options = parser.parse_args()
+if not Path(options.tree).is_dir() or not Path(options.release_json).is_file():
+    raise SystemExit(1)
+PY
+chmod 0600 "$COMPLIANCE_STUB"
 COMMAND_LOG="$WORK_DIRECTORY/commands.log"
 AGE_COUNT="$STATE/age-count"
 MALICIOUS_HOME="$WORK_DIRECTORY/malicious-home"
@@ -547,7 +582,15 @@ cos_original_sha="$(sha256sum "$FIXTURE/cos-original.bin" | awk '{print $1}')"
 cos_variant_sha="$(sha256sum "$FIXTURE/cos-history.png" | awk '{print $1}')"
 
 mkdir -p "$FIXTURE/release/admin/assets" "$FIXTURE/release/public-assets/assets" \
-  "$FIXTURE/release/public-assets/.vite" "$FIXTURE/release/ops" "$FIXTURE/release/images"
+  "$FIXTURE/release/public-assets/.vite" "$FIXTURE/release/ops/deploy" \
+  "$FIXTURE/release/ops/docs/operations" "$FIXTURE/release/images" \
+  "$FIXTURE/release/compliance/licenses/frontend" \
+  "$FIXTURE/release/compliance/licenses/admin-web" \
+  "$FIXTURE/release/compliance/licenses/backend" \
+  "$FIXTURE/release/compliance/licenses/cos-prune-runtime" \
+  "$FIXTURE/release/compliance/licenses/api-image" \
+  "$FIXTURE/release/compliance/licenses/postgres-image" \
+  "$FIXTURE/release/compliance/sbom"
 printf 'admin-release-asset' >"$FIXTURE/release/admin/assets/admin.js"
 printf 'admin-style-contract' >"$FIXTURE/release/admin/assets/admin.css"
 printf '<!doctype html><link rel="stylesheet" href="/admin/assets/admin.css"><script src="/admin/assets/admin.js"></script>' >"$FIXTURE/release/admin/index.html"
@@ -555,7 +598,59 @@ printf 'public-release-asset' >"$FIXTURE/release/public-assets/assets/public.js"
 printf 'public-style-contract' >"$FIXTURE/release/public-assets/assets/public.css"
 printf '%s' '{"src/main.ts":{"file":"assets/public.js","css":["assets/public.css"],"isEntry":true}}' \
   >"$FIXTURE/release/public-assets/.vite/manifest.json"
-printf 'tracked-ops\n' >"$FIXTURE/release/ops/README.txt"
+printf '<svg xmlns="http://www.w3.org/2000/svg"/>\n' >"$FIXTURE/release/public-assets/favicon.svg"
+printf 'fixture notices\n' >"$FIXTURE/release/compliance/THIRD_PARTY_NOTICES.txt"
+printf 'fixture assets\n' >"$FIXTURE/release/compliance/ASSET_PROVENANCE.md"
+printf 'fixture sums\n' >"$FIXTURE/release/compliance/SHA256SUMS"
+for fixture_json in \
+  licenses/frontend/manifest.json licenses/admin-web/manifest.json \
+  licenses/backend/manifest.json licenses/cos-prune-runtime/manifest.json \
+  licenses/api-image/manifest.json licenses/postgres-image/manifest.json \
+  sbom/api-image.cdx.json sbom/postgres-image.cdx.json; do
+  printf '{}\n' >"$FIXTURE/release/compliance/$fixture_json"
+done
+cp -a "$REPOSITORY_ROOT/deploy/restore" "$FIXTURE/release/ops/deploy/restore"
+cp -a "$REPOSITORY_ROOT/deploy/systemd" "$FIXTURE/release/ops/deploy/systemd"
+cp -a "$REPOSITORY_ROOT/deploy/tmpfiles.d" "$FIXTURE/release/ops/deploy/tmpfiles.d"
+mkdir -p "$FIXTURE/release/ops/deploy/scripts" "$FIXTURE/release/ops/deploy/backup"
+cp "$REPOSITORY_ROOT/deploy/docker-compose.prod.yml" \
+  "$FIXTURE/release/ops/deploy/docker-compose.prod.yml"
+cp "$REPOSITORY_ROOT/deploy/image-lock.env" \
+  "$FIXTURE/release/ops/deploy/image-lock.env"
+for backup_tool in \
+  backup-database.sh backup-dispatch.sh backup-media.sh backup-set.sh \
+  cos-prune-guard.py export-media.sql install-cos-prune-runtime.sh lib.sh \
+  notify-failure.sh postgres-client.sh \
+  prune-guard.example.sh prune-remote.sh record-maintenance.sql \
+  requirements-cos-prune.in requirements-cos-prune.txt \
+  validate-media-tar.py verify-artifact.sh
+do
+  cp "$REPOSITORY_ROOT/deploy/backup/$backup_tool" \
+    "$FIXTURE/release/ops/deploy/backup/$backup_tool"
+done
+for release_tool in \
+  deploy-release.sh image-lock-lib.sh install-backup-units.sh preflight.sh prune-releases.sh \
+  rollback-release.sh smoke.sh switch-journal.sh verify-cos-staging-lifecycle.sh \
+  verify-compliance-tree.py
+do
+  cp "$REPOSITORY_ROOT/deploy/scripts/$release_tool" \
+    "$FIXTURE/release/ops/deploy/scripts/$release_tool"
+done
+for operations_document in production-runbook.md backup-recovery.md release-evidence-template.md; do
+  cp "$REPOSITORY_ROOT/docs/operations/$operations_document" \
+    "$FIXTURE/release/ops/docs/operations/$operations_document"
+done
+find "$FIXTURE/release/ops" -type d -exec chmod 0700 {} +
+find "$FIXTURE/release/ops" -type f -exec chmod 0600 {} +
+find "$FIXTURE/release/ops" -type f -name '*.sh' -exec chmod 0700 {} +
+find "$FIXTURE/release/compliance" -type d -exec chmod 0700 {} +
+find "$FIXTURE/release/compliance" -type f -exec chmod 0600 {} +
+chmod 0600 \
+  "$FIXTURE/release/ops/deploy/image-lock.env" \
+  "$FIXTURE/release/ops/deploy/scripts/image-lock-lib.sh" \
+  "$FIXTURE/release/ops/deploy/scripts/switch-journal.sh"
+chmod 0700 \
+  "$FIXTURE/release/ops/deploy/backup/validate-media-tar.py"
 manifest_sha="$(sha256sum "$FIXTURE/release/public-assets/.vite/manifest.json" | awk '{print $1}')"
 git_commit='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 RELEASE_ID="${git_commit:0:12}-${manifest_sha:0:12}"
@@ -569,38 +664,43 @@ build_time="$(date -u --date="@$source_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
 admin_tree="$(canonical_tree_sha "$FIXTURE/release/admin")"
 public_tree="$(canonical_tree_sha "$FIXTURE/release/public-assets")"
 ops_tree="$(canonical_tree_sha "$FIXTURE/release/ops")"
+compliance_tree="$(canonical_tree_sha "$FIXTURE/release/compliance")"
 api_archive_sha="$(sha256sum "$FIXTURE/release/images/portfolio-api.oci.tar.zst" | awk '{print $1}')"
 postgres_archive_sha="$(sha256sum "$FIXTURE/release/images/postgres-17.oci.tar.zst" | awk '{print $1}')"
 jq -n -S \
   --arg releaseId "$RELEASE_ID" --arg gitCommit "$git_commit" --arg manifestSha256 "$manifest_sha" \
   --arg sourceContinuityRef "refs/tags/portfolio-release/$RELEASE_ID" \
   --arg apiImageTag "portfolio-api:$RELEASE_ID" --arg apiImageId "$api_id" \
-  --arg postgresImageRef "postgres:17-bookworm@sha256:$(printf 'd%.0s' {1..64})" \
+  --arg postgresImageRef "$(awk -F= '$1 == "POSTGRES_IMAGE" {print $2}' "$REPOSITORY_ROOT/deploy/image-lock.env")" \
   --arg postgresImageTag "portfolio-postgres-17:$RELEASE_ID" --arg postgresImageId "$postgres_id" \
   --arg buildTimeUtc "$build_time" --arg jarSha256 "$(printf '1%.0s' {1..64})" \
   --arg adminTreeSha256 "$admin_tree" --arg publicTreeSha256 "$public_tree" --arg opsTreeSha256 "$ops_tree" \
+  --arg complianceTreeSha256 "$compliance_tree" \
   --arg apiImageArchiveSha256 "$api_archive_sha" --arg postgresImageArchiveSha256 "$postgres_archive_sha" \
-  --arg nodeRef "node:22.18.0-bookworm-slim@sha256:$(printf '2%.0s' {1..64})" \
-  --arg javaBuild "eclipse-temurin:17-jdk-jammy@sha256:$(printf '3%.0s' {1..64})" \
-  --arg javaRuntime "eclipse-temurin:17-jre-jammy@sha256:$(printf '4%.0s' {1..64})" \
+  --arg nodeRef "$(awk -F= '$1 == "NODE_IMAGE" {print $2}' "$REPOSITORY_ROOT/deploy/image-lock.env")" \
+  --arg playwrightRef "$(awk -F= '$1 == "PLAYWRIGHT_IMAGE" {print $2}' "$REPOSITORY_ROOT/deploy/image-lock.env")" \
+  --arg javaBuild "$(awk -F= '$1 == "JAVA_BUILD_IMAGE" {print $2}' "$REPOSITORY_ROOT/deploy/image-lock.env")" \
+  --arg javaRuntime "$(awk -F= '$1 == "JAVA_RUNTIME_IMAGE" {print $2}' "$REPOSITORY_ROOT/deploy/image-lock.env")" \
+  --arg ubuntuSnapshot "$(awk -F= '$1 == "UBUNTU_APT_SNAPSHOT" {print $2}' "$REPOSITORY_ROOT/deploy/image-lock.env")" \
   --argjson sourceEpoch "$source_epoch" \
   '{releaseId:$releaseId,gitCommit:$gitCommit,manifestSha256:$manifestSha256,
     sourceContinuityRef:$sourceContinuityRef,apiImageTag:$apiImageTag,apiImageId:$apiImageId,
     apiImageRepoDigest:null,postgresImageRef:$postgresImageRef,postgresImageTag:$postgresImageTag,
     postgresImageId:$postgresImageId,buildTimeUtc:$buildTimeUtc,jarSha256:$jarSha256,
     adminTreeSha256:$adminTreeSha256,publicTreeSha256:$publicTreeSha256,opsTreeSha256:$opsTreeSha256,
+    complianceTreeSha256:$complianceTreeSha256,
     apiImageArchiveSha256:$apiImageArchiveSha256,postgresImageArchiveSha256:$postgresImageArchiveSha256,
-    bundlePayloadSha256:"",buildInputs:{nodeImageRef:$nodeRef,javaBuildImageRef:$javaBuild,
-      javaRuntimeImageRef:$javaRuntime,ubuntuAptSnapshot:"20231114T000000Z",
+    bundlePayloadSha256:"",buildInputs:{nodeImageRef:$nodeRef,playwrightImageRef:$playwrightRef,javaBuildImageRef:$javaBuild,
+      javaRuntimeImageRef:$javaRuntime,ubuntuAptSnapshot:$ubuntuSnapshot,
       targetPlatform:"linux/amd64",sourceDateEpoch:$sourceEpoch}}' >"$FIXTURE/release/release.tmp.json"
 bundle_payload="$(jq -Sc '{releaseId,gitCommit,manifestSha256,sourceContinuityRef,apiImageTag,
   apiImageId,apiImageRepoDigest,postgresImageRef,postgresImageTag,postgresImageId,
-  jarSha256,adminTreeSha256,publicTreeSha256,opsTreeSha256,apiImageArchiveSha256,
+  jarSha256,adminTreeSha256,publicTreeSha256,opsTreeSha256,complianceTreeSha256,apiImageArchiveSha256,
   postgresImageArchiveSha256,buildInputs}' "$FIXTURE/release/release.tmp.json" | sha256sum | awk '{print $1}')"
 jq -S --arg payload "$bundle_payload" '.bundlePayloadSha256=$payload' \
   "$FIXTURE/release/release.tmp.json" >"$FIXTURE/release/release.json"
 rm "$FIXTURE/release/release.tmp.json"
-(cd "$FIXTURE/release"; find admin public-assets ops images -type f -print0 | sort -z | \
+(cd "$FIXTURE/release"; find admin public-assets ops images compliance -type f -print0 | sort -z | \
   while IFS= read -r -d '' path; do printf '%s  %s\n' "$(sha256sum "$path" | awk '{print $1}')" "$path"; done \
   >bundle-manifest.json)
 
@@ -762,6 +862,7 @@ run_drill() {
   COMPOSE_PROFILES=production RESTORE_ENV=isolated \
   RESTORE_DOCKER_COMMAND="$BIN/docker" RESTORE_RCLONE_COMMAND="$BIN/rclone" \
   RESTORE_CURL_COMMAND="$BIN/curl" RESTORE_AGE_COMMAND="$BIN/age" \
+  RESTORE_COMPLIANCE_VALIDATOR="$COMPLIANCE_STUB" \
   RESTORE_API_IMAGE="$api_tag" RESTORE_POSTGRES_IMAGE="$postgres_tag" \
   RESTORE_NGINX_IMAGE="sha256:$(printf 'c%.0s' {1..64})" \
   RESTORE_APP_ENV="/run/portfolio-restore-secrets/$drill_id/app.env" \
@@ -996,7 +1097,7 @@ preserved_drill_prefix="$REMOTE/drill/drill-media-1250000000/drills/$REPORT_FAIL
 # exact mapping SQL emitted by the adapter, runtime DML, and rejected DDL.
 PG_CONTAINER="portfolio-restore-pg17-$RANDOM-$$"
 "$REAL_DOCKER" run -d --name "$PG_CONTAINER" -e POSTGRES_PASSWORD=contract \
-  -e POSTGRES_DB=portfolio postgres:17-bookworm >/dev/null
+  -e POSTGRES_DB=portfolio "$POSTGRES_TEST_IMAGE" >/dev/null
 deadline=$((SECONDS + 60))
 until "$REAL_DOCKER" exec "$PG_CONTAINER" pg_isready -U postgres -d portfolio >/dev/null 2>&1; do
   ((SECONDS < deadline)) || fail 'PostgreSQL 17 fixture did not become ready'
