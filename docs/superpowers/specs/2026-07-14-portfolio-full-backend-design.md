@@ -442,9 +442,9 @@ API 采用统一问题结构：
 | Node.js | 22.18 |
 | Vue | 3.5.31 |
 | Vue Router | 4.6.4 |
-| Axios | 1.15.1 |
+| Axios | 1.18.1 |
 | Tailwind CSS | 4.2.2 |
-| Vite | 8.0.3 |
+| Vite | 8.1.5 |
 | TypeScript | 6.0.3 |
 
 公开作品集保留现有 Vue、TypeScript、Vite 和 Vue Router 版本，不因管理端降级或重建。

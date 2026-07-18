@@ -934,15 +934,15 @@ git commit -m "feat(analytics): expose admin metric reports"
 - Consumes: all tasks in this plan plus the plan-04/05 browser journeys.
 - Produces: an executable server-side acceptance suite and production operating instructions.
 
-- [ ] **Step 1: Add a contact journey integration test**
+- [x] **Step 1: Add a contact journey integration test**
 
 The test submits a public message, observes immediate `202`, confirms one unread inbox item, forces mail failure, confirms the message remains, manually retries, confirms sent status, changes to archived with optimistic version, and deletes the message plus PII. Assert every authenticated administrator mutation creates a redacted audit event; the public response and logs contain no submission identifier or visitor value.
 
-- [ ] **Step 2: Add an analytics privacy contract test**
+- [x] **Step 2: Add an analytics privacy contract test**
 
 The test submits no-consent and `DNT: 1` requests and asserts zero rows; submits consented fixed events; verifies exact dedupe, Hong Kong date boundary, aggregate totals, report definitions, and 30-day purge. Query `information_schema.columns` and structured captured logs to prove no forbidden identity field or raw identifier is present.
 
-- [ ] **Step 3: Run the complete phase test set**
+- [x] **Step 3: Run the complete phase test set**
 
 ```powershell
 .\mvnw.cmd -pl portfolio-server -am -Dtest='Contact*Test,EmailOutbox*Test,AdminMessageControllerTest,MessageRetentionJobHandlerTest,Analytics*Test,PublicAnalyticsControllerTest,AdminAnalyticsControllerTest' -Dsurefire.failIfNoSpecifiedTests=false test
@@ -950,7 +950,7 @@ The test submits no-consent and `DNT: 1` requests and asserts zero rows; submits
 
 Expected: PASS; Testcontainers starts PostgreSQL 17, mail failure does not remove a message, and analytics privacy/aggregation checks are green.
 
-- [ ] **Step 4: Document configuration and operating definitions**
+- [x] **Step 4: Document configuration and operating definitions**
 
 Document:
 
@@ -975,13 +975,27 @@ PORTFOLIO_CONTACT_DEDUPE_SECRET=
 PORTFOLIO_ANALYTICS_HMAC_SECRET=
 ```
 
-- [ ] **Step 5: Scan for leaked values and commit**
+- [x] **Step 5: Scan for leaked values and commit**
 
 ```powershell
 git grep -n -E 'player@example\.com|203\.0\.113\.9|SMTP_PASSWORD=.+|ANALYTICS_HMAC_SECRET=.+' -- . ':!**/src/test/**' ':!docs/superpowers/plans/*'
 ```
 
 Expected: no production/config match; the excluded test fixtures may use reserved example values only in test sources.
+
+Verification on 2026-07-18:
+
+- the two new acceptance classes passed `4/4`, and the complete phase command passed
+  `119/119`;
+- a cached fixed-clock analytics test context exposed a cross-test session-cleanup race during
+  the first full runs; delaying that test-only cleanup closed the confirmed source, and the
+  fixed-clock analytics plus administrator-security sequence then passed `53/53` across the old
+  one-minute failure window;
+- the final `mvnw.cmd clean verify` passed `173` suites and `1,903` tests with `14` intentional
+  skips, zero failures, and zero errors;
+- the required leak scan and the wider changed-operations secret/PII scans returned no matches;
+  the protected pre-existing Docker database container fingerprint remained unchanged and
+  healthy.
 
 ```powershell
 git add backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/message backend-parent/portfolio-server/src/test/java/xyz/yychainsaw/portfolio/analytics docs/operations/contact-analytics.md deploy/.env.example
@@ -992,14 +1006,14 @@ git commit -m "test(contact): verify contact and analytics privacy"
 
 ## Phase Completion Gate
 
-- [ ] `POST /api/public/contact` returns before SMTP and commits message plus outbox atomically.
-- [ ] SMTP failure preserves the message, retry is leased and bounded, and the admin can retry dead mail.
-- [ ] Inbox list/detail/status/archive/spam/delete behavior is authenticated, CSRF-protected for mutations, versioned, audited, and redacted.
-- [ ] One-year message retention and manual early deletion remove visitor PII.
-- [ ] No-consent and `DNT=1` produce no identifier and no event in the browser journey and no row server-side.
-- [ ] Analytics rows contain daily HMAC keys but no IP, IP hash, raw browser/session ID, or full User-Agent.
-- [ ] Ten-second duplicate suppression is correct across concurrent requests and time boundaries.
-- [ ] PV, summed daily UV, referrals, project views, downloads, and outbound clicks match fixed fixtures in `Asia/Hong_Kong`.
-- [ ] Raw events older than 30 days are removed only after aggregates exist.
-- [ ] Admin reports state definitions and data delay and never expose raw-event identity keys.
-- [ ] Operations documentation contains no secret values and explains retry, retention, and recovery.
+- [x] `POST /api/public/contact` returns before SMTP and commits message plus outbox atomically.
+- [x] SMTP failure preserves the message, retry is leased and bounded, and the admin can retry dead mail.
+- [x] Inbox list/detail/status/archive/spam/delete behavior is authenticated, CSRF-protected for mutations, versioned, audited, and redacted.
+- [x] One-year message retention and manual early deletion remove visitor PII.
+- [x] No-consent and `DNT=1` produce no identifier and no event in the browser journey and no row server-side.
+- [x] Analytics rows contain daily HMAC keys but no IP, IP hash, raw browser/session ID, or full User-Agent.
+- [x] Ten-second duplicate suppression is correct across concurrent requests and time boundaries.
+- [x] PV, summed daily UV, referrals, project views, downloads, and outbound clicks match fixed fixtures in `Asia/Hong_Kong`.
+- [x] Raw events older than 30 days are removed only after aggregates exist.
+- [x] Admin reports state definitions and data delay and never expose raw-event identity keys.
+- [x] Operations documentation contains no secret values and explains retry, retention, and recovery.

@@ -148,7 +148,7 @@ Add these scripts without changing existing build/lint/format entries:
 "test:e2e": "playwright test"
 ```
 
-Add exact development dependencies `@playwright/test@1.58.2`, `@axe-core/playwright@4.11.1`, `@vue/test-utils@2.4.6`, `jsdom@28.0.0`, and `vitest@4.0.18`. Do not alter the installed core versions recorded in the current lockfile.
+Add exact development dependencies `@playwright/test@1.58.2`, `@axe-core/playwright@4.11.1`, `@vue/test-utils@2.4.6`, `jsdom@28.0.0`, and `vitest@4.1.10`. Do not alter the installed core versions recorded in the current lockfile.
 
 - [ ] **Step 2: Install and verify the test initially fails because Vite has no test environment**
 

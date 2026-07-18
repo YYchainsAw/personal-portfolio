@@ -6,12 +6,12 @@
 
 **Architecture:** Create a standalone `admin-web/` Vite application served from `/admin/`. Route components consume typed domain clients built on one same-origin Axios instance; server session state remains authoritative, all mutations carry CSRF, and versioned editors use one reusable autosave/conflict state machine. Editing UI works only against workspace DTOs, while preview/publish/history use the publishing API and never synthesize public snapshots in the browser.
 
-**Tech Stack:** Node.js 22.18; Vue 3.5.31; Vue Router 4.6.4; Axios 1.15.1; qrcode 1.5.4; Tailwind CSS 4.2.2; Vite 8.0.3; TypeScript 6.0.3; Vitest; Vue Test Utils; Playwright.
+**Tech Stack:** Node.js 22.18; Vue 3.5.31; Vue Router 4.6.4; Axios 1.18.1; qrcode 1.5.4; Tailwind CSS 4.2.2; Vite 8.1.5; TypeScript 6.0.3; Vitest 4.1.10; Vue Test Utils; Playwright.
 
 ## Global Constraints
 
 - The administrator application is mounted at `/admin`; there is one administrator, no public registration, no multi-tenant support, no RBAC matrix, and no approval workflow.
-- Pin Node.js to `22.18.x`, Vue to `3.5.31`, Vue Router to `4.6.4`, Axios to `1.15.1`, qrcode to `1.5.4`, Tailwind CSS to `4.2.2`, Vite to `8.0.3`, and TypeScript to `6.0.3`.
+- Pin Node.js to `22.18.x`, Vue to `3.5.31`, Vue Router to `4.6.4`, Axios to `1.18.1`, qrcode to `1.5.4`, Tailwind CSS to `4.2.2`, Vite to `8.1.5`, Vitest to `4.1.10`, and TypeScript to `6.0.3`.
 - The application and `/api/admin/*` are same-origin. Authentication uses a Spring Security server session in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie; never store a bearer token, password, TOTP code, recovery code, or session identifier in Web Storage.
 - The login sequence is username/password followed by TOTP or a recovery code. All modifying requests use the `XSRF-TOKEN` cookie and `X-XSRF-TOKEN` header. A `401 AUTHENTICATION_REQUIRED` means the session is absent and returns to login, while `401 AUTHENTICATION_FAILED` from login or security reauthentication remains a local form error; `403` means CSRF/access rejection, `409` means state conflict/expired enrollment, `422` means validation, and `429` means a bounded retry delay.
 - Supported locales are exactly `zh-CN` and `en`. Both translations remain visible in completion status and all publish-required fields must be complete before preview or publication succeeds.
@@ -104,6 +104,7 @@ export interface ApiProblemBody {
   code: string
   traceId: string
   fieldErrors?: FieldErrors
+  retryAfterSeconds?: number
 }
 
 export class ApiProblem extends Error {
@@ -206,7 +207,7 @@ Task 11 consumes the complete plan-06 message and analytics contracts: cursor li
 - Consumes: no application code; local development API target `http://127.0.0.1:18080`.
 - Produces: `npm --prefix admin-web run dev`, `test:unit`, `type-check`, and `build`; Vite base `/admin/`; alias `@ -> admin-web/src`.
 
-- [ ] **Step 1: Add pinned metadata, compiler configuration, and the first failing mount test**
+- [x] **Step 1: Add pinned metadata, compiler configuration, and the first failing mount test**
 
 Create `admin-web/package.json` exactly as follows, then create the listed TypeScript configs with `strict`, `noUncheckedIndexedAccess`, DOM libraries, and `@/* -> ./src/*`:
 
@@ -227,7 +228,7 @@ Create `admin-web/package.json` exactly as follows, then create the listed TypeS
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "axios": "1.15.1",
+    "axios": "1.18.1",
     "qrcode": "1.5.4",
     "vue": "3.5.31",
     "vue-router": "4.6.4"
@@ -243,8 +244,8 @@ Create `admin-web/package.json` exactly as follows, then create the listed TypeS
     "jsdom": "28.0.0",
     "tailwindcss": "4.2.2",
     "typescript": "6.0.3",
-    "vite": "8.0.3",
-    "vitest": "4.0.18",
+    "vite": "8.1.5",
+    "vitest": "4.1.10",
     "vue-tsc": "3.3.7"
   }
 }
@@ -265,7 +266,7 @@ describe('App', () => {
 })
 ```
 
-- [ ] **Step 2: Install dependencies and verify the test fails for the missing application component**
+- [x] **Step 2: Install dependencies and verify the test fails for the missing application component**
 
 Run: `npm --prefix admin-web install`
 
@@ -275,21 +276,26 @@ Run: `npm --prefix admin-web run test:unit -- src/App.spec.ts`
 
 Expected: FAIL because `admin-web/src/App.vue` does not exist.
 
-- [ ] **Step 3: Add the minimal app, Tailwind entry, and Vite configuration**
+- [x] **Step 3: Add the minimal app, Tailwind entry, and Vite configuration**
 
 ```ts
 // admin-web/vite.config.ts
 import { fileURLToPath, URL } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   base: '/admin/',
   plugins: [vue(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   server: { proxy: { '/api': 'http://127.0.0.1:18080' } },
-  test: { environment: 'jsdom', restoreMocks: true, setupFiles: [] },
+  test: {
+    environment: 'jsdom',
+    exclude: [...configDefaults.exclude, 'tests/e2e/**'],
+    restoreMocks: true,
+    setupFiles: [],
+  },
 })
 ```
 
@@ -327,9 +333,9 @@ import router from './router'
 createApp(App).use(router).mount('#app')
 ```
 
-Use a temporary `admin-web/src/router/index.ts` exporting an empty `createRouter({ history: createWebHistory('/admin/'), routes: [] })`; Task 3 replaces it with the guarded graph.
+Use a temporary `admin-web/src/router/index.ts` exporting an empty `createRouter({ history: createWebHistory('/'), routes: [] })`; Task 3 replaces it with the guarded graph. The browser-history base remains `/` because the route records themselves own the `/admin` prefix; Vite's separate `/admin/` base controls asset URLs.
 
-- [ ] **Step 4: Verify mount, compiler, and production build**
+- [x] **Step 4: Verify mount, compiler, and production build**
 
 Run: `npm --prefix admin-web run test:unit -- src/App.spec.ts`
 
@@ -339,7 +345,9 @@ Run: `npm --prefix admin-web run type-check && npm --prefix admin-web run build`
 
 Expected: both commands exit 0 and `admin-web/dist/index.html` references hashed assets below `/admin/assets/`.
 
-- [ ] **Step 5: Commit the isolated scaffold**
+Verification (2026-07-18): the missing-`App.vue` test failed first as required. Under the exact `node:22.18.0-bookworm-slim` image, the final mount test passed, type-check and production build exited 0, the built HTML referenced hashed `/admin/assets/` JavaScript and CSS, and both full and production npm audits reported zero vulnerabilities. Axios, Vite, and Vitest were refreshed to the compatible exact security pins recorded above after npm identified advisories in the originally drafted versions.
+
+- [x] **Step 5: Commit the isolated scaffold**
 
 ```bash
 git add admin-web/package.json admin-web/package-lock.json admin-web/index.html admin-web/vite.config.ts admin-web/tsconfig*.json admin-web/env.d.ts admin-web/src
@@ -356,13 +364,14 @@ git commit -m "build(admin): scaffold pinned Vue admin app"
 - Create: `admin-web/src/stores/session.ts`
 - Create: `admin-web/src/stores/sessionInstance.ts`
 - Test: `admin-web/src/api/http.spec.ts`
+- Test: `admin-web/src/api/authApi.spec.ts`
 - Test: `admin-web/src/stores/session.spec.ts`
 
 **Interfaces:**
-- Consumes: Axios 1.15.1 and the auth endpoints in Cross-Task Interfaces.
-- Produces: `http`, `ApiProblem`, `authApi`, and `createSessionStore(authPort)`; no token persistence.
+- Consumes: Axios 1.18.1 and the auth endpoints in Cross-Task Interfaces.
+- Produces: `http`, `ApiProblem`, `authApi`, `createSessionStore(authPort)`, the exact-code `AUTHENTICATION_REQUIRED` subscription hook, and a local `invalidate()` transition; no token persistence.
 
-- [ ] **Step 1: Write failing tests for CSRF configuration, problem conversion, and two-stage state**
+- [x] **Step 1: Write failing tests for CSRF configuration, problem conversion, and two-stage state**
 
 ```ts
 // admin-web/src/api/http.spec.ts
@@ -372,15 +381,17 @@ import { http, toApiProblem } from './http'
 
 describe('http', () => {
   it('uses same-origin credentials and Spring CSRF names', () => {
+    expect(http.defaults.allowAbsoluteUrls).toBe(false)
     expect(http.defaults.withCredentials).toBe(true)
-    expect(http.defaults.withXSRFToken).toBe(true)
+    expect(http.defaults.withXSRFToken).toBeUndefined()
     expect(http.defaults.xsrfCookieName).toBe('XSRF-TOKEN')
     expect(http.defaults.xsrfHeaderName).toBe('X-XSRF-TOKEN')
   })
 
   it('preserves the safe problem body', () => {
     const error = {
-      response: { data: { type: 'conflict', title: '版本冲突', status: 409, code: 'VERSION_CONFLICT', traceId: '01ABC' } },
+      isAxiosError: true,
+      response: { status: 409, data: { type: 'conflict', title: '版本冲突', status: 409, code: 'VERSION_CONFLICT', traceId: '01ABC' } },
     } as AxiosError
     expect(toApiProblem(error).body.code).toBe('VERSION_CONFLICT')
   })
@@ -411,13 +422,13 @@ it('keeps only the transient second-factor expiry after password login', async (
 })
 ```
 
-- [ ] **Step 2: Run the focused tests and observe missing-module failures**
+- [x] **Step 2: Run the focused tests and observe missing-module failures**
 
 Run: `npm --prefix admin-web run test:unit -- src/api/http.spec.ts src/stores/session.spec.ts`
 
 Expected: FAIL because `http.ts` and `session.ts` do not exist.
 
-- [ ] **Step 3: Implement the exact DTOs, safe Axios instance, and in-memory session state**
+- [x] **Step 3: Implement the exact DTOs, safe Axios instance, and in-memory session state**
 
 ```ts
 // admin-web/src/types/auth.ts
@@ -431,13 +442,13 @@ export interface MeResponse { id: string; username: string }
 
 ```ts
 // admin-web/src/api/http.ts
-import axios, { AxiosError } from 'axios'
+import axios from 'axios'
 import { ApiProblem, type ApiProblemBody } from '@/types/api'
 
 export const http = axios.create({
   baseURL: '/',
+  allowAbsoluteUrls: false,
   withCredentials: true,
-  withXSRFToken: true,
   xsrfCookieName: 'XSRF-TOKEN',
   xsrfHeaderName: 'X-XSRF-TOKEN',
   timeout: 15_000,
@@ -446,8 +457,8 @@ export const http = axios.create({
 export function toApiProblem(error: unknown): ApiProblem {
   if (error instanceof ApiProblem) return error
   if (axios.isAxiosError(error)) {
-    const body = (error as AxiosError<ApiProblemBody>).response?.data
-    if (body?.status && body.code && body.traceId) return new ApiProblem(body)
+    const body = normalizeApiProblemBody(error.response?.data, error.response?.status)
+    if (body) return new ApiProblem(body)
   }
   return new ApiProblem({
     type: 'network_error', title: '无法连接服务器', status: 0,
@@ -461,10 +472,10 @@ http.interceptors.response.use(
 )
 ```
 
+`normalizeApiProblemBody` is a runtime allowlist, not a TypeScript cast: it requires matching HTTP/body status and bounded `type`, `title`, `code`, and `traceId`; clones only valid string `fieldErrors` plus a bounded positive `retryAfterSeconds`; accepts the same bounded delay from a header-only `Retry-After`; and drops Spring `detail`, `instance`, paths, stacks, and every unknown property. A request interceptor accepts only control-free, single-leading-slash paths with base `/`, rejecting absolute, protocol-relative, backslash-normalized, control-normalized, and overridden-base URLs before dispatch. Axios's `withXSRFToken` stays unset so its browser adapter adds the XSRF header only for same-origin requests; setting it to `true` would explicitly bypass Axios's same-origin check.
+
 ```ts
 // admin-web/src/stores/session.ts
-import { reactive, readonly } from 'vue'
-import { ApiProblem } from '@/types/api'
 import type { MeResponse, PasswordStageResponse, SecondFactorMethod } from '@/types/auth'
 
 export interface AuthPort {
@@ -475,40 +486,30 @@ export interface AuthPort {
   logout(): Promise<void>
 }
 
-export function createSessionStore(port: AuthPort) {
-  const state = reactive<{ phase: 'UNKNOWN' | 'ANONYMOUS' | 'TOTP_REQUIRED' | 'AUTHENTICATED'; user: MeResponse | null; secondFactorExpiresAt: string | null }>({
-    phase: 'UNKNOWN', user: null, secondFactorExpiresAt: null,
-  })
-  return {
-    state: readonly(state),
-    async bootstrap() {
-      try { state.user = await port.getMe(); state.phase = 'AUTHENTICATED' }
-      catch (cause) {
-        if (!(cause instanceof ApiProblem) || cause.body.status !== 401) throw cause
-        state.user = null; state.phase = 'ANONYMOUS'; state.secondFactorExpiresAt = null
-      }
-      return state.phase
-    },
-    async login(username: string, password: string) {
-      await port.ensureCsrf()
-      const response = await port.passwordStage(username, password)
-      state.phase = 'TOTP_REQUIRED'; state.user = null; state.secondFactorExpiresAt = response.expiresAt
-    },
-    async verifySecondFactor(method: SecondFactorMethod, code: string) {
-      if (state.phase !== 'TOTP_REQUIRED') throw new Error('No active second-factor stage')
-      state.user = await port.secondFactor(method, code)
-      state.phase = 'AUTHENTICATED'; state.secondFactorExpiresAt = null
-    },
-    async logout() { await port.logout(); state.phase = 'ANONYMOUS'; state.user = null; state.secondFactorExpiresAt = null },
-  }
+export type SessionPhase = 'UNKNOWN' | 'ANONYMOUS' | 'TOTP_REQUIRED' | 'AUTHENTICATED'
+
+export type SessionState =
+  | { readonly phase: 'UNKNOWN' | 'ANONYMOUS'; readonly user: null; readonly secondFactorExpiresAt: null }
+  | { readonly phase: 'TOTP_REQUIRED'; readonly user: null; readonly secondFactorExpiresAt: string }
+  | { readonly phase: 'AUTHENTICATED'; readonly user: MeResponse; readonly secondFactorExpiresAt: null }
+
+export interface SessionStore {
+  readonly state: Readonly<SessionState>
+  bootstrap(): Promise<SessionPhase>
+  login(username: string, password: string): Promise<void>
+  verifySecondFactor(method: SecondFactorMethod, code: string): Promise<void>
+  logout(): Promise<void>
+  invalidate(): void
 }
 ```
 
 Implement `authApi` with exact plan-01 calls: `GET /api/admin/auth/me`, `GET /api/admin/auth/csrf`, `POST /api/admin/auth/password`, `POST /api/admin/auth/second-factor`, and `POST /api/admin/auth/logout`. `ensureCsrf` accepts/ignores the safe response body because Axios sends the issued cookie/header pair; a `GET me` 401 is converted only by the session store into ANONYMOUS. Keep `session.ts` factory-only. In `sessionInstance.ts`, export the single production value `export const sessionStore = createSessionStore(authApi)` so tests can instantiate isolated stores without importing a singleton.
 
-- [ ] **Step 4: Verify HTTP and session behavior**
+Runtime-check every successful auth response before changing state: UUID/nonblank administrator fields, exact `SECOND_FACTOR`, parseable ISO Instant expiry, and the exact CSRF names. The store exposes an idempotent `invalidate()`, subscribes the production singleton only to `401 AUTHENTICATION_REQUIRED`, abandons any old challenge before a new password attempt, publishes atomic frozen discriminated snapshots, serializes login/verification/logout mutations, and uses a generation/single-flight guard so a late bootstrap response cannot undo logout or invalidation. It never imports the router; Task 3 owns navigation after observing the state transition.
 
-Run: `npm --prefix admin-web run test:unit -- src/api/http.spec.ts src/stores/session.spec.ts`
+- [x] **Step 4: Verify HTTP and session behavior**
+
+Run: `npm --prefix admin-web run test:unit -- src/api/http.spec.ts src/api/authApi.spec.ts src/stores/session.spec.ts`
 
 Expected: PASS, including no Web Storage writes.
 
@@ -516,7 +517,9 @@ Run: `npm --prefix admin-web run type-check`
 
 Expected: exit 0 with all auth unions exhaustively narrowed.
 
-- [ ] **Step 5: Commit the API/security foundation**
+Verification (2026-07-18): the three focused suites first failed on the intentionally missing modules. Under exact Node 22.18, the completed implementation passed 21 focused tests; the final full admin suite passed 22/22, strict `vue-tsc` and production build exited 0, and npm audit reported zero vulnerabilities. Coverage includes browser control/backslash/cross-origin URL rejection, safe problem and Retry-After allowlisting, exact global invalidation, runtime success validation, no Web Storage writes, atomic state snapshots, serialized authentication mutations, challenge reset, and the bootstrap/logout late-response race.
+
+- [x] **Step 5: Commit the API/security foundation**
 
 ```bash
 git add admin-web/src/api admin-web/src/types/api.ts admin-web/src/types/auth.ts admin-web/src/stores
@@ -550,7 +553,7 @@ import { createAdminRouter } from './index'
 describe('admin route guard', () => {
   it('redirects an anonymous dashboard request to login', async () => {
     const session = { state: { phase: 'UNKNOWN' }, bootstrap: vi.fn().mockImplementation(function () { this.state.phase = 'ANONYMOUS'; return 'ANONYMOUS' }) }
-    const router = createAdminRouter(session as never, createMemoryHistory('/admin/'))
+    const router = createAdminRouter(session as never, createMemoryHistory('/'))
     await router.push('/admin/dashboard')
     await router.isReady()
     expect(router.currentRoute.value.name).toBe('login')
@@ -632,7 +635,7 @@ export function createAdminRouter(session: SessionGuardPort, history: RouterHist
   return router
 }
 
-export default createAdminRouter(sessionStore, createWebHistory('/admin/'))
+export default createAdminRouter(sessionStore, createWebHistory('/'))
 ```
 
 `FeatureShellView.vue` is a small accessible compile-time route destination with required `title` and optional route-ID props; it exists only so Task 3 type-checks before later slices create their real views. Task 4 replaces the parent `RouteOutlet` and temporary dashboard destination; Tasks 6, 7, 9, and 10 replace every remaining named temporary destination when their files exist.

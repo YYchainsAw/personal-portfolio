@@ -36,7 +36,7 @@ import xyz.yychainsaw.portfolio.analytics.persistence.AnalyticsEventRecord;
 import xyz.yychainsaw.portfolio.content.api.LocaleCode;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
-@SpringBootTest
+@SpringBootTest(properties = "portfolio.security.session.cleanup-interval=PT24H")
 @Isolated
 @Import(AnalyticsAggregationServiceTest.FixedClockConfiguration.class)
 class AnalyticsAggregationServiceTest extends PostgresIntegrationTestBase {

@@ -6,7 +6,7 @@
 
 **Architecture:** A modular Spring Boot monolith serves admin/public APIs and localized indexable HTML from immutable published revisions. Vue powers the existing public interactions and a separate admin application. PostgreSQL is the sole relational store; LocalStorage/Tencent COS share a provider-neutral media port. BaoTa Nginx serves hash assets/admin and proxies HTML/API to the application. Host timers own backups independently of application availability.
 
-**Tech Stack:** Java 17, Spring Boot 3.5.7, Maven Wrapper 3.9.11, MyBatis-Plus 3.5.7, PostgreSQL 17, Flyway, Spring Security/Session/Thymeleaf, Tencent COS XML SDK 5.6.227; admin Node.js 22.18, Vue 3.5.31, Vue Router 4.6.4, Axios 1.15.1, Tailwind CSS 4.2.2, Vite 8.0.3, TypeScript 6.0.3; public frontend preserves its lockfile versions (currently Vue 3.5.39, Vue Router 5.1.0, Vite 8.1.4, TypeScript 6.0.3); Docker 26, Ubuntu 22.04, BaoTa Nginx.
+**Tech Stack:** Java 17, Spring Boot 3.5.7, Maven Wrapper 3.9.11, MyBatis-Plus 3.5.7, PostgreSQL 17, Flyway, Spring Security/Session/Thymeleaf, Tencent COS XML SDK 5.6.227; admin Node.js 22.18, Vue 3.5.31, Vue Router 4.6.4, Axios 1.18.1, Tailwind CSS 4.2.2, Vite 8.1.5, TypeScript 6.0.3; public frontend preserves its lockfile versions (currently Vue 3.5.39, Vue Router 5.1.0, Vite 8.1.4, TypeScript 6.0.3); Docker 26, Ubuntu 22.04, BaoTa Nginx.
 
 ## Global Constraints
 
