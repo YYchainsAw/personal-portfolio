@@ -1851,6 +1851,7 @@ git commit -m "feat(admin): complete security and operations settings"
 
 **Files:**
 - Create: `admin-web/playwright.config.ts`
+- Modify: `admin-web/tsconfig.node.json` (add the DOM library required by Playwright's config types)
 - Create: `admin-web/tests/e2e/mockAdminApi.ts`
 - Create: `admin-web/tests/e2e/auth.spec.ts`
 - Create: `admin-web/tests/e2e/edit-publish.spec.ts`
@@ -1863,14 +1864,15 @@ git commit -m "feat(admin): complete security and operations settings"
 - Consumes: all named routes, DTOs, and API clients from Tasks 1–12.
 - Produces: deterministic browser evidence for authentication, editing/publishing, complete media/inbox/analytics/settings behavior, keyboard navigation, and protected routes.
 
-- [ ] **Step 1: Write browser tests against a deterministic mock API**
+- [x] **Step 1: Write browser tests against a deterministic mock API**
 
 ```ts
 // admin-web/playwright.config.ts
 import { defineConfig } from '@playwright/test'
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1'
 export default defineConfig({
   testDir: './tests/e2e',
-  use: { baseURL: 'http://127.0.0.1:4174', trace: 'retain-on-failure' },
+  use: { baseURL: 'http://127.0.0.1:4174', trace: 'off', screenshot: 'off', video: 'off' },
   webServer: { command: 'npm run dev -- --host 127.0.0.1 --port 4174', url: 'http://127.0.0.1:4174/admin/', reuseExistingServer: false },
 })
 ```
@@ -1897,15 +1899,15 @@ test('password then TOTP reaches the protected dashboard', async ({ page }) => {
 
 `mockAdminApi.ts` maintains in-memory auth phase, exact SITE/project workspace DTO versions, publication/catalog versions, immutable revision arrays, synthetic messages, analytics, plan-01 `SessionView` rows (including `current`), opaque-cursor `AdminAuditPage`, and system status. Auth mocks the exact plan-01 `/csrf`, `/password`, `/second-factor`, `/me`, and `/logout` behavior. Security settings validate the exact four request DTOs, return `204`, `TotpEnrollmentResponse`, or `RecoveryCodesResponse` as specified, mark every non-current session revoked after each success, and script local `401 AUTHENTICATION_FAILED`, global `401 AUTHENTICATION_REQUIRED`, enrollment `409`, validation `422`, and rate-limit `429`. Session revoke accepts only POST `/{metadataId}/revoke`; current revoke flips the mock to anonymous.
 
-The mock checks every non-GET request for `X-XSRF-TOKEN` and returns `403` when missing; returns one scripted `409` in `conflict.spec.ts`; and returns `{ token: 'ticket-1', expiresAt: '2026-07-14T12:10:00Z' }` from `/api/admin/publishing/preview-tokens`, then an exact preview snapshot from `/api/admin/publishing/previews/ticket-1`. Message fixtures are synthetic and contain no real PII. `auth.spec.ts` and `security-settings.spec.ts` set `test.use({ trace: 'off' })`, never attach screenshots/HTML, and use synthetic credentials/codes because Playwright trace network records would otherwise retain request or one-time response bodies.
+The mock checks every non-GET request for `X-XSRF-TOKEN` and returns `403` when missing; returns one scripted `409` in `conflict.spec.ts`; and returns a valid two-segment synthetic token such as `ticket-1.<43 base64url characters>` with a dynamic ten-minute expiry from `/api/admin/publishing/preview-tokens`, then an exact preview snapshot only for that issued token. Message fixtures are synthetic and contain no real PII. Artifact capture is disabled globally because even otherwise non-sensitive admin flows can render visitor messages or session identifiers. `PLAYWRIGHT_NO_COPY_PROMPT=1` also prevents Playwright 1.58's automatic failure-time `error-context.md` page snapshot. Authentication/security specs additionally declare the off policy locally and use only synthetic credentials/codes.
 
-- [ ] **Step 2: Run the browser tests and observe failures before missing details are corrected**
+- [x] **Step 2: Run the browser tests and observe failures before missing details are corrected**
 
 Run: `npm --prefix admin-web run test:e2e -- auth.spec.ts edit-publish.spec.ts conflict.spec.ts operations.spec.ts security-settings.spec.ts`
 
 Expected: initial FAIL pinpoints any incomplete labels, routes, CSRF behavior, or editor wiring; do not relax assertions.
 
-- [ ] **Step 3: Complete browser-visible details required by the tests**
+- [x] **Step 3: Complete browser-visible details required by the tests**
 
 Make the smallest changes in existing admin files so these exact flows pass:
 
@@ -1925,7 +1927,7 @@ Make the smallest changes in existing admin files so these exact flows pass:
 14. a source/route assertion proves no production route still imports `FeatureShellView` and every approved destination renders its complete owning view;
 15. logout invalidates the browser session and the next protected navigation returns to login.
 
-- [ ] **Step 4: Run the complete admin quality gate**
+- [x] **Step 4: Run the complete admin quality gate**
 
 Run: `npm --prefix admin-web run test:unit`
 
@@ -1933,17 +1935,19 @@ Expected: all Vitest suites pass with zero unhandled promise rejection.
 
 Run: `npm --prefix admin-web run test:e2e`
 
-Expected: all Chromium Playwright tests pass; sensitive auth/security specs produce no trace artifact, and non-sensitive traces contain no password, TOTP/provisioning/recovery value, session identifier, or message body.
+Expected: all Chromium Playwright tests pass; no test produces trace, screenshot, video, HAR, HTML, or automatic error-context artifacts containing a password, TOTP/provisioning/recovery value, session identifier, or message body.
 
 Run: `npm --prefix admin-web run type-check && npm --prefix admin-web run build`
 
 Expected: exit 0; `admin-web/dist/index.html` uses `/admin/assets/*`, and no public-site or backend source changed.
 
+Verification (2026-07-18): targeted browser runs and two independent audits exposed strict locator, mock-state, and false-positive evidence gaps; they were corrected without weakening assertions or changing production behavior. The deterministic API now proves CSRF issuance precedes mutations and rejects a missing header, a real winning server edit advances the version before `409`, reload adopts it, publish succeeds and refreshes exact rendered versions, destructive dialogs really appear, cursors remain opaque, and only the signed synthetic preview token is accepted. The final gate used the SHA-256-verified official Node 22.18.0 Windows runtime, Playwright 1.58.2, and bundled Chromium v1208; all 16 browser workflows passed. All six E2E TypeScript files passed an independent strict/noUncheckedIndexedAccess compile. Trace, screenshot, video, and automatic error-context capture are disabled globally. A deliberate failure probe rendered synthetic `otpauth:`, recovery-code, and session-ID markers, then proved failure retained only `.last-run.json`—no ZIP, PNG, WebM, HAR, HTML, or Markdown artifact; the subsequent successful full run left the same safe result. The complete Vitest gate passed 770/770 across 55 files, the Vite production build transformed 212 modules, full and production-only npm audits reported zero vulnerabilities, and built asset URLs use `/admin/assets/*`. Task 13 changed only `admin-web` test/configuration files plus this plan; no public-site or backend source was changed, and no database was accessed.
+
 Deployment handoff: copy the complete `admin-web/dist/` contents without reshaping into `/opt/portfolio/releases/{releaseId}/admin/`, where `releaseId` is the same Git-plus-public-manifest value injected as `PORTFOLIO_RELEASE_ID` for that release; atomically point `/opt/portfolio/current-admin` to that directory. Do not copy admin assets into shared `/opt/portfolio/assets/`, do not hand an admin manifest to Spring, and do not construct a second admin-only release identifier.
 
-- [ ] **Step 5: Commit the verified admin application**
+- [x] **Step 5: Commit the verified admin application**
 
 ```bash
-git add admin-web/playwright.config.ts admin-web/tests admin-web/src admin-web/package.json admin-web/package-lock.json
+git add admin-web/playwright.config.ts admin-web/tsconfig.node.json admin-web/tests/e2e docs/superpowers/plans/2026-07-14-portfolio-04-admin-web.md
 git commit -m "test(admin): cover secure edit and publish flows"
 ```
