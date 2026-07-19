@@ -295,10 +295,15 @@ crash_after() {
 
 verify_api_write_probe() {
   local mountpoint="$1" probe="$mountpoint/.portfolio-write-probe.$$"
-  # The child shell receives the probe path positionally.
+  # Docker's volume parent directories are intentionally not traversable by the
+  # application UID.  Enter the volume while privileged, then test the same
+  # write operation using a relative path as the runtime UID.
   # shellcheck disable=SC2016
-  setpriv --reuid="$APPLICATION_UID" --regid="$APPLICATION_GID" --clear-groups \
-    sh -c 'umask 077; : >"$1"; rm -f -- "$1"' sh "$probe" ||
+  (
+    cd -- "$mountpoint"
+    setpriv --reuid="$APPLICATION_UID" --regid="$APPLICATION_GID" --clear-groups \
+      sh -c 'umask 077; : >"$1"; rm -f -- "$1"' sh "./${probe##*/}"
+  ) ||
     fail 'API UID/GID cannot initialize and write the Local volume'
   [[ ! -e "$probe" && ! -L "$probe" ]] || fail 'Local volume write probe was not removed'
 }
