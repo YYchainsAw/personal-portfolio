@@ -11,7 +11,15 @@ WORK_DIRECTORY=''
 cleanup() {
   [[ -z "$WORK_DIRECTORY" || ! -d "$WORK_DIRECTORY" ]] || rm -rf -- "$WORK_DIRECTORY"
 }
-trap cleanup EXIT HUP INT TERM
+on_signal() {
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 main() {
   (($# >= 1)) || adapter_fail 'report transfer operation is required'

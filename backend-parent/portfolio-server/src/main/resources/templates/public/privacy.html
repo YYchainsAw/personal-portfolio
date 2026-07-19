@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title th:text="${site.privacy.title + ' · ' + site.identity.displayName}">Privacy · Portfolio</title>
   <meta name="description" th:content="${site.seo.description}" content="Privacy">
   <link rel="canonical" th:href="${canonical}" href="https://yychainsaw.xyz/zh-CN/privacy">
@@ -15,9 +16,10 @@
   <meta property="og:description" th:content="${site.seo.description}" content="Privacy">
   <meta property="og:url" th:content="${canonical}" content="https://yychainsaw.xyz/zh-CN/privacy">
   <link th:each="css : ${assets.css}" rel="stylesheet" th:href="${css}">
-  <script type="application/ld+json" th:utext="${structuredData}"></script>
+  <script type="application/ld+json" data-portfolio-seo th:utext="${structuredData}"></script>
 </head>
 <body>
+  <div id="app">
   <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
 
   <header>
@@ -30,12 +32,11 @@
     </nav>
   </header>
 
-  <main id="app">
-    <article id="main-content" tabindex="-1">
+    <main id="main-content" tabindex="-1">
       <h1 th:text="${site.privacy.title}">Privacy</h1>
       <div th:utext="${site.privacy.html}"></div>
-    </article>
-  </main>
+    </main>
+  </div>
 
   <template id="__PORTFOLIO_DATA__" th:utext="${initialJson}"></template>
   <script type="module" th:src="${assets.entryJs}"></script>

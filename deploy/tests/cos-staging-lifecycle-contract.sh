@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+readonly REPOSITORY_ROOT
 readonly INSTALLER="$REPOSITORY_ROOT/deploy/scripts/install-cos-staging-lifecycle.sh"
 readonly VERIFIER="$REPOSITORY_ROOT/deploy/scripts/verify-cos-staging-lifecycle.sh"
 readonly CONTRACT_SECRET_ID='contract-secret-id-do-not-print'
 readonly CONTRACT_SECRET_KEY='contract-secret-key-do-not-print'
 readonly CONTRACT_SECURITY_TOKEN='contract-security-token-do-not-print'
 
-readonly WORK_DIRECTORY="$(mktemp -d)"
+WORK_DIRECTORY="$(mktemp -d)"
+readonly WORK_DIRECTORY
 trap 'rm -rf -- "$WORK_DIRECTORY"' EXIT
 
 fail() {
@@ -153,7 +155,8 @@ esac
 FIXTURE
 chmod +x "$FIXTURE_COMMAND"
 
-readonly SYSTEM_GREP="$(command -v grep)"
+SYSTEM_GREP="$(command -v grep)"
+readonly SYSTEM_GREP
 readonly GREP_PROBE_DIRECTORY="$WORK_DIRECTORY/grep-probe"
 readonly GREP_PROBE_COMMAND="$GREP_PROBE_DIRECTORY/grep"
 mkdir -p "$GREP_PROBE_DIRECTORY"

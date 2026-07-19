@@ -18,10 +18,14 @@ cleanup() {
   fi
 }
 on_signal() {
-  exit 130
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
 }
 trap cleanup EXIT
-trap on_signal HUP INT TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 require_nonempty_environment() {
   local name="$1"

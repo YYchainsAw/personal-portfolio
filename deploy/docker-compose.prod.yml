@@ -2,7 +2,8 @@ name: portfolio
 
 services:
   postgres:
-    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE digest reference is required}
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE local release tag is required}
+    pull_policy: never
     restart: unless-stopped
     env_file: /etc/portfolio/postgres.env
     volumes:
@@ -21,7 +22,8 @@ services:
         max-file: "5"
 
   portfolio-api:
-    image: ${PORTFOLIO_IMAGE:?PORTFOLIO_IMAGE is required}
+    image: ${PORTFOLIO_IMAGE:?PORTFOLIO_IMAGE local release tag is required}
+    pull_policy: never
     restart: unless-stopped
     user: "10001:10001"
     env_file: /etc/portfolio/portfolio.env

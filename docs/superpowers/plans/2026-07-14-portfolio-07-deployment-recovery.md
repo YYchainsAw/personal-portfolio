@@ -71,7 +71,7 @@
 - Consumes: plan-01 Maven project, plan-04 `admin-web`, plan-05 `frontend`, plan-03 classpath manifest path, and the reviewed immutable PostgreSQL 17 digest.
 - Produces: image `portfolio-api:{releaseId}`, immutable `{admin,public-assets,ops,images,release.json,bundle-manifest.json}`, and a portable checksummed bundle containing static/operations files plus compressed API and PostgreSQL image archives.
 
-- [ ] **Step 1: Write the failing release artifact contract**
+- [x] **Step 1: Write the failing release artifact contract**
 
 ```bash
 #!/usr/bin/env bash
@@ -89,6 +89,11 @@ canonical_tree_sha() {
         printf '%s\0%s\0' "${path#./}" "$(sha256sum -- "$path" | awk '{print $1}')"
       done
   ) | sha256sum | awk '{print $1}'
+}
+
+portable_image_id() {
+  docker save "$1" | tar -xOf - manifest.json |
+    jq -er 'if length == 1 then "sha256:" + (.[0].Config | capture("(?<id>[0-9a-f]{64})").id) else error("one image required") end'
 }
 
 test -f "$release_dir/admin/index.html"
@@ -115,9 +120,9 @@ jq -e --arg id "$release_id" '
 ' \
   "$release_dir/release.json" >/dev/null
 
-test "$(docker image inspect --format '{{.Id}}' "portfolio-api:$release_id")" = \
+test "$(portable_image_id "portfolio-api:$release_id")" = \
   "$(jq -r '.apiImageId' "$release_dir/release.json")"
-test "$(docker image inspect --format '{{.Id}}' "$(jq -r '.postgresImageRef' "$release_dir/release.json")")" = \
+test "$(portable_image_id "$(jq -r '.postgresImageTag' "$release_dir/release.json")")" = \
   "$(jq -r '.postgresImageId' "$release_dir/release.json")"
 container_id="$(docker create "portfolio-api:$release_id")"
 jar_path="$(mktemp)"
@@ -144,7 +149,7 @@ test "$payload_sha" = "$(jq -r '.bundlePayloadSha256' "$release_dir/release.json
 
 `canonical_tree_sha` hashes the NUL-delimited sequence of normalized relative file path plus file SHA-256 under `LC_ALL=C`; it never includes timestamps, ownership, directory metadata, symlinks, or untracked files. `bundlePayloadSha256` is the canonical JSON identity hash shown above, which avoids a self-referential `release.json`; the final outer `.tar.zst` additionally has a detached SHA-256 sidecar verified before extraction.
 
-- [ ] **Step 2: Run the contract and verify it fails**
+- [x] **Step 2: Run the contract and verify it fails**
 
 On Ubuntu or WSL from repository root:
 
@@ -154,14 +159,16 @@ bash deploy/tests/release-artifact-contract.sh /tmp/missing-release missing-id
 
 Expected: non-zero exit because no release exists.
 
-- [ ] **Step 3: Create the multi-stage Dockerfile**
+- [x] **Step 3: Create the multi-stage Dockerfile**
 
 Use these named stages and contracts:
 
 ```dockerfile
-ARG NODE_IMAGE=node:22.18.0-bookworm-slim
-ARG JAVA_BUILD_IMAGE=eclipse-temurin:17-jdk-jammy
-ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:17-jre-jammy
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+ARG NODE_IMAGE=node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
+ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d
+ARG JAVA_BUILD_IMAGE=eclipse-temurin:17-jdk-jammy@sha256:723151f3fc88ca2060153ee08ab8dbbea7983d6ed6f2622fe440acf178737c94
+ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:17-jre-jammy@sha256:475d8e96b4b2bfe08999e5e854755c773af1581acdf959a4545d88f0696a2339
 
 FROM ${NODE_IMAGE} AS public-deps
 WORKDIR /src/frontend
@@ -218,21 +225,21 @@ EXPOSE 8080
 ENTRYPOINT ["java","-XX:MaxRAMPercentage=75","-jar","/app/portfolio-server.jar"]
 ```
 
-If the Maven artifact name differs after plan 01, configure `<finalName>portfolio-server</finalName>` there rather than using a wildcard copy. The test stage requires Testcontainers access to the Docker socket when run on the build host; if BuildKit cannot expose it safely, run `./mvnw verify` in the checked-out workspace before the image build and keep `server-test` for CI with an approved runner.
+If the Maven artifact name differs after plan 01, configure `<finalName>portfolio-server</finalName>` there rather than using a wildcard copy. The release builder runs the complete `./mvnw verify` suite on an approved Java 17 host so Testcontainers can use the host Docker daemon directly. No Maven or compliance container receives `/var/run/docker.sock`.
 
-- [ ] **Step 4: Implement deterministic release assembly**
+- [x] **Step 4: Implement deterministic release assembly**
 
 `build-release.sh` must:
 
 1. require a clean tracked worktree and a commit reachable by `HEAD`;
-2. pull each reviewed base tag once, resolve its immutable repository digest, and pass that full digest to every Docker target in this run;
+2. load every reviewed `tag@sha256` reference from the committed image lock, reject tag-only values, pull only those exact references, and pass them unchanged to every Docker target in this run; never trust or record a first-build tag resolution;
 3. build `public-test`, `admin-test`, and the Maven verification target;
 4. export `release-files` to a temporary directory beside `${PORTFOLIO_RELEASE_ROOT}`;
 5. copy every tracked no-secret file currently present beneath `deploy/` and `docs/operations/`, plus `README.md`, into `ops/` with normalized relative paths; reject tracked `.env`, key, certificate, credential, media, database, or backup material rather than silently omitting it;
 6. compute the full SHA-256 of `public-assets/.vite/manifest.json` and form the unchanged `releaseId` from Git SHA and manifest hash prefixes;
-7. build `portfolio-api:{releaseId}` from the same checkout and resolved base digests, and inspect its mandatory content-addressed `.Id`; record a repository digest as well when registry transport is configured;
+7. build `portfolio-api:{releaseId}` from the same checkout and resolved base digests, and record the portable SHA-256 of the `docker save` manifest's Config blob; record a repository digest as separate provenance when registry transport is configured;
 8. require configured private remote `SOURCE_CONTINUITY_REMOTE` to expose protected tag `refs/tags/portfolio-release/{releaseId}` at exactly that full commit; fail with a deterministic operator instruction when the tag is absent or differs, never push automatically or store a Git credential on the server;
-9. pull PostgreSQL by the reviewed `postgres:17-bookworm@sha256:...` reference, inspect its content ID, export both API and PostgreSQL images with `docker save | zstd` into `images/`, and prove disposable `docker load` round trips reproduce the recorded image IDs without changing production tags;
+9. pull PostgreSQL by the reviewed `postgres:17-bookworm@sha256:...` source reference, compute the same portable Config digest, export both API and PostgreSQL images with `docker save | zstd` into `images/`, and prove disposable `docker load` round trips reproduce those Config digests without changing production tags;
 10. copy the API JAR out of a disposable container, compute its SHA-256, compute canonical admin/public/operations tree hashes, and compute both image-archive hashes;
 11. create `release.json` with release ID, full commit, full manifest hash, protected source-continuity ref, API image tag/content ID/optional repository digest, PostgreSQL digest reference/content ID, JAR hash, all three tree hashes, both image-archive hashes, canonical `bundlePayloadSha256`, and UTC build time;
 12. create `bundle-manifest.json` as GNU `sha256sum --check` entries for every regular file beneath `admin/`, `public-assets/`, `ops/`, and `images/`, but not `release.json` or `bundle-manifest.json`; separately record `release.json` SHA-256 in the detached outer-bundle envelope to avoid circular hashing;
@@ -241,20 +248,23 @@ If the Maven artifact name differs after plan 01, configure `<finalName>portfoli
 
 Use a staging directory on the same filesystem as `PORTFOLIO_RELEASE_ROOT`, `umask 027`, a trap that removes only the resolved staging path, and `mv` on that filesystem. Refuse to replace an existing release directory unless every recorded hash and image ID is identical. `package-release.sh` creates one outer `portfolio-{releaseId}.tar.zst`, a detached envelope containing archive SHA-256, byte size, release ID, and `release.json` SHA-256, then extracts into a disposable root, loads both images into disposable tags, and reruns the complete artifact contract before declaring the bundle ready. An exact-tag recovery rebuild must match every recorded digest/tree/archive field, not merely `releaseId` and public manifest; a mismatch means the rebuild is not the original release and must not be deployed.
 
-- [ ] **Step 5: Create `.dockerignore` and image lock**
+- [x] **Step 5: Create `.dockerignore` and image lock**
 
-Exclude `.git`, `.idea`, `.env`, `*.key`, `*.pem`, `node_modules`, `dist`, `target`, local media, database volumes, logs, and Codex visualization output. `deploy/image-lock.env` contains reviewed public image tags only:
+Exclude `.git`, `.idea`, `.env`, `*.key`, `*.pem`, `node_modules`, `dist`, `target`, local media, database volumes, logs, and Codex visualization output. `deploy/image-lock.env` contains reviewed, immutable public image references plus the protected snapshot and platform:
 
 ```dotenv
-NODE_IMAGE=node:22.18.0-bookworm-slim
-JAVA_BUILD_IMAGE=eclipse-temurin:17-jdk-jammy
-JAVA_RUNTIME_IMAGE=eclipse-temurin:17-jre-jammy
-POSTGRES_IMAGE=postgres:17-bookworm
+NODE_IMAGE=node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
+PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d
+JAVA_BUILD_IMAGE=eclipse-temurin:17-jdk-jammy@sha256:723151f3fc88ca2060153ee08ab8dbbea7983d6ed6f2622fe440acf178737c94
+JAVA_RUNTIME_IMAGE=eclipse-temurin:17-jre-jammy@sha256:475d8e96b4b2bfe08999e5e854755c773af1581acdf959a4545d88f0696a2339
+POSTGRES_IMAGE=postgres:17-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+UBUNTU_APT_SNAPSHOT=20260718T000000Z
+TARGET_PLATFORM=linux/amd64
 ```
 
-Record resolved immutable digests and only the protected tag name—not a credential-bearing remote URL—in `release.json`. The tagged commit contains `.dockerignore`, Compose/Nginx templates, scripts, and runbooks, so it is the no-secret source/config continuity copy required for recovery. Write the chosen PostgreSQL digest into the protected release env so `docker compose` starts the reviewed major-17 image, rather than resolving a moving tag during deployment.
+Record the exact source-pinned references and only the protected tag name—not a credential-bearing remote URL—in `release.json`. A rebuild must match the committed lock byte-for-byte; digest drift is a hard failure. The tagged commit contains `.dockerignore`, Compose/Nginx templates, scripts, and runbooks, so it is the no-secret source/config continuity copy required for recovery. Deployment validates both archived Config blobs, installs release-local API/PostgreSQL tags only when their portable digests match, and runs Compose with `pull_policy: never` rather than resolving a moving registry tag.
 
-The same PostgreSQL digest is mandatory in `images/postgres-17.oci.tar.zst`; deployment verifies the loaded local image ID before Compose starts it and does not require registry availability.
+The reviewed PostgreSQL source digest and portable Config digest are both recorded. The matching image is mandatory in `images/postgres-17.oci.tar.zst`; deployment verifies its Config blob, installs the release-local tag without replacing conflicting content, and does not require registry availability.
 
 - [ ] **Step 6: Build a real release and run the contract**
 
@@ -268,7 +278,9 @@ bash deploy/scripts/package-release.sh "$release_id"
 
 Expected: PASS; the API/JAR/admin/public/operations identities and both API/PostgreSQL image archives match exactly, and the detached outer-bundle checksum verifies after a disposable extraction/load round trip.
 
-- [ ] **Step 7: Commit the build slice**
+Verification (2026-07-18): the deterministic harness passed two independent no-cache Linux/amd64 builds with the same image manifest and Config digest; Ubuntu Jammy APT 2.4.14 fetched only snapshot `20260718T000000Z`; Docker 26 loaded both archives in a network-isolated daemon and created the production Compose services from verified local tags with `pull_policy: never`; the artifact contract and package existing-bundle idempotency path both passed. The real protected-tag release remains Step 6 and intentionally runs after this source slice is committed and its `portfolio-release/{releaseId}` tag is created.
+
+- [x] **Step 7: Commit the build slice**
 
 ```bash
 git add Dockerfile .dockerignore deploy/image-lock.env deploy/scripts/build-release.sh deploy/scripts/package-release.sh deploy/tests/release-artifact-contract.sh
@@ -676,7 +688,7 @@ git commit -m "ops: deploy and roll back portfolio releases"
 - Consumes: PostgreSQL container, Local/COS storage metadata, age recipient, rclone remotes with separate credentials, and `maintenance_run`.
 - Produces: nightly encrypted database/media backup sets, encrypted manifests, remote checksums, and failure email independent of API health.
 
-- [ ] **Step 1: Write failing backup safety tests**
+- [x] **Step 1: Write failing backup safety tests**
 
 With stubbed `docker`, `psql`, `pg_dump`, `age`, and `rclone`, assert:
 
@@ -693,7 +705,7 @@ With stubbed `docker`, `psql`, `pg_dump`, `age`, and `rclone`, assert:
 - daily/weekly/monthly retention keeps 7/4/6 sets;
 - a failure invokes the independent notification command and inserts a redacted failed `maintenance_run`.
 
-- [ ] **Step 2: Define protected backup configuration**
+- [x] **Step 2: Define protected backup configuration**
 
 Use `/etc/portfolio/backup.env` at `0600`:
 
@@ -706,7 +718,9 @@ BACKUP_VERIFY_RCLONE_CONFIG=/etc/portfolio/rclone-backup-verifier.conf
 BACKUP_PRUNE_RCLONE_CONFIG=/etc/portfolio/rclone-backup-pruner.conf
 MEDIA_SOURCE_RCLONE_REMOTE=portfolio-media:yychainsaw-portfolio-media
 MEDIA_SOURCE_RCLONE_CONFIG=/etc/portfolio/rclone-media-reader.conf
-LOCAL_MEDIA_ROOT=/var/lib/portfolio/media
+PORTFOLIO_LOCAL_VOLUME_NAME=portfolio-local-media
+PORTFOLIO_LOCAL_HOST_ROOT=/var/lib/docker/volumes/portfolio-local-media/_data
+PORTFOLIO_LOCAL_VOLUME_ID=opaque-root-only-identity
 BACKUP_EMAIL_TO=operator-address
 BACKUP_TIMEZONE=Asia/Hong_Kong
 ```
@@ -717,7 +731,7 @@ The values shown are documentation syntax, not usable credentials. The real age 
 
 Enable destination-bucket versioning before the first set. When the provider supports Object Lock/WORM, enable it at bucket creation for both `sets/` and `blobs/`, record its retention mode in the runbook, and never grant the uploader a bypass. Object Lock protects versions only until their recorded retention expiry; it does not make the pruner safe by itself. The pruner must still prove prefix, role, retained-set reachability, version ID, and retention expiry before deletion. Where Object Lock is unavailable, versioning, content-addressed immutable writes, separate credentials, and the same reachability gate remain mandatory.
 
-- [ ] **Step 3: Implement one snapshot keeper and database backup**
+- [x] **Step 3: Implement one snapshot keeper and database backup**
 
 `backup-set.sh` is the only production entry point. For each UTC timestamped set it:
 
@@ -734,7 +748,7 @@ The coprocess protocol uses explicit ready/snapshot/commit/unlock markers and ch
 
 Inserting `maintenance_run` uses `docker compose exec -T postgres psql` with a static parameterized SQL file and includes only run ID, allowlisted run type/status, timestamps, artifact checksum, and redacted category. Snapshot/export commands and maintenance writes must use the same pinned PostgreSQL 17 client image as production.
 
-- [ ] **Step 4: Implement the mixed-provider media closure**
+- [x] **Step 4: Implement the mixed-provider media closure**
 
 The manifest-reader transaction exports every original from `media_asset` and every row from `media_variant` with asset/variant ID, per-row provider, bucket, region, object key, MIME type, byte size, plaintext SHA-256, and snapshot/set ID—no caption, filename, translation, or visitor data. After `pg_dump` finishes, canonical assembly adds that dump's plaintext SHA-256 to the unchanged exported row set before encrypting the authoritative manifest. A single manifest may freely interleave `LOCAL` and `TENCENT_COS`; dispatch each row independently and fail closed on any other provider.
 
@@ -759,15 +773,17 @@ Encrypt the authoritative mixed-provider manifest with age. `set-manifest.json` 
 
 For COS content verification let `total` be the number of distinct blob hashes in this set. If `total == 0`, sample `0`; if `total < 20`, sample every blob; otherwise use `sample = min(total, 200, max(20, ceil(total * 0.01)))`. Choose deterministic set-ID-seeded hashes, download them using only the verifier credential, and recompute plaintext SHA-256. Plain Local entries are all verified before tar creation, encrypted-artifact integrity is checked remotely nightly, and Task 7 performs a full decrypt/extract verification.
 
-- [ ] **Step 5: Implement 7 daily, 4 weekly, and 6 monthly retention**
+- [x] **Step 5: Implement 7 daily, 4 weekly, and 6 monthly retention**
 
 Every run creates an immutable daily set. Its self-contained manifest marks weekly eligibility when the set is the configured first-weekday run and monthly eligibility on calendar day 1. The pruner retains the newest 7 daily-eligible, 4 weekly-eligible, and 6 monthly-eligible distinct verified set IDs; it never copies/relabels blobs or rewrites a set. Restoring a set never depends on an earlier set or a mutable retention index.
 
 `prune-remote.sh` runs with only the pruner credential. It verifies remote account, bucket, non-root prefix, role, versioning/Object-Lock state, every retained set checksum, and every immutable `VERIFIED` marker; writes and remotely persists a proposed deletion manifest; then rebuilds the union of all `blobs/{sha256}` paths referenced by every retained daily/weekly/monthly set. It may delete an expired unretained set's set-local artifacts and may garbage-collect a blob only when no retained set references it, the blob is not younger than the safety window, all protected versions are beyond retention, and the candidate remains beneath `${BACKUP_PREFIX}/blobs/`. Reject an empty retained-set collection unless an operator supplies the documented disaster-reset confirmation; never issue an rclone delete at remote or bucket root.
 
-- [ ] **Step 6: Install the host timer**
+- [x] **Step 6: Install the host timer**
 
 `portfolio-backup.timer` runs nightly at 02:30 `Asia/Hong_Kong` with `Persistent=true` and randomized delay up to 15 minutes. The oneshot service uses hardening (`NoNewPrivileges`, `PrivateTmp`, protected system/home), allows Docker/rclone network needs, sets a 3-hour timeout, exposes source/uploader/verifier but not pruner credentials, and invokes `backup-set.sh` even if the API container is stopped. `portfolio-backup-prune.timer` runs after the expected backup window with its own hardened service and exposes only the pruner configuration; it may read retention manifests/markers and create one immutable GC report, but cannot upload backup data or read database/media object bodies.
+
+Verification (2026-07-18): Bash syntax, ShellCheck, Python compilation, the complete offline backup contract, and Ubuntu 22.04 systemd unit verification passed. The contract proves one shared-lock/exported-snapshot flow, custom dump/list validation, mixed Local/COS dispatch, empty Local tar, immutable upload/read-back, early failure notification, fixed manifest schema, Docker volume Mountpoint plus owner-only marker checks, and 7/4/6 reachability pruning. A real server backup, Tencent version/Object-Lock guard, and remote restore remain external gates in Step 7 and are not claimed as executed.
 
 - [ ] **Step 7: Verify a real backup and commit**
 
@@ -925,7 +941,8 @@ The timer runs on the first Monday of January, April, July, and October and send
 ```bash
 sudo systemd-analyze verify deploy/systemd/portfolio-restore-reminder.service deploy/systemd/portfolio-restore-reminder.timer
 bash deploy/tests/restore-safety-contract.sh
-sudo RESTORE_ENV=isolated bash deploy/restore/restore-drill.sh --root /srv/portfolio-restore/quarterly-drill --historical-revision "$HISTORICAL_REVISION_ID"
+# Use the complete FD-based invocation, required metadata and exact secret-file
+# contract under docs/operations/backup-recovery.md#精确执行入口.
 ```
 
 Expected: safety contract passes; the independently verified remote report and matching production maintenance row record RPO ≤24h/RTO ≤4h; current and selected historical content are readable; historical restore creates a new draft; every required Local/COS byte passes direct and real Nginx/API SHA/content-type checks.

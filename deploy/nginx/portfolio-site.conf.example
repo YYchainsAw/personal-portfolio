@@ -11,6 +11,7 @@ server {
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
+    listen 127.0.0.1:@@NGINX_LOCAL_PORT@@ ssl http2;
     server_name @@PUBLIC_HOSTS@@;
 
     ssl_certificate @@TLS_CERTIFICATE@@;
@@ -44,7 +45,7 @@ server {
     location = /actuator { return 404; }
     location ^~ /actuator/ { return 404; }
 
-    location = /api/admin/auth/login {
+    location = /api/admin/auth/password {
         limit_req zone=portfolio_login burst=3 nodelay;
         proxy_pass http://@@API_LOOPBACK@@;
         include @@NGINX_INCLUDE_DIRECTORY@@/portfolio-proxy.conf;

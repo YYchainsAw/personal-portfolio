@@ -1379,8 +1379,10 @@ on_exit() {
 }
 
 on_signal() {
+  local status="$1"
+  trap - HUP INT TERM
   ERROR_CATEGORY=INTERRUPTED
-  exit 130
+  exit "$status"
 }
 
 finalize_success() {
@@ -1406,7 +1408,9 @@ main() {
   START_WALL_EPOCH="$(date -u +%s)"
   START_MONOTONIC="$(monotonic_seconds)"
   trap on_exit EXIT
-  trap on_signal HUP INT TERM
+  trap 'on_signal 129' HUP
+  trap 'on_signal 130' INT
+  trap 'on_signal 143' TERM
 
   sanitize_compose_environment
   sanitize_proxy_environment

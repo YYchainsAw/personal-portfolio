@@ -33,7 +33,6 @@ docker compose version >/dev/null 2>&1 || fail 'Docker Compose v2 is required'
 [[ -f "$COMPOSE_SOURCE" ]] || fail 'production Compose file is missing'
 [[ -f "$ENV_EXAMPLE" ]] || fail 'deployment environment example is missing'
 [[ -f "$APPLICATION_PROD" ]] || fail 'Spring production profile is missing'
-
 WORK_DIRECTORY="$(mktemp -d)"
 readonly WORK_DIRECTORY
 trap 'rm -rf -- "$WORK_DIRECTORY"' EXIT
@@ -56,21 +55,18 @@ sed \
   "$COMPOSE_SOURCE" >"$COMPOSE_FILE"
 
 printf '%s\n' \
-  'POSTGRES_IMAGE=postgres:17-bookworm@sha256:1111111111111111111111111111111111111111111111111111111111111111' \
-  'PORTFOLIO_IMAGE=portfolio-api:contract-release' \
-  'PORTFOLIO_RELEASE_ID=contract-release' >"$INTERPOLATION_ENV"
-
+  'POSTGRES_IMAGE=portfolio-postgres-17:aaaaaaaaaaaa-bbbbbbbbbbbb' \
+  'PORTFOLIO_IMAGE=portfolio-api:aaaaaaaaaaaa-bbbbbbbbbbbb' \
+  'PORTFOLIO_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb' >"$INTERPOLATION_ENV"
 printf '%s\n' \
-  'PORTFOLIO_IMAGE=portfolio-api:contract-release' \
-  'PORTFOLIO_RELEASE_ID=contract-release' >"$NO_POSTGRES_ENV"
-
+  'PORTFOLIO_IMAGE=portfolio-api:aaaaaaaaaaaa-bbbbbbbbbbbb' \
+  'PORTFOLIO_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb' >"$NO_POSTGRES_ENV"
 printf '%s\n' \
-  'POSTGRES_IMAGE=postgres:17-bookworm@sha256:1111111111111111111111111111111111111111111111111111111111111111' \
-  'PORTFOLIO_RELEASE_ID=contract-release' >"$NO_API_ENV"
-
+  'POSTGRES_IMAGE=portfolio-postgres-17:aaaaaaaaaaaa-bbbbbbbbbbbb' \
+  'PORTFOLIO_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb' >"$NO_API_ENV"
 printf '%s\n' \
-  'POSTGRES_IMAGE=postgres:17-bookworm@sha256:1111111111111111111111111111111111111111111111111111111111111111' \
-  'PORTFOLIO_IMAGE=portfolio-api:contract-release' >"$NO_RELEASE_ID_ENV"
+  'POSTGRES_IMAGE=portfolio-postgres-17:aaaaaaaaaaaa-bbbbbbbbbbbb' \
+  'PORTFOLIO_IMAGE=portfolio-api:aaaaaaaaaaaa-bbbbbbbbbbbb' >"$NO_RELEASE_ID_ENV"
 
 printf '%s\n' \
   'POSTGRES_DB=portfolio' \
@@ -93,7 +89,9 @@ config="$(run_compose \
 
 jq -e '
   .name == "portfolio" and
-  (.services.postgres.image | test("^postgres:17(?:[.-][A-Za-z0-9_.-]+)?@sha256:[0-9a-f]{64}$")) and
+  (.services.postgres.image == "portfolio-postgres-17:aaaaaaaaaaaa-bbbbbbbbbbbb") and
+  (.services.postgres.pull_policy == "never") and
+  (.services.postgres.build == null) and
   (.services.postgres.ports == null) and
   (.services.postgres.restart == "unless-stopped") and
   (.services.postgres.volumes == [{
@@ -106,7 +104,9 @@ jq -e '
     "CMD-SHELL",
     "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"
   ]) and
-  (.services["portfolio-api"].image == "portfolio-api:contract-release") and
+  (.services["portfolio-api"].image == "portfolio-api:aaaaaaaaaaaa-bbbbbbbbbbbb") and
+  (.services["portfolio-api"].pull_policy == "never") and
+  (.services["portfolio-api"].build == null) and
   (.services["portfolio-api"].restart == "unless-stopped") and
   (.services["portfolio-api"].user == "10001:10001") and
   (.services["portfolio-api"].privileged != true) and
@@ -128,7 +128,7 @@ jq -e '
     volume: {}
   }]) and
   (.services["portfolio-api"].environment.SPRING_PROFILES_ACTIVE == "prod") and
-  (.services["portfolio-api"].environment.PORTFOLIO_RELEASE_ID == "contract-release") and
+  (.services["portfolio-api"].environment.PORTFOLIO_RELEASE_ID == "aaaaaaaaaaaa-bbbbbbbbbbbb") and
   (.services["portfolio-api"].environment.PORTFOLIO_BIND_ADDRESS == "0.0.0.0") and
   (.services["portfolio-api"].environment.PORTFOLIO_PORT == "8080") and
   (.services["portfolio-api"].environment.PORTFOLIO_LOCAL_STORAGE == "/var/lib/portfolio/media") and
@@ -161,7 +161,7 @@ if run_compose \
   --env-file "$NO_POSTGRES_ENV" \
   -f "$COMPOSE_FILE" \
   config --quiet >/dev/null 2>&1; then
-  fail 'Compose accepted a missing pinned PostgreSQL image'
+  fail 'Compose accepted a missing local PostgreSQL release tag'
 fi
 
 if run_compose \
@@ -169,7 +169,7 @@ if run_compose \
   --env-file "$NO_API_ENV" \
   -f "$COMPOSE_FILE" \
   config --quiet >/dev/null 2>&1; then
-  fail 'Compose accepted a missing API image'
+  fail 'Compose accepted a missing local API release tag'
 fi
 
 if run_compose \

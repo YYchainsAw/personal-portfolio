@@ -36,16 +36,15 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.parallel.Isolated;
@@ -73,6 +72,7 @@ import xyz.yychainsaw.portfolio.auth.model.AdminStatus;
 import xyz.yychainsaw.portfolio.auth.model.AdminUser;
 import xyz.yychainsaw.portfolio.auth.persistence.AdminUserRepository;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
+import xyz.yychainsaw.portfolio.support.DatabaseTestCleaner;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 @SpringBootTest
@@ -103,6 +103,11 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
     @MockitoSpyBean AuditMetadataRedactor redactor;
 
     private Fixture fixture;
+
+    @BeforeEach
+    void clearSharedAuthenticationState() {
+        DatabaseTestCleaner.clearAuthenticationState();
+    }
 
     @AfterEach
     void cleanFixture() {
@@ -685,8 +690,6 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
         Cookie pending = findResponseCookie(password, SESSION_COOKIE)
                 .orElseThrow(() -> new AssertionError("pending session cookie was not set"));
         String primaryId = requirePrimaryId(pending.getValue());
-        admin.primaryIds.add(primaryId);
-
         MvcResult second = mvc.perform(withCsrf(post(SECOND_FACTOR_PATH)
                         .cookie(pending)
                         .with(remote(remote))
@@ -738,10 +741,6 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
                         createdAt.atOffset(ZoneOffset.UTC),
                         Types.TIMESTAMP_WITH_TIMEZONE)
                 .update();
-        if (fixture != null) {
-            fixture.auditIds.add(id);
-            fixture.actions.add(action);
-        }
     }
 
     private String writeJson(Map<String, ?> value) {
@@ -882,11 +881,6 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
         private final UUID adminId = UUID.randomUUID();
         private final String username = "AuditAdmin" + adminId.toString().replace("-", "");
         private final String totpSecret;
-        private final Set<UUID> auditIds = new LinkedHashSet<>();
-        private final Set<UUID> metadataIds = new LinkedHashSet<>();
-        private final Set<String> actions = new LinkedHashSet<>();
-        private final Set<String> primaryIds = new LinkedHashSet<>();
-
         private Fixture() {
             TotpService.Enrollment enrollment = totp.beginEnrollment(adminId, username);
             totpSecret = enrollment.plaintextSecret();
@@ -904,72 +898,13 @@ class AdminAuditQueryTest extends PostgresIntegrationTestBase {
         }
 
         private String action(String purpose) {
-            String action = "TASK13_" + purpose + "_" + adminId.toString().replace("-", "")
+            return "TASK13_" + purpose + "_" + adminId.toString().replace("-", "")
                     .toUpperCase();
-            actions.add(action);
-            return action;
         }
 
         @Override
         public void close() {
-            JdbcClient owner = migratorJdbc();
-            metadataIds.addAll(owner.sql("""
-                            select id
-                            from portfolio.admin_session_metadata
-                            where admin_id=:id
-                            """)
-                    .param("id", adminId)
-                    .query(UUID.class)
-                    .list());
-            primaryIds.addAll(owner.sql("""
-                            select session_primary_id
-                            from portfolio.admin_session_metadata
-                            where admin_id=:id and session_primary_id is not null
-                            """)
-                    .param("id", adminId)
-                    .query(String.class)
-                    .list());
-            owner.sql("""
-                            alter table portfolio.audit_log
-                            disable trigger audit_log_reject_mutation
-                            """).update();
-            try {
-                owner.sql("""
-                                delete from portfolio.audit_log
-                                where actor_admin_id=:id or target_id=:target
-                                """)
-                        .param("id", adminId)
-                        .param("target", adminId.toString())
-                        .update();
-                for (UUID auditId : auditIds) {
-                    owner.sql("delete from portfolio.audit_log where id=:id")
-                            .param("id", auditId)
-                            .update();
-                }
-                for (UUID metadataId : metadataIds) {
-                    owner.sql("delete from portfolio.audit_log where target_id=:target")
-                            .param("target", metadataId.toString())
-                            .update();
-                }
-                for (String action : actions) {
-                    owner.sql("delete from portfolio.audit_log where action=:action")
-                            .param("action", action)
-                            .update();
-                }
-            } finally {
-                owner.sql("""
-                                alter table portfolio.audit_log
-                                enable trigger audit_log_reject_mutation
-                                """).update();
-            }
-            for (String primaryId : primaryIds) {
-                owner.sql("delete from portfolio.spring_session where primary_id=:id")
-                        .param("id", primaryId)
-                        .update();
-            }
-            owner.sql("delete from portfolio.admin_user where id=:id")
-                    .param("id", adminId)
-                    .update();
+            DatabaseTestCleaner.clearAuthenticationState();
         }
     }
 

@@ -62,6 +62,7 @@ import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository;
 import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository.PublicationRow;
 import xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType;
 import xyz.yychainsaw.portfolio.publishing.support.PublishingTestFixture;
+import xyz.yychainsaw.portfolio.support.PostgresTestImage;
 
 @SpringBootTest
 @Tag("integration")
@@ -74,7 +75,7 @@ import xyz.yychainsaw.portfolio.publishing.support.PublishingTestFixture;
 class PublicMediaPrivacyIntegrationTest {
     private static final String CURRENT_VARIANT = "w640";
     private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:17-bookworm")
+            new PostgreSQLContainer<>(PostgresTestImage.NAME)
                     .withDatabaseName("portfolio_test")
                     .withUsername("test_owner")
                     .withPassword("test_owner_password")

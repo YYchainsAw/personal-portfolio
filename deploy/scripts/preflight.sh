@@ -5,11 +5,16 @@ umask 077
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIRECTORY
+# shellcheck source=deploy/scripts/switch-journal.sh
+source "$SCRIPT_DIRECTORY/switch-journal.sh"
 
 WORK_DIRECTORY=''
 PUBLIC_CUTOVER=false
 RELOAD_NGINX=false
+INITIAL_EMPTY_DATABASE=false
 PORTFOLIO_API_CONTAINER_ID=''
+declare -A REQUIRED_PROVIDERS=()
+declare -a VERIFIED_COS_LOCATIONS=()
 
 fail() {
   printf 'Portfolio preflight failed: %s\n' "$1" >&2
@@ -22,7 +27,9 @@ cleanup() {
   fi
 }
 on_signal() {
-  exit 130
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
 }
 on_error() {
   local status="$?"
@@ -31,7 +38,9 @@ on_error() {
   exit "$status"
 }
 trap cleanup EXIT
-trap on_signal HUP INT TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 trap 'on_error "$LINENO"' ERR
 
 require_value() {
@@ -107,7 +116,7 @@ check_jurisdiction_gate() {
 check_prerequisites() {
   local command
   for command in \
-    age awk curl date df dig docker find findmnt grep jq openssl python3 readlink \
+    age awk curl date df dig docker env find findmnt grep jq openssl python3 readlink \
     realpath rclone sed sha256sum sort ss stat timedatectl unzip zstd
   do
     require_command "$command"
@@ -164,6 +173,7 @@ check_baota_nginx() {
   require_value NGINX_PREFIX
   require_value NGINX_CONF
   require_value NGINX_PID
+  require_value NGINX_LOCAL_PORT
   require_value TLS_CERTIFICATE
   require_value TLS_CERTIFICATE_KEY
 
@@ -172,6 +182,12 @@ check_baota_nginx() {
   NGINX_CONF="$(canonical_existing "$NGINX_CONF" NGINX_CONF)"
   NGINX_PID="$(canonical_existing "$NGINX_PID" NGINX_PID)"
   [[ -x "$NGINX_BIN" ]] || fail 'NGINX_BIN is not executable'
+  [[ "$NGINX_LOCAL_PORT" =~ ^[1-9][0-9]{0,4}$ ]] ||
+    fail 'NGINX_LOCAL_PORT must be one canonical integer port'
+  ((10#$NGINX_LOCAL_PORT <= 65535)) || fail 'NGINX_LOCAL_PORT is invalid'
+  case "$NGINX_LOCAL_PORT" in
+    80|443|18080) fail 'NGINX_LOCAL_PORT conflicts with a production listener' ;;
+  esac
   [[ -f "$NGINX_CONF" && -f "$NGINX_PID" ]] || fail 'BaoTa Nginx files are invalid'
   is_beneath "$NGINX_BIN" "$NGINX_PREFIX" || fail 'NGINX_BIN is outside NGINX_PREFIX'
   is_beneath "$NGINX_CONF" "$NGINX_PREFIX" || fail 'NGINX_CONF is outside NGINX_PREFIX'
@@ -195,6 +211,9 @@ check_baota_nginx() {
      ! grep -E ":443[[:space:]].*pid=${pid}," <<<"$listeners" >/dev/null; then
     fail 'BaoTa Nginx PID does not own both public listener ports'
   fi
+  grep -E "[[:space:]]127\\.0\\.0\\.1:${NGINX_LOCAL_PORT}[[:space:]].*pid=${pid}," \
+    <<<"$listeners" >/dev/null ||
+    fail 'BaoTa Nginx PID does not own the loopback-only smoke listener'
 
   TLS_CERTIFICATE="$(canonical_existing "$TLS_CERTIFICATE" TLS_CERTIFICATE)"
   TLS_CERTIFICATE_KEY="$(canonical_existing "$TLS_CERTIFICATE_KEY" TLS_CERTIFICATE_KEY)"
@@ -246,9 +265,15 @@ check_release_and_host() {
   [[ "$available_kib" =~ ^[0-9]+$ ]] || fail 'disk headroom cannot be measured'
   ((available_kib >= minimum_kib)) || fail 'insufficient deployment disk headroom'
 
-  curl --fail --silent --show-error --max-time 5 \
-    http://127.0.0.1:18080/actuator/health/readiness >/dev/null ||
-    fail 'API loopback readiness failed'
+  if [[ "$INITIAL_EMPTY_DATABASE" != 'true' ]]; then
+    env \
+      -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+      -u http_proxy -u https_proxy -u all_proxy \
+      -u NO_PROXY -u no_proxy \
+      curl --disable --noproxy '*' --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:18080/actuator/health/readiness >/dev/null ||
+      fail 'API loopback readiness failed'
+  fi
 }
 
 resolve_portfolio_api_container() {
@@ -297,42 +322,49 @@ check_local_storage() {
   [[ "$volume_mountpoint" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
     fail 'Local Docker volume Mountpoint does not match PORTFOLIO_LOCAL_HOST_ROOT'
 
-  local container mount_rows mount_type mount_name mount_source mount_destination mount_rw
-  local mount_extra matching_mounts=0 named_volume_mounts=0
-  container="$(resolve_portfolio_api_container)"
-  mount_rows="$(docker inspect --format \
-    '{{range .Mounts}}{{printf "%s|%s|%s|%s|%t\n" .Type .Name .Source .Destination .RW}}{{end}}' \
-    "$container")" || fail 'running portfolio-api mounts cannot be inspected'
-  while IFS='|' read -r \
-      mount_type mount_name mount_source mount_destination mount_rw mount_extra; do
-    [[ -n "$mount_type" ]] || continue
-    [[ -z "${mount_extra:-}" ]] || fail 'running portfolio-api mount metadata is malformed'
-    if [[ "$mount_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" ]]; then
-      ((named_volume_mounts += 1))
-    fi
-    if [[ "$mount_destination" == '/var/lib/portfolio/media' ]]; then
-      ((matching_mounts += 1))
-      [[ "$mount_type" == volume &&
-         "$mount_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" &&
-         "$mount_rw" == true ]] ||
-        fail 'running durable media mount is not the reviewed read-write named volume'
-      mount_source="$(canonical_existing "$mount_source" running-Local-volume-source)"
-      [[ "$mount_source" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
-        fail 'running durable media source does not match the reviewed volume Mountpoint'
-    fi
-  done <<<"$mount_rows"
-  [[ "$matching_mounts" -eq 1 && "$named_volume_mounts" -eq 1 ]] ||
-    fail 'reviewed Local named volume is missing, duplicated, or mounted at an extra target'
+  if [[ "$INITIAL_EMPTY_DATABASE" != true ]]; then
+    local container mount_rows mount_type mount_name mount_source mount_destination mount_rw
+    local mount_extra matching_mounts=0 named_volume_mounts=0
+    container="$(resolve_portfolio_api_container)"
+    mount_rows="$(docker inspect --format \
+      '{{range .Mounts}}{{printf "%s|%s|%s|%s|%t\n" .Type .Name .Source .Destination .RW}}{{end}}' \
+      "$container")" || fail 'running portfolio-api mounts cannot be inspected'
+    while IFS='|' read -r \
+        mount_type mount_name mount_source mount_destination mount_rw mount_extra; do
+      [[ -n "$mount_type" ]] || continue
+      [[ -z "${mount_extra:-}" ]] || fail 'running portfolio-api mount metadata is malformed'
+      if [[ "$mount_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" ]]; then
+        ((named_volume_mounts += 1))
+      fi
+      if [[ "$mount_destination" == '/var/lib/portfolio/media' ]]; then
+        ((matching_mounts += 1))
+        [[ "$mount_type" == volume &&
+           "$mount_name" == "$PORTFOLIO_LOCAL_VOLUME_NAME" &&
+           "$mount_rw" == true ]] ||
+          fail 'running durable media mount is not the reviewed read-write named volume'
+        mount_source="$(canonical_existing "$mount_source" running-Local-volume-source)"
+        [[ "$mount_source" == "$PORTFOLIO_LOCAL_HOST_ROOT" ]] ||
+          fail 'running durable media source does not match the reviewed volume Mountpoint'
+      fi
+    done <<<"$mount_rows"
+    [[ "$matching_mounts" -eq 1 && "$named_volume_mounts" -eq 1 ]] ||
+      fail 'reviewed Local named volume is missing, duplicated, or mounted at an extra target'
+  fi
 
   local marker="$PORTFOLIO_LOCAL_HOST_ROOT/.portfolio-volume-id"
   [[ ! -L "$marker" && -f "$marker" ]] ||
     fail 'Local volume identity marker is missing, replaced, or linked'
-  local marker_mode root_uid marker_uid
+  local marker_mode root_uid root_gid root_mode marker_uid marker_gid
   marker_mode="$(stat -Lc '%a' -- "$marker")"
   root_uid="$(stat -Lc '%u' -- "$PORTFOLIO_LOCAL_HOST_ROOT")"
+  root_gid="$(stat -Lc '%g' -- "$PORTFOLIO_LOCAL_HOST_ROOT")"
+  root_mode="$(stat -Lc '%a' -- "$PORTFOLIO_LOCAL_HOST_ROOT")"
   marker_uid="$(stat -Lc '%u' -- "$marker")"
-  [[ "$marker_mode" == 600 && "$marker_uid" == "$root_uid" ]] ||
-    fail 'Local volume identity marker is not owner-only'
+  marker_gid="$(stat -Lc '%g' -- "$marker")"
+  [[ "$root_uid" == 10001 && "$root_gid" == 10001 && "$root_mode" == 700 ]] ||
+    fail 'Local volume root is not owned by API UID/GID with mode 0700'
+  [[ "$marker_mode" == 600 && "$marker_uid" == 10001 && "$marker_gid" == 10001 ]] ||
+    fail 'Local volume identity marker is not API-owned and owner-only'
   local recorded_marker
   recorded_marker="$(<"$marker")"
   constant_time_equal "$recorded_marker" "$PORTFOLIO_LOCAL_VOLUME_ID" ||
@@ -399,7 +431,8 @@ check_storage_providers() {
   require_value PORTFOLIO_COMPOSE_FILE
   [[ -f "$PORTFOLIO_COMPOSE_FILE" ]] || fail 'production Compose file is missing'
 
-  declare -gA REQUIRED_PROVIDERS=()
+  REQUIRED_PROVIDERS=()
+  VERIFIED_COS_LOCATIONS=()
   declare -A configured_providers=()
   declare -A configured_cos=()
   local -a adapters=() locations=()
@@ -422,38 +455,40 @@ check_storage_providers() {
     done
   fi
 
-  local inventory="$WORK_DIRECTORY/media-locations.tsv"
-  local inventory_sql
-  inventory_sql="select distinct provider, coalesce(bucket, ''), coalesce(region, '') from portfolio.media_asset order by 1,2,3"
-  if ! docker compose \
-      --env-file "$PORTFOLIO_RELEASE_ENV" \
-      -f "$PORTFOLIO_COMPOSE_FILE" \
-      exec -T postgres sh -eu -c \
-      'export PGOPTIONS="-c default_transaction_read_only=on"; exec psql -X --no-psqlrc -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" --tuples-only --no-align --field-separator="|" -c "$1"' \
-      portfolio-preflight "$inventory_sql" \
-      >"$inventory" 2>"$WORK_DIRECTORY/media-locations.err"; then
-    fail 'media provider inventory query failed'
-  fi
+  if [[ "$INITIAL_EMPTY_DATABASE" != 'true' ]]; then
+    local inventory="$WORK_DIRECTORY/media-locations.tsv"
+    local inventory_sql
+    inventory_sql="select distinct provider, coalesce(bucket, ''), coalesce(region, '') from portfolio.media_asset order by 1,2,3"
+    if ! docker compose \
+        --env-file "$PORTFOLIO_RELEASE_ENV" \
+        -f "$PORTFOLIO_COMPOSE_FILE" \
+        exec -T postgres sh -eu -c \
+        'export PGOPTIONS="-c default_transaction_read_only=on"; exec psql -X --no-psqlrc -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" --tuples-only --no-align --field-separator="|" -c "$1"' \
+        portfolio-preflight "$inventory_sql" \
+        >"$inventory" 2>"$WORK_DIRECTORY/media-locations.err"; then
+      fail 'media provider inventory query failed'
+    fi
 
-  while IFS='|' read -r provider bucket region extra; do
-    [[ -n "$provider" && -z "${extra:-}" ]] ||
-      fail 'media provider inventory is malformed'
-    add_required_provider "$provider"
-    [[ -n "${configured_providers[$provider]:-}" ]] ||
-      fail 'historical media provider is not configured'
-    case "$provider" in
-      LOCAL)
-        [[ -z "$bucket" && -z "$region" ]] ||
-          fail 'historical Local media location is malformed'
-        ;;
-      TENCENT_COS)
-        [[ -n "$bucket" && -n "$region" ]] ||
-          fail 'historical COS media location is incomplete'
-        [[ -n "${configured_cos[$bucket@$region]:-}" ]] ||
-          fail 'historical COS location is not configured'
-        ;;
-    esac
-  done <"$inventory"
+    while IFS='|' read -r provider bucket region extra; do
+      [[ -n "$provider" && -z "${extra:-}" ]] ||
+        fail 'media provider inventory is malformed'
+      add_required_provider "$provider"
+      [[ -n "${configured_providers[$provider]:-}" ]] ||
+        fail 'historical media provider is not configured'
+      case "$provider" in
+        LOCAL)
+          [[ -z "$bucket" && -z "$region" ]] ||
+            fail 'historical Local media location is malformed'
+          ;;
+        TENCENT_COS)
+          [[ -n "$bucket" && -n "$region" ]] ||
+            fail 'historical COS media location is incomplete'
+          [[ -n "${configured_cos[$bucket@$region]:-}" ]] ||
+            fail 'historical COS location is not configured'
+          ;;
+      esac
+    done <"$inventory"
+  fi
 
   if [[ -n "${REQUIRED_PROVIDERS[LOCAL]:-}" ]]; then
     check_local_storage
@@ -491,14 +526,67 @@ check_storage_providers() {
           2>"$WORK_DIRECTORY/lifecycle.err"; then
         fail 'COS staging lifecycle verification failed'
       fi
+      VERIFIED_COS_LOCATIONS+=("$location")
     done
   fi
+}
+
+write_preflight_evidence() {
+  local output="${PORTFOLIO_PREFLIGHT_EVIDENCE_OUTPUT:-}"
+  [[ -n "$output" ]] || return 0
+  [[ "$output" == /* && "$output" != / && "$output" != *$'\n'* &&
+     "$output" != *$'\r'* ]] || fail 'preflight evidence output path is invalid'
+  [[ ! -L "$output" ]] || fail 'preflight evidence output path is linked'
+  if [[ -e "$output" ]]; then
+    [[ -f "$output" ]] || fail 'preflight evidence output is not a regular file'
+  fi
+  require_value PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID
+  [[ "$PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID" =~ ^[0-9a-f]{12}-[0-9a-f]{12}$ ]] ||
+    fail 'preflight evidence target release ID is invalid'
+  local parent base temporary providers_json cos_json
+  parent="$(realpath -e -- "$(dirname -- "$output")")" ||
+    fail 'preflight evidence parent does not resolve'
+  [[ -d "$parent" && ! -L "$parent" ]] || fail 'preflight evidence parent is invalid'
+  base="$(basename -- "$output")"
+  output="$parent/$base"
+  providers_json="$(printf '%s\n' "${!REQUIRED_PROVIDERS[@]}" | jq -Rsc '
+    split("\n") | map(select(length > 0)) | sort | unique
+  ')"
+  cos_json="$(printf '%s\n' "${VERIFIED_COS_LOCATIONS[@]}" | jq -Rsc '
+    split("\n") | map(select(length > 0)) | sort | unique |
+    map(capture("^(?<bucket>[a-z0-9][a-z0-9-]{2,62})@(?<region>[a-z0-9][a-z0-9-]{2,31})$") + {verified:true})
+  ')" || fail 'verified COS evidence is malformed'
+  temporary="$(mktemp "$parent/.preflight-evidence.XXXXXX")"
+  jq -Scn \
+    --arg targetReleaseId "$PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID" \
+    --argjson requiredProviders "$providers_json" \
+    --argjson cosLocations "$cos_json" \
+    '{schemaVersion:1,targetReleaseId:$targetReleaseId,
+      requiredProviders:$requiredProviders,cosLocations:$cosLocations}' >"$temporary"
+  chmod 0600 "$temporary"
+  mv -fT -- "$temporary" "$output"
 }
 
 has_csv_option() {
   local options=",$1,"
   local wanted="$2"
   [[ "$options" == *",$wanted,"* ]]
+}
+
+tmpfs_size_is_bounded() {
+  local options="$1" token value unit bytes
+  token="$(printf '%s\n' "$options" | tr ',' '\n' | awk -F= '$1 == "size" {count += 1; value=$2} END {if (count == 1) print value}')"
+  [[ "$token" =~ ^([1-9][0-9]{0,9})([kKmMgG]?)$ ]] || return 1
+  value="${BASH_REMATCH[1]}"
+  unit="${BASH_REMATCH[2],,}"
+  case "$unit" in
+    '') bytes=$((10#$value)) ;;
+    k) bytes=$((10#$value * 1024)) ;;
+    m) bytes=$((10#$value * 1024 * 1024)) ;;
+    g) bytes=$((10#$value * 1024 * 1024 * 1024)) ;;
+    *) return 1 ;;
+  esac
+  ((bytes > 0 && bytes <= 134217728))
 }
 
 check_tmpfs() {
@@ -515,7 +603,7 @@ check_tmpfs() {
   local options
   options="$(docker inspect --format '{{index .HostConfig.Tmpfs "/tmp"}}' "$container")" ||
     fail 'running /tmp tmpfs cannot be inspected'
-  if [[ ! "$options" =~ (^|,)size=[1-9][0-9]*([kKmMgG])?(,|$) ]] ||
+  if ! tmpfs_size_is_bounded "$options" ||
      ! has_csv_option "$options" noexec ||
      ! has_csv_option "$options" nosuid ||
      ! has_csv_option "$options" nodev; then
@@ -639,13 +727,45 @@ parse_arguments() {
     case "$argument" in
       --public-cutover) PUBLIC_CUTOVER=true ;;
       --reload-nginx) RELOAD_NGINX=true ;;
-      *) fail 'usage: preflight.sh [--public-cutover] [--reload-nginx]' ;;
+      --initial-empty-database) INITIAL_EMPTY_DATABASE=true ;;
+      *) fail 'usage: preflight.sh [--public-cutover] [--reload-nginx] [--initial-empty-database]' ;;
     esac
   done
 }
 
 main() {
   parse_arguments "$@"
+  require_value PORTFOLIO_ROOT
+  require_value PORTFOLIO_RELEASE_ENV
+  [[ "$(id -u)" -eq 0 ]] || fail 'preflight must run as root'
+  [[ "$PORTFOLIO_ROOT" == /* && "$PORTFOLIO_ROOT" != / &&
+     -d "$PORTFOLIO_ROOT" && ! -L "$PORTFOLIO_ROOT" ]] ||
+    fail 'PORTFOLIO_ROOT is invalid before switch recovery'
+  PORTFOLIO_ROOT="$(realpath -e -- "$PORTFOLIO_ROOT")"
+  local root_mode
+  root_mode="$(stat -Lc '%a' -- "$PORTFOLIO_ROOT")"
+  [[ "$(stat -Lc '%u' -- "$PORTFOLIO_ROOT")" == 0 ]] ||
+    fail 'PORTFOLIO_ROOT is not owned by root before switch recovery'
+  (( (8#$root_mode & 8#022) == 0 )) ||
+    fail 'PORTFOLIO_ROOT is writable outside root before switch recovery'
+  PORTFOLIO_ETC_ROOT="${PORTFOLIO_ETC_ROOT:-$(dirname -- "$PORTFOLIO_RELEASE_ENV")}"
+  [[ "$PORTFOLIO_ETC_ROOT" == /* && "$PORTFOLIO_ETC_ROOT" != / &&
+     -d "$PORTFOLIO_ETC_ROOT" && ! -L "$PORTFOLIO_ETC_ROOT" ]] ||
+    fail 'PORTFOLIO_ETC_ROOT is invalid before switch recovery'
+  PORTFOLIO_ETC_ROOT="$(realpath -e -- "$PORTFOLIO_ETC_ROOT")"
+  root_mode="$(stat -Lc '%a' -- "$PORTFOLIO_ETC_ROOT")"
+  [[ "$(stat -Lc '%u' -- "$PORTFOLIO_ETC_ROOT")" == 0 ]] ||
+    fail 'PORTFOLIO_ETC_ROOT is not owned by root before switch recovery'
+  (( (8#$root_mode & 8#022) == 0 )) ||
+    fail 'PORTFOLIO_ETC_ROOT is writable outside root before switch recovery'
+  [[ "$PORTFOLIO_RELEASE_ENV" == "$PORTFOLIO_ETC_ROOT/release.env" ]] ||
+    fail 'PORTFOLIO_RELEASE_ENV is outside the protected configuration root'
+  PORTFOLIO_NGINX_ENV="${PORTFOLIO_NGINX_ENV:-$PORTFOLIO_ETC_ROOT/nginx.env}"
+  export PORTFOLIO_ROOT PORTFOLIO_ETC_ROOT PORTFOLIO_NGINX_ENV
+  switch_journal_acquire_or_verify_lock \
+    "${PORTFOLIO_DEPLOY_LOCK_FILE:-/run/lock/portfolio/deploy.lock}" ||
+    fail 'could not acquire the deploy lock for switch recovery'
+  switch_journal_recover_pending || fail 'pending release switch recovery failed'
   check_jurisdiction_gate
   check_prerequisites
   WORK_DIRECTORY="$(mktemp -d)"
@@ -653,7 +773,10 @@ main() {
   check_baota_nginx
   check_release_and_host
   check_storage_providers
-  check_tmpfs
+  if [[ "$INITIAL_EMPTY_DATABASE" != 'true' ]]; then
+    check_tmpfs
+  fi
+  write_preflight_evidence
   if [[ "$PUBLIC_CUTOVER" == 'true' ]]; then
     check_dns
   fi

@@ -7,9 +7,13 @@
     "dev": "vite",
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
+    "test": "vitest",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
     "export:portfolio": "node scripts/export-portfolio.mjs --output ../runtime/import/portfolio-v1.json",
     "test:export": "node --test scripts/export-portfolio.test.mjs",
     "build-only": "vite build",
+    "sbom:prod": "cyclonedx-npm --package-lock-only --omit dev --spec-version 1.6 --output-reproducible --output-format JSON --validate",
     "type-check": "vue-tsc --build",
     "lint": "run-s \"lint:*\"",
     "lint:oxlint": "oxlint . --fix",
@@ -24,27 +28,37 @@
     "vue-router": "^5.1.0"
   },
   "devDependencies": {
+    "@cyclonedx/cyclonedx-npm": "6.0.0",
+    "@axe-core/playwright": "4.11.1",
+    "@playwright/test": "1.58.2",
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "^24.13.2",
     "@vitejs/plugin-vue": "^6.0.7",
+    "@vue/test-utils": "2.4.6",
     "@vue/eslint-config-typescript": "^14.8.0",
     "@vue/tsconfig": "^0.9.1",
-    "ajv": "8.17.1",
+    "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
+    "ajv-formats-draft2019": "1.6.1",
     "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-oxlint": "~1.69.0",
     "eslint-plugin-vue": "~10.9.2",
     "jiti": "^2.7.0",
+    "jsdom": "28.0.0",
     "npm-run-all2": "8.0.4",
     "oxlint": "~1.69.0",
     "prettier": "3.8.4",
     "typescript": "~6.0.0",
     "vite": "^8.0.16",
+    "vitest": "4.1.10",
     "vue-eslint-parser": "^10.4.1",
     "vue-tsc": "^3.3.5"
   },
   "engines": {
     "node": "^22.18.0 || >=24.12.0"
+  },
+  "overrides": {
+    "playwright-core": "1.58.2"
   }
 }

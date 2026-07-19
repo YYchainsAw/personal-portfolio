@@ -86,7 +86,7 @@ verify_set() {
 
   local remote_manifest="$work_directory/remote-set-manifest.json"
   local manifest_remote
-  manifest_remote="$(backup_set_remote_path "$set_id" set-manifest.json)"
+  manifest_remote="$(backup_set_object_remote_path "$set_id" set-manifest.json)"
   if ! backup_verify_download "$manifest_remote" "$remote_manifest" >/dev/null 2>&1; then
     backup_fail 'verifier could not download the set manifest'
   fi
@@ -101,7 +101,7 @@ verify_set() {
     file="$(jq -r --arg name "$artifact_name" '.artifacts[$name].file' "$remote_manifest")"
     expected_sha="$(jq -r --arg name "$artifact_name" '.artifacts[$name].ciphertextSha256' "$remote_manifest")"
     expected_size="$(jq -r --arg name "$artifact_name" '.artifacts[$name].byteSize' "$remote_manifest")"
-    remote="$(backup_set_remote_path "$set_id" "$file")"
+    remote="$(backup_set_object_remote_path "$set_id" "$file")"
     local_copy="$work_directory/verify-$artifact_name"
     if ! backup_verify_download "$remote" "$local_copy" >/dev/null 2>&1; then
       backup_fail 'verifier could not download a set artifact'
@@ -163,7 +163,7 @@ verify_marker() {
   backup_resolve_command BACKUP_RCLONE_COMMAND rclone
   backup_validate_topology nightly
   local marker="$work_directory/remote-VERIFIED"
-  if ! backup_verify_download "$(backup_set_remote_path "$set_id" VERIFIED)" "$marker" >/dev/null 2>&1; then
+  if ! backup_verify_download "$(backup_set_object_remote_path "$set_id" VERIFIED)" "$marker" >/dev/null 2>&1; then
     backup_fail 'verifier could not read the immutable verification marker'
   fi
   [[ "$(wc -l <"$marker")" -eq 1 && "$(tr -d '\r\n' <"$marker")" == "$expected_manifest_sha" ]] ||
@@ -171,12 +171,48 @@ verify_marker() {
   printf '%s\n' "$expected_manifest_sha"
 }
 
-[[ $# -ge 1 ]] || backup_fail 'usage: verify-artifact.sh set|marker ...'
+verify_completion() {
+  local set_id='' expected_manifest_sha='' local_record='' work_directory=''
+  while (($#)); do
+    case "$1" in
+      --set-id) set_id="$2"; shift 2 ;;
+      --expected-manifest-sha) expected_manifest_sha="$2"; shift 2 ;;
+      --local-record) local_record="$2"; shift 2 ;;
+      --work-directory) work_directory="$2"; shift 2 ;;
+      *) backup_fail 'usage: verify-artifact.sh completion --set-id ID --expected-manifest-sha SHA --local-record FILE --work-directory DIR' ;;
+    esac
+  done
+  backup_is_set_id "$set_id" || backup_fail 'set ID is invalid'
+  backup_is_sha256 "$expected_manifest_sha" || backup_fail 'set manifest SHA-256 is invalid'
+  [[ "$local_record" == /* && ! -L "$local_record" && -f "$local_record" ]] ||
+    backup_fail 'local completion record is invalid'
+  backup_require_private_directory "$work_directory" 'completion verification work directory'
+  jq -e --arg setId "$set_id" --arg manifestSha "$expected_manifest_sha" '
+    keys == ["manifestByteSize","manifestSha256","schemaVersion","setId","uploadPrefix"] and
+    .schemaVersion == 2 and .setId == $setId and
+    .uploadPrefix == ("uploading/" + $setId) and
+    .manifestSha256 == $manifestSha and
+    (.manifestByteSize | type == "number" and floor == . and . > 0)
+  ' "$local_record" >/dev/null || backup_fail 'local completion record is invalid'
+  backup_resolve_command BACKUP_RCLONE_COMMAND rclone
+  backup_validate_topology nightly
+  local remote_record="$work_directory/remote-completion-record.json"
+  if ! backup_verify_download "$(backup_set_remote_path "$set_id" VERIFIED)" \
+      "$remote_record" >/dev/null 2>&1; then
+    backup_fail 'verifier could not read the completed-set record'
+  fi
+  cmp -s -- "$local_record" "$remote_record" ||
+    backup_fail 'completed-set record changed during remote read-back'
+  printf '%s\n' "$expected_manifest_sha"
+}
+
+[[ $# -ge 1 ]] || backup_fail 'usage: verify-artifact.sh set|marker|completion ...'
 mode="$1"
 shift
 case "$mode" in
   set) verify_set "$@" ;;
   marker) verify_marker "$@" ;;
+  completion) verify_completion "$@" ;;
   sample-count)
     [[ $# -eq 1 && "$1" =~ ^(0|[1-9][0-9]*)$ ]] ||
       backup_fail 'usage: verify-artifact.sh sample-count TOTAL'

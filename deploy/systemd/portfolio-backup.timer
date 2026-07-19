@@ -2,7 +2,8 @@
 Description=Nightly Portfolio encrypted backup schedule
 
 [Timer]
-OnCalendar=*-*-* 02:30:00 Asia/Hong_Kong
+# 18:30 UTC is 02:30 Asia/Hong_Kong on the following calendar day.
+OnCalendar=*-*-* 18:30:00 UTC
 RandomizedDelaySec=15m
 Persistent=true
 AccuracySec=1m

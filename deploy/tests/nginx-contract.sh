@@ -55,11 +55,12 @@ readonly WORK_DIRECTORY
 render_environment=(
   'PUBLIC_HOSTS=yychainsaw.xyz,www.yychainsaw.xyz'
   'API_LOOPBACK=127.0.0.1:18080'
-  'MEDIA_ORIGIN=https://media.yychainsaw.xyz'
-  'VIDEO_FRAME_ORIGINS=https://player.bilibili.com,https://www.youtube-nocookie.com'
+  'MEDIA_ORIGIN=https://portfolio-1234567890.cos.ap-guangzhou.myqcloud.com'
+  'VIDEO_FRAME_ORIGINS=https://player.bilibili.com,https://player.vimeo.com,https://www.youtube.com'
   'TLS_CERTIFICATE=/www/server/panel/vhost/cert/yychainsaw.xyz/fullchain.pem'
   'TLS_CERTIFICATE_KEY=/www/server/panel/vhost/cert/yychainsaw.xyz/privkey.pem'
   'NGINX_CONF=/www/server/nginx/conf/nginx.conf'
+  'NGINX_LOCAL_PORT=18443'
   'ICP_NUMBER=赣ICP备2026000000号-1'
 )
 
@@ -83,10 +84,28 @@ assert_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
   'PORTFOLIO_LOCAL_HOST_ROOT=/var/lib/docker/volumes/portfolio-local-media/_data'
 assert_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
   'PORTFOLIO_LOCAL_VOLUME_NAME=portfolio-local-media'
+assert_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
+  'NGINX_LOCAL_PORT=18443'
 assert_not_contains "$REPOSITORY_ROOT/deploy/nginx/baota.env.example" \
   '/var/lib/docker/volumes/portfolio_local-media/_data'
 
+# Keep the browser CSP allowlist in lockstep with the exact origins emitted by
+# the public projection and COS redirect boundaries. A syntactically valid but
+# different hostname would make production media fail only after the browser
+# follows the redirect or creates the iframe.
+projection_mapper="$REPOSITORY_ROOT/backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/application/PublicProjectionMapper.java"
+public_media_controller="$REPOSITORY_ROOT/backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/publishing/web/PublicMediaController.java"
+admin_auth_controller="$REPOSITORY_ROOT/backend-parent/portfolio-server/src/main/java/xyz/yychainsaw/portfolio/auth/web/AdminAuthController.java"
+assert_contains "$projection_mapper" 'embed = "https://www.youtube.com/embed/" + id;'
+assert_contains "$projection_mapper" 'embed = "https://player.vimeo.com/video/" + id;'
+assert_contains "$projection_mapper" 'embed = "https://player.bilibili.com/player.html?bvid=" + id;'
+assert_contains "$public_media_controller" 'String expectedHost = variant.bucket() + ".cos." + variant.region()'
+assert_contains "$public_media_controller" '+ ".myqcloud.com";'
+assert_contains "$admin_auth_controller" '@RequestMapping("/api/admin/auth")'
+assert_contains "$admin_auth_controller" '@PostMapping("/password")'
+
 assert_contains "$site" 'alias /opt/portfolio/assets/;'
+assert_contains "$site" 'listen 127.0.0.1:18443 ssl http2;'
 assert_contains "$site" 'Cache-Control "public, max-age=31536000, immutable" always;'
 assert_contains "$site" 'location = /admin { return 308 /admin/; }'
 assert_contains "$site" 'alias /opt/portfolio/current-admin/assets/;'
@@ -94,7 +113,8 @@ assert_contains "$site" 'alias /opt/portfolio/current-admin/;'
 assert_contains "$site" 'try_files $uri $uri/ /admin/index.html;'
 assert_contains "$site" 'location = /actuator { return 404; }'
 assert_contains "$site" 'location ^~ /actuator/ { return 404; }'
-assert_contains "$site" 'location = /api/admin/auth/login {'
+assert_contains "$site" 'location = /api/admin/auth/password {'
+assert_not_contains "$site" 'location = /api/admin/auth/login {'
 assert_contains "$site" 'limit_req zone=portfolio_login burst=3 nodelay;'
 assert_contains "$site" 'limit_req zone=portfolio_contact burst=5 nodelay;'
 assert_contains "$site" 'limit_req zone=portfolio_events burst=20 nodelay;'
@@ -115,9 +135,12 @@ assert_not_contains "$proxy" '$proxy_add_x_forwarded_for'
 assert_contains "$headers" 'X-Content-Type-Options "nosniff" always;'
 assert_contains "$headers" 'Referrer-Policy "strict-origin-when-cross-origin" always;'
 assert_contains "$headers" 'X-Frame-Options "DENY" always;'
-assert_contains "$headers" 'https://media.yychainsaw.xyz'
+assert_contains "$headers" 'https://portfolio-1234567890.cos.ap-guangzhou.myqcloud.com'
 assert_contains "$headers" 'https://player.bilibili.com'
-assert_contains "$headers" 'https://www.youtube-nocookie.com'
+assert_contains "$headers" 'https://player.vimeo.com'
+assert_contains "$headers" 'https://www.youtube.com'
+assert_not_contains "$headers" 'https://www.youtube-nocookie.com'
+assert_not_contains "$headers" 'https://media.yychainsaw.xyz'
 assert_contains "$headers" 'Strict-Transport-Security "max-age=31536000; includeSubDomains" always;'
 assert_not_contains "$headers" 'http://'
 assert_not_contains "$headers" '*.'
@@ -151,6 +174,19 @@ do
       bash "$RENDER" "$invalid_output"
   [[ ! -e "$invalid_output/portfolio-site.conf" ]] ||
     fail 'invalid origin left a rendered public configuration'
+done
+
+expect_failure \
+  local-port-missing \
+  'NGINX_LOCAL_PORT is required' \
+  env "${render_environment[@]}" NGINX_LOCAL_PORT= bash "$RENDER" \
+    "$WORK_DIRECTORY/local-port-missing"
+for invalid_local_port in 0 80 443 18080 65536 not-a-port; do
+  expect_failure \
+    "local-port-$invalid_local_port" \
+    'NGINX_LOCAL_PORT' \
+    env "${render_environment[@]}" NGINX_LOCAL_PORT="$invalid_local_port" \
+      bash "$RENDER" "$WORK_DIRECTORY/local-port-$invalid_local_port"
 done
 
 fixture="$WORK_DIRECTORY/fixture"
@@ -198,6 +234,7 @@ if [[ "${PORTFOLIO_TEST_BAD_PORT_OWNER:-false}" == 'true' ]]; then
 else
   printf 'LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=4242,fd=6))\n'
   printf 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=4242,fd=7))\n'
+  printf 'LISTEN 0 511 127.0.0.1:18443 0.0.0.0:* users:(("nginx",pid=4242,fd=8))\n'
 fi
 STUB
 
@@ -211,8 +248,10 @@ cat >"$bin/findmnt" <<'STUB'
 if [[ "$*" == *' -S '* ]]; then
   printf '%s\n' "$PORTFOLIO_TEST_LOCAL_ROOT"
 else
-  printf '%s %s ext4 rw,relatime\n' \
-    "$PORTFOLIO_TEST_LOCAL_ROOT" "$PORTFOLIO_TEST_LOCAL_SOURCE"
+  printf '%s %s %s %s\n' \
+    "$PORTFOLIO_TEST_LOCAL_ROOT" "$PORTFOLIO_TEST_LOCAL_SOURCE" \
+    "${PORTFOLIO_TEST_LOCAL_FSTYPE:-ext4}" \
+    "${PORTFOLIO_TEST_LOCAL_MOUNT_OPTIONS:-rw,relatime}"
 fi
 STUB
 
@@ -249,24 +288,32 @@ case "${1:-}:${2:-}" in
     elif [[ "$*" == *'HostConfig.Tmpfs'* ]]; then
       printf '%s\n' "${PORTFOLIO_TEST_TMPFS_OPTIONS:-rw,noexec,nosuid,nodev,size=134217728,mode=1777}"
     else
-      printf '%s\n' 'JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/tmp'
-      printf '%s\n' 'PORTFOLIO_COS_STAGING_ROOT=/tmp/portfolio-cos-staging'
-      printf '%s\n' 'PORTFOLIO_LOCAL_STORAGE=/var/lib/portfolio/media'
+      printf 'JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=%s\n' "${PORTFOLIO_TEST_JAVA_TMP:-/tmp}"
+      printf 'PORTFOLIO_COS_STAGING_ROOT=%s\n' \
+        "${PORTFOLIO_TEST_COS_STAGING_ROOT:-/tmp/portfolio-cos-staging}"
+      printf 'PORTFOLIO_LOCAL_STORAGE=%s\n' \
+        "${PORTFOLIO_TEST_CONTAINER_LOCAL_ROOT:-/var/lib/portfolio/media}"
     fi
     ;;
-  exec:*) printf '%s\n' "${@: -1}" ;;
+  exec:*)
+    requested="${@: -1}"
+    if [[ -n "${PORTFOLIO_TEST_ESCAPE_PATH:-}" &&
+          "$requested" == "$PORTFOLIO_TEST_ESCAPE_PATH" ]]; then
+      printf '%s\n' "${PORTFOLIO_TEST_ESCAPE_RESULT:-/var/lib/portfolio/media/escaped}"
+    else
+      printf '%s\n' "$requested"
+    fi
+    ;;
   *) exit 1 ;;
 esac
 STUB
 
-cat >"$bin/jq" <<'STUB'
-#!/usr/bin/env bash
-file="${*: -1}"
-sed -n 's/.*"releaseId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file"
-STUB
-
 cat >"$bin/curl" <<'STUB'
 #!/usr/bin/env bash
+for variable in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy; do
+  [[ -z "${!variable+x}" ]] || exit 98
+done
+[[ "${1:-}" == --disable && "$*" == *"--noproxy *"* ]] || exit 99
 printf 'curl:%s\n' "$*" >>"$PORTFOLIO_TEST_COMMAND_LOG"
 exit "${PORTFOLIO_TEST_CURL_EXIT:-0}"
 STUB
@@ -277,7 +324,7 @@ printf 'lifecycle:%s@%s:%s\n' "$COS_BUCKET" "$COS_REGION" "$*" >>"$PORTFOLIO_TES
 exit "${PORTFOLIO_TEST_LIFECYCLE_EXIT:-0}"
 STUB
 
-for executable in dig ss timedatectl findmnt docker jq curl lifecycle-check; do
+for executable in dig ss timedatectl findmnt docker curl lifecycle-check; do
   chmod 0755 "$bin/$executable"
 done
 for executable in unzip zstd age rclone; do
@@ -307,6 +354,8 @@ for protected in release.env nginx.env; do
   chmod 0640 "$etc_portfolio/$protected"
 done
 chmod 0600 "$fixture/tls/privkey.pem" "$fixture/local-media/.portfolio-volume-id"
+chown 10001:10001 "$fixture/local-media" "$fixture/local-media/.portfolio-volume-id"
+chmod 0700 "$fixture/local-media"
 
 cat >"$fixture/docker-compose.prod.yml" <<'YAML'
 services:
@@ -338,6 +387,7 @@ base_preflight_environment=(
   NGINX_PREFIX="$baota/"
   NGINX_CONF="$baota/conf/nginx.conf"
   NGINX_PID="$baota/logs/nginx.pid"
+  NGINX_LOCAL_PORT=18443
   PORTFOLIO_PROC_ROOT="$proc_root"
   TLS_CERTIFICATE="$fixture/tls/fullchain.pem"
   TLS_CERTIFICATE_KEY="$fixture/tls/privkey.pem"
@@ -375,13 +425,40 @@ base_preflight_environment=(
 )
 
 : >"$command_log"
-env "${base_preflight_environment[@]}" bash "$PREFLIGHT" --public-cutover \
+preflight_evidence="$WORK_DIRECTORY/preflight-evidence.json"
+env "${base_preflight_environment[@]}" \
+  HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 \
+  ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+  https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 \
+  NO_PROXY=example.invalid no_proxy=example.invalid \
+  PORTFOLIO_PREFLIGHT_EVIDENCE_OUTPUT="$preflight_evidence" \
+  PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb \
+  bash "$PREFLIGHT" --public-cutover \
   >"$WORK_DIRECTORY/preflight-success.log"
 assert_contains "$WORK_DIRECTORY/preflight-success.log" 'Portfolio preflight passed for public cutover'
 assert_contains "$command_log" "nginx:-p $baota/ -c $baota/conf/nginx.conf -t"
 assert_contains "$command_log" 'lifecycle:portfolio-contract-1250000000@ap-guangzhou:--check-live'
 [[ "$(grep -c '^dig:' "$command_log")" -eq 4 ]] ||
   fail 'public cutover did not verify A and AAAA for both hosts'
+jq -e '
+  .schemaVersion == 1 and
+  .targetReleaseId == "aaaaaaaaaaaa-bbbbbbbbbbbb" and
+  .requiredProviders == ["LOCAL","TENCENT_COS"] and
+  .cosLocations == [{bucket:"portfolio-contract-1250000000",
+    region:"ap-guangzhou",verified:true}]
+' "$preflight_evidence" >/dev/null ||
+  fail 'preflight did not retain exact Local/COS verifier evidence'
+[[ "$(stat -Lc '%a' "$preflight_evidence")" == 600 ]] ||
+  fail 'preflight evidence is not owner-only'
+
+initial_evidence="$WORK_DIRECTORY/preflight-initial-evidence.json"
+env "${base_preflight_environment[@]}" \
+  PORTFOLIO_PREFLIGHT_EVIDENCE_OUTPUT="$initial_evidence" \
+  PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb \
+  bash "$PREFLIGHT" --initial-empty-database \
+  >"$WORK_DIRECTORY/preflight-initial.log"
+jq -e '.requiredProviders == ["LOCAL","TENCENT_COS"]' "$initial_evidence" >/dev/null ||
+  fail 'initial preflight did not require the provisioned Local volume before API startup'
 
 : >"$command_log"
 expect_failure \
@@ -405,6 +482,18 @@ expect_failure \
   env "${base_preflight_environment[@]}" PORTFOLIO_TEST_BAD_PORT_OWNER=true \
     bash "$PREFLIGHT"
 
+expect_failure \
+  missing-local-listener-port \
+  'NGINX_LOCAL_PORT is required' \
+  env "${base_preflight_environment[@]}" NGINX_LOCAL_PORT= bash "$PREFLIGHT"
+for invalid_local_port in 0 80 443 18080 65536 not-a-port; do
+  expect_failure \
+    "preflight-local-port-$invalid_local_port" \
+    'NGINX_LOCAL_PORT' \
+    env "${base_preflight_environment[@]}" NGINX_LOCAL_PORT="$invalid_local_port" \
+      bash "$PREFLIGHT"
+done
+
 printf 'TENCENT_COS|wrong-bucket-1250000000|ap-guangzhou\n' \
   >"$fixture/media-locations-mismatch.tsv"
 : >"$command_log"
@@ -424,6 +513,28 @@ expect_failure \
     bash "$PREFLIGHT"
 
 expect_failure \
+  tmpfs-missing \
+  'running /tmp tmpfs is missing a required size or security option' \
+  env "${base_preflight_environment[@]}" PORTFOLIO_TEST_TMPFS_OPTIONS=none \
+    bash "$PREFLIGHT"
+
+expect_failure \
+  tmpfs-oversized \
+  'running /tmp tmpfs is missing a required size or security option' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_TMPFS_OPTIONS='rw,noexec,nosuid,nodev,size=1g,mode=1777' \
+    bash "$PREFLIGHT"
+
+expect_failure \
+  cos-scratch-escape \
+  'running scratch resolved outside /tmp' \
+  env "${base_preflight_environment[@]}" \
+    PORTFOLIO_TEST_COS_STAGING_ROOT=/tmp/portfolio-cos-staging \
+    PORTFOLIO_TEST_ESCAPE_PATH=/tmp/portfolio-cos-staging \
+    PORTFOLIO_TEST_ESCAPE_RESULT=/var/lib/portfolio/media/escaped \
+    bash "$PREFLIGHT"
+
+expect_failure \
   lifecycle-live \
   'COS staging lifecycle verification failed' \
   env "${base_preflight_environment[@]}" PORTFOLIO_TEST_LIFECYCLE_EXIT=1 \
@@ -437,6 +548,57 @@ expect_failure \
     bash "$PREFLIGHT"
 assert_not_contains "$WORK_DIRECTORY/failure-volume-marker.log" 'do-not-print-this-value'
 assert_not_contains "$WORK_DIRECTORY/failure-volume-marker.log" 'volume-contract-secret'
+
+expect_failure \
+  worker-disabled \
+  'PORTFOLIO_JOBS_WORKER_ENABLED must be true' \
+  env "${base_preflight_environment[@]}" PORTFOLIO_JOBS_WORKER_ENABLED=false \
+    bash "$PREFLIGHT"
+
+expect_failure \
+  staging-cleanup-disabled \
+  'PORTFOLIO_STAGING_CLEANUP_ENABLED must be true' \
+  env "${base_preflight_environment[@]}" PORTFOLIO_STAGING_CLEANUP_ENABLED=false \
+    bash "$PREFLIGHT"
+
+mv "$fixture/local-media/.portfolio-volume-id" "$fixture/local-media/.portfolio-volume-id.saved"
+expect_failure \
+  volume-marker-missing \
+  'Local volume identity marker is missing, replaced, or linked' \
+  env "${base_preflight_environment[@]}" bash "$PREFLIGHT"
+mv "$fixture/local-media/.portfolio-volume-id.saved" "$fixture/local-media/.portfolio-volume-id"
+
+mv "$fixture/local-media/.portfolio-volume-id" "$fixture/local-media/.portfolio-volume-id.saved"
+ln -s "$fixture/local-media/.portfolio-volume-id.saved" \
+  "$fixture/local-media/.portfolio-volume-id"
+expect_failure \
+  volume-marker-symlink \
+  'Local volume identity marker is missing, replaced, or linked' \
+  env "${base_preflight_environment[@]}" bash "$PREFLIGHT"
+rm -f "$fixture/local-media/.portfolio-volume-id"
+mv "$fixture/local-media/.portfolio-volume-id.saved" "$fixture/local-media/.portfolio-volume-id"
+
+mv "$fixture/local-media/.portfolio-volume-id" "$fixture/local-media/.portfolio-volume-id.saved"
+mkdir "$fixture/local-media/.portfolio-volume-id"
+expect_failure \
+  volume-marker-replaced \
+  'Local volume identity marker is missing, replaced, or linked' \
+  env "${base_preflight_environment[@]}" bash "$PREFLIGHT"
+rmdir "$fixture/local-media/.portfolio-volume-id"
+mv "$fixture/local-media/.portfolio-volume-id.saved" "$fixture/local-media/.portfolio-volume-id"
+
+chmod 0755 "$fixture/local-media"
+expect_failure \
+  volume-root-mode \
+  'Local volume root is not owned by API UID/GID with mode 0700' \
+  env "${base_preflight_environment[@]}" bash "$PREFLIGHT"
+chmod 0700 "$fixture/local-media"
+
+expect_failure \
+  volume-ephemeral-root \
+  'Local storage is backed by an ephemeral filesystem' \
+  env "${base_preflight_environment[@]}" PORTFOLIO_TEST_LOCAL_FSTYPE=tmpfs \
+    bash "$PREFLIGHT"
 
 expect_failure \
   volume-mountpoint \
@@ -487,6 +649,36 @@ expect_failure \
   'historical media provider is not configured' \
   env "${base_preflight_environment[@]}" PORTFOLIO_STORAGE_ADAPTERS=LOCAL \
     PORTFOLIO_STORAGE_DEFAULT_PROVIDER=LOCAL bash "$PREFLIGHT"
+
+printf 'LOCAL||\n' >"$fixture/media-locations-local.tsv"
+local_evidence="$WORK_DIRECTORY/preflight-local-evidence.json"
+: >"$command_log"
+env "${base_preflight_environment[@]}" \
+  PORTFOLIO_STORAGE_ADAPTERS=LOCAL PORTFOLIO_STORAGE_DEFAULT_PROVIDER=LOCAL \
+  PORTFOLIO_COS_LOCATIONS= \
+  PORTFOLIO_TEST_MEDIA_LOCATIONS="$fixture/media-locations-local.tsv" \
+  PORTFOLIO_PREFLIGHT_EVIDENCE_OUTPUT="$local_evidence" \
+  PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb \
+  bash "$PREFLIGHT" >"$WORK_DIRECTORY/preflight-local.log"
+jq -e '.requiredProviders == ["LOCAL"] and .cosLocations == []' \
+  "$local_evidence" >/dev/null || fail 'actual Local-only preflight evidence is incorrect'
+assert_not_contains "$command_log" 'lifecycle:'
+
+printf 'TENCENT_COS|portfolio-contract-1250000000|ap-guangzhou\n' \
+  >"$fixture/media-locations-cos.tsv"
+cos_evidence="$WORK_DIRECTORY/preflight-cos-evidence.json"
+: >"$command_log"
+env "${base_preflight_environment[@]}" \
+  PORTFOLIO_STORAGE_ADAPTERS=TENCENT_COS \
+  PORTFOLIO_STORAGE_DEFAULT_PROVIDER=TENCENT_COS \
+  PORTFOLIO_TEST_MEDIA_LOCATIONS="$fixture/media-locations-cos.tsv" \
+  PORTFOLIO_PREFLIGHT_EVIDENCE_OUTPUT="$cos_evidence" \
+  PORTFOLIO_PREFLIGHT_TARGET_RELEASE_ID=aaaaaaaaaaaa-bbbbbbbbbbbb \
+  bash "$PREFLIGHT" >"$WORK_DIRECTORY/preflight-cos.log"
+jq -e '.requiredProviders == ["TENCENT_COS"] and
+  .cosLocations == [{bucket:"portfolio-contract-1250000000",region:"ap-guangzhou",verified:true}]' \
+  "$cos_evidence" >/dev/null || fail 'actual COS-only preflight evidence is incorrect'
+assert_contains "$command_log" 'lifecycle:portfolio-contract-1250000000@ap-guangzhou:--check-live'
 
 : >"$command_log"
 env "${base_preflight_environment[@]}" \

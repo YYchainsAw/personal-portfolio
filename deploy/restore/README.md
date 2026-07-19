@@ -72,7 +72,10 @@ rejects any production/backup tuple or any COS key outside the drill prefix.
 `LOCAL` rows retain null bucket/region metadata and resolve only through the
 isolated drill media volume.
 
-Run the command exactly as documented in the published recovery runbook. A
+Run the command exactly as documented under
+[`精确执行入口`](../../docs/operations/backup-recovery.md#精确执行入口) in the
+published recovery runbook. Do not copy a shortened command from an
+implementation plan. A
 successful run uploads the redacted report and checksum, independently reads
 them back with the verifier principal, records the matching checksum in
 production, tears down UUID-labelled resources, purges only the drill COS

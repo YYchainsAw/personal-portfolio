@@ -13,12 +13,32 @@ Thumbs.db
 **/.env.*
 !**/.env.example
 !**/.env.*.example
+!frontend/.env.production
+.envrc
+**/.envrc
+.npmrc
+**/.npmrc
+.netrc
+**/.netrc
 *.key
 *.pem
 *.p12
 *.pfx
 *.jks
 *.keystore
+**/backup.env
+**/postgres.env
+**/portfolio.env
+**/release.env
+**/nginx.env
+**/baota.env
+**/application-local.yml
+**/application-local.yaml
+**/rclone*.conf
+**/*rclone*.conf
+**/msmtp*.conf
+**/*age-identity*
+**/identity.age
 
 **/node_modules
 **/dist
@@ -27,6 +47,8 @@ Thumbs.db
 **/playwright-report
 **/test-results
 **/blob-report
+**/__pycache__
+*.py[cod]
 *.tsbuildinfo
 
 runtime

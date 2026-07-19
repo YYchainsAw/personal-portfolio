@@ -70,6 +70,7 @@ import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository;
 import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository.PublicationRow;
 import xyz.yychainsaw.portfolio.publishing.snapshot.AggregateType;
 import xyz.yychainsaw.portfolio.publishing.support.PublishingTestFixture;
+import xyz.yychainsaw.portfolio.support.PostgresTestImage;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -88,7 +89,7 @@ class ContentPublishingAcceptanceTest {
             "<template id=\"__PORTFOLIO_DATA__\">(.*?)</template>",
             Pattern.DOTALL);
     private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:17-bookworm")
+            new PostgreSQLContainer<>(PostgresTestImage.NAME)
                     .withDatabaseName("portfolio_test")
                     .withUsername("test_owner")
                     .withPassword("test_owner_password")

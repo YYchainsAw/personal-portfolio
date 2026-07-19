@@ -178,12 +178,16 @@ on_exit() {
 }
 
 on_signal() {
+  local status="$1"
+  trap - HUP INT TERM
   FAILURE_CATEGORY=INTERNAL_FAILED
-  exit 130
+  exit "$status"
 }
 
 trap on_exit EXIT
-trap on_signal HUP INT TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 sample_count() {
   local total="$1"
@@ -244,7 +248,7 @@ for forbidden_name in BACKUP_AGE_IDENTITY AGE_SECRET_KEY AGE_SECRET_KEY_FILE COS
     backup_fail 'private decrypt/runtime credentials must not enter the nightly backup service'
 done
 
-for command_name in awk base64 cmp grep install jq mktemp realpath sha256sum stat tr wc; do
+for command_name in awk base64 cmp dirname flock grep install jq mkdir mktemp realpath sha256sum stat tr wc; do
   command -v "$command_name" >/dev/null 2>&1 || backup_fail "$command_name is required"
 done
 
@@ -275,14 +279,14 @@ BACKUP_ZONEINFO_ROOT="${BACKUP_ZONEINFO_ROOT:-/usr/share/zoneinfo}"
 BACKUP_WEEKLY_DAY="${BACKUP_WEEKLY_DAY:-1}"
 [[ "$BACKUP_WEEKLY_DAY" =~ ^[1-7]$ ]] || backup_fail 'BACKUP_WEEKLY_DAY must be 1 through 7'
 backup_validate_topology nightly
+backup_acquire_operation_lock
 unset LOCAL_MEDIA_ROOT
 backup_resolve_local_media_volume
 
 BACKUP_STAGING_ROOT="${BACKUP_STAGING_ROOT:-/var/backups/portfolio/staging}"
 [[ "$BACKUP_STAGING_ROOT" == /* && "$BACKUP_STAGING_ROOT" != / && ! -L "$BACKUP_STAGING_ROOT" ]] ||
   backup_fail 'BACKUP_STAGING_ROOT is unsafe'
-install -d -m 0700 -- "$BACKUP_STAGING_ROOT"
-backup_require_private_directory "$BACKUP_STAGING_ROOT" 'backup staging root'
+backup_ensure_private_directory "$BACKUP_STAGING_ROOT" 'backup staging root'
 WORK_DIRECTORY="$(mktemp -d "$BACKUP_STAGING_ROOT/$SET_ID.XXXXXX")"
 chmod 0700 "$WORK_DIRECTORY"
 backup_require_private_directory "$WORK_DIRECTORY" 'backup set staging directory'
@@ -409,14 +413,14 @@ unset snapshot_id snapshot_marker database_plain_sha
 FAILURE_CATEGORY=UPLOAD_FAILED
 for artifact in "$database_cipher" "$local_cipher" "$manifest_cipher"; do
   filename="$(basename "$artifact")"
-  if ! backup_upload_immutable "$artifact" "$(backup_set_remote_path "$SET_ID" "$filename")" \
+  if ! backup_upload_immutable "$artifact" "$(backup_upload_remote_path "$SET_ID" "$filename")" \
       >/dev/null 2>&1; then
-    backup_fail 'set artifact upload failed'
+    backup_fail 'isolated upload-attempt artifact upload failed'
   fi
 done
 if ! backup_upload_immutable "$set_manifest" \
-    "$(backup_set_remote_path "$SET_ID" set-manifest.json)" >/dev/null 2>&1; then
-  backup_fail 'canonical set manifest upload failed'
+    "$(backup_upload_remote_path "$SET_ID" set-manifest.json)" >/dev/null 2>&1; then
+  backup_fail 'isolated upload-attempt manifest upload failed'
 fi
 
 set_manifest_sha="$(backup_sha256_file "$set_manifest")"
@@ -432,8 +436,8 @@ verified_marker="$WORK_DIRECTORY/VERIFIED"
 printf '%s\n' "$set_manifest_sha" >"$verified_marker"
 FAILURE_CATEGORY=UPLOAD_FAILED
 if ! backup_upload_immutable "$verified_marker" \
-    "$(backup_set_remote_path "$SET_ID" VERIFIED)" >/dev/null 2>&1; then
-  backup_fail 'immutable verification marker upload failed'
+    "$(backup_upload_remote_path "$SET_ID" VERIFIED)" >/dev/null 2>&1; then
+  backup_fail 'isolated upload-attempt verification marker upload failed'
 fi
 FAILURE_CATEGORY=VERIFY_FAILED
 marker_sha="$("$BACKUP_VERIFY_COMMAND" marker \
@@ -441,6 +445,31 @@ marker_sha="$("$BACKUP_VERIFY_COMMAND" marker \
   --expected-manifest-sha "$set_manifest_sha" \
   --work-directory "$WORK_DIRECTORY")"
 [[ "$marker_sha" == "$set_manifest_sha" ]] || backup_fail 'verification marker read-back failed'
+
+# A completed restore point is one atomic object. All multi-object writes stay
+# under uploading/{setId}; failed attempts can never appear in sets/.
+completion_record="$WORK_DIRECTORY/completion-record.json"
+jq -S -c -n \
+  --arg setId "$SET_ID" \
+  --arg uploadPrefix "uploading/$SET_ID" \
+  --arg manifestSha256 "$set_manifest_sha" \
+  --argjson manifestByteSize "$(backup_file_size "$set_manifest")" \
+  '{schemaVersion:2,setId:$setId,uploadPrefix:$uploadPrefix,
+    manifestSha256:$manifestSha256,manifestByteSize:$manifestByteSize}' \
+  >"$completion_record"
+FAILURE_CATEGORY=UPLOAD_FAILED
+if ! backup_upload_immutable "$completion_record" \
+    "$(backup_set_remote_path "$SET_ID" VERIFIED)" >/dev/null 2>&1; then
+  backup_fail 'atomic completed-set publication failed'
+fi
+FAILURE_CATEGORY=VERIFY_FAILED
+completion_sha="$("$BACKUP_VERIFY_COMMAND" completion \
+  --set-id "$SET_ID" \
+  --expected-manifest-sha "$set_manifest_sha" \
+  --local-record "$completion_record" \
+  --work-directory "$WORK_DIRECTORY")"
+[[ "$completion_sha" == "$set_manifest_sha" ]] ||
+  backup_fail 'completed-set record read-back failed'
 
 unlock_keeper
 [[ "$KEEPER_UNLOCKED" == true ]] || backup_fail 'verified backup did not release its shared lock'

@@ -2,7 +2,8 @@
 Description=Portfolio verified backup retention schedule
 
 [Timer]
-OnCalendar=*-*-* 06:30:00 Asia/Hong_Kong
+# 22:30 UTC is 06:30 Asia/Hong_Kong on the following calendar day.
+OnCalendar=*-*-* 22:30:00 UTC
 RandomizedDelaySec=20m
 Persistent=true
 AccuracySec=5m

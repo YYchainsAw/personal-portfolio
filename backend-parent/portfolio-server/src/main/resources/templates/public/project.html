@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title th:text="${project.seoTitle}">Project</title>
   <meta name="description" th:content="${project.seoDescription}" content="Project">
   <link rel="canonical" th:href="${canonical}" href="https://yychainsaw.xyz/zh-CN">
@@ -14,9 +15,10 @@
   <meta property="og:url" th:content="${canonical}" content="https://yychainsaw.xyz/zh-CN">
   <meta property="og:image" th:if="${ogImage != null}" th:content="${ogImage}">
   <link th:each="css : ${assets.css}" rel="stylesheet" th:href="${css}">
-  <script type="application/ld+json" th:utext="${structuredData}"></script>
+  <script type="application/ld+json" data-portfolio-seo th:utext="${structuredData}"></script>
 </head>
 <body>
+  <div id="app">
   <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
 
   <header>
@@ -29,8 +31,7 @@
     </nav>
   </header>
 
-  <main id="app">
-    <article id="main-content" tabindex="-1">
+    <main id="main-content" tabindex="-1">
       <header>
         <p th:text="${project.eyebrow}">Project</p>
         <h1 th:text="${project.title}">Project title</h1>
@@ -80,13 +81,21 @@
                loading="lazy">
           <figcaption th:if="${!#strings.isEmpty(block.payload.media.caption)
               or !#strings.isEmpty(block.payload.media.credit)
-              or !#strings.isEmpty(block.payload.media.sourceUrl)}">
+              or #strings.startsWith(block.payload.media.sourceUrl, 'https://')}">
             <span th:if="${!#strings.isEmpty(block.payload.media.caption)}"
                   th:text="${block.payload.media.caption}"></span>
-            <span th:if="${!#strings.isEmpty(block.payload.media.credit)}"
-                  th:text="${block.payload.media.credit}"></span>
-            <a th:if="${!#strings.isEmpty(block.payload.media.sourceUrl)}"
+            <a th:if="${!#strings.isEmpty(block.payload.media.credit)
+                    and #strings.startsWith(block.payload.media.sourceUrl, 'https://')}"
                th:href="${block.payload.media.sourceUrl}"
+               th:text="${block.payload.media.credit}"
+               target="_blank" rel="noopener noreferrer"></a>
+            <span th:if="${!#strings.isEmpty(block.payload.media.credit)
+                    and !#strings.startsWith(block.payload.media.sourceUrl, 'https://')}"
+                  th:text="${block.payload.media.credit}"></span>
+            <a th:if="${#strings.isEmpty(block.payload.media.credit)
+                    and #strings.startsWith(block.payload.media.sourceUrl, 'https://')}"
+               th:href="${block.payload.media.sourceUrl}"
+               th:text="${locale == 'zh-CN'} ? '来源' : 'Source'"
                target="_blank" rel="noopener noreferrer">Source</a>
           </figcaption>
         </figure>
@@ -101,13 +110,21 @@
                  loading="lazy">
             <figcaption th:if="${!#strings.isEmpty(item.caption)
                 or !#strings.isEmpty(item.credit)
-                or !#strings.isEmpty(item.sourceUrl)}">
+                or #strings.startsWith(item.sourceUrl, 'https://')}">
               <span th:if="${!#strings.isEmpty(item.caption)}"
                     th:text="${item.caption}"></span>
-              <span th:if="${!#strings.isEmpty(item.credit)}"
-                    th:text="${item.credit}"></span>
-              <a th:if="${!#strings.isEmpty(item.sourceUrl)}"
+              <a th:if="${!#strings.isEmpty(item.credit)
+                      and #strings.startsWith(item.sourceUrl, 'https://')}"
                  th:href="${item.sourceUrl}"
+                 th:text="${item.credit}"
+                 target="_blank" rel="noopener noreferrer"></a>
+              <span th:if="${!#strings.isEmpty(item.credit)
+                      and !#strings.startsWith(item.sourceUrl, 'https://')}"
+                    th:text="${item.credit}"></span>
+              <a th:if="${#strings.isEmpty(item.credit)
+                      and #strings.startsWith(item.sourceUrl, 'https://')}"
+                 th:href="${item.sourceUrl}"
+                 th:text="${locale == 'zh-CN'} ? '来源' : 'Source'"
                  target="_blank" rel="noopener noreferrer">Source</a>
             </figcaption>
           </figure>
@@ -123,13 +140,21 @@
                  loading="lazy">
             <figcaption th:if="${!#strings.isEmpty(block.payload.cover.caption)
                 or !#strings.isEmpty(block.payload.cover.credit)
-                or !#strings.isEmpty(block.payload.cover.sourceUrl)}">
+                or #strings.startsWith(block.payload.cover.sourceUrl, 'https://')}">
               <span th:if="${!#strings.isEmpty(block.payload.cover.caption)}"
                     th:text="${block.payload.cover.caption}"></span>
-              <span th:if="${!#strings.isEmpty(block.payload.cover.credit)}"
-                    th:text="${block.payload.cover.credit}"></span>
-              <a th:if="${!#strings.isEmpty(block.payload.cover.sourceUrl)}"
+              <a th:if="${!#strings.isEmpty(block.payload.cover.credit)
+                      and #strings.startsWith(block.payload.cover.sourceUrl, 'https://')}"
                  th:href="${block.payload.cover.sourceUrl}"
+                 th:text="${block.payload.cover.credit}"
+                 target="_blank" rel="noopener noreferrer"></a>
+              <span th:if="${!#strings.isEmpty(block.payload.cover.credit)
+                      and !#strings.startsWith(block.payload.cover.sourceUrl, 'https://')}"
+                    th:text="${block.payload.cover.credit}"></span>
+              <a th:if="${#strings.isEmpty(block.payload.cover.credit)
+                      and #strings.startsWith(block.payload.cover.sourceUrl, 'https://')}"
+                 th:href="${block.payload.cover.sourceUrl}"
+                 th:text="${locale == 'zh-CN'} ? '来源' : 'Source'"
                  target="_blank" rel="noopener noreferrer">Source</a>
             </figcaption>
           </figure>
@@ -185,8 +210,8 @@
              th:text="${block.payload.description}">Link description</p>
         </section>
       </div>
-    </article>
-  </main>
+    </main>
+  </div>
 
   <template id="__PORTFOLIO_DATA__" th:utext="${initialJson}"></template>
   <script type="module" th:src="${assets.entryJs}"></script>

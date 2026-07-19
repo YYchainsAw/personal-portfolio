@@ -50,6 +50,51 @@ class PublicTemplateSafetyTest {
     }
 
     @Test
+    void publicTemplatesUseOneNonLandmarkVueHostAndOneMarkedStructuredDataNode()
+            throws Exception {
+        for (String name : List.of("home", "project", "privacy")) {
+            String template = template(name);
+            assertThat(template).contains("<div id=\"app\">");
+            assertThat(template).contains(
+                    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">");
+            assertThat(template).doesNotContain("<main id=\"app\">");
+            assertThat(count(Pattern.compile("<main\\b").matcher(template))).isEqualTo(1);
+            assertThat(count(Pattern.compile("<h1\\b").matcher(template))).isEqualTo(1);
+            assertThat(template.indexOf("<div id=\"app\">"))
+                    .isLessThan(template.indexOf("<main"));
+            assertThat(template.indexOf("</main>"))
+                    .isLessThan(template.indexOf("<template id=\"__PORTFOLIO_DATA__\""));
+            assertThat(template).contains(
+                    "<script type=\"application/ld+json\" data-portfolio-seo");
+            assertThat(template).contains(
+                    "<script type=\"module\" th:src=\"${assets.entryJs}\"></script>");
+            assertThat(template).doesNotContain("<script type=\"module\">");
+        }
+    }
+
+    @Test
+    void serverAndClientAttributionRulesStayAligned() throws Exception {
+        String home = template("home");
+        assertThat(home)
+                .contains("<h1 id=\"hero-title\" th:text=\"${site.hero.displayName}\"")
+                .doesNotContain("<h1 id=\"hero-title\" th:text=\"${site.hero.headline}\"")
+                .doesNotContain("site.hero.media.credit")
+                .doesNotContain("site.hero.media.sourceUrl")
+                .contains("#strings.startsWith(site.hero.sourceUrl, 'https://')");
+
+        String project = template("project");
+        assertThat(project)
+                .doesNotContain("or !#strings.isEmpty(block.payload.media.sourceUrl)")
+                .doesNotContain("or !#strings.isEmpty(item.sourceUrl)")
+                .doesNotContain("or !#strings.isEmpty(block.payload.cover.sourceUrl)")
+                .contains("#strings.startsWith(block.payload.media.sourceUrl, 'https://')")
+                .contains("#strings.startsWith(item.sourceUrl, 'https://')")
+                .contains("#strings.startsWith(block.payload.cover.sourceUrl, 'https://')")
+                .contains("th:text=\"${locale == 'zh-CN'} ? '来源' : 'Source'\"")
+                .contains("target=\"_blank\" rel=\"noopener noreferrer\">Source</a>");
+    }
+
+    @Test
     void robotsContractIsExact() throws Exception {
         String robots = new ClassPathResource("static/robots.txt")
                 .getContentAsString(StandardCharsets.UTF_8);

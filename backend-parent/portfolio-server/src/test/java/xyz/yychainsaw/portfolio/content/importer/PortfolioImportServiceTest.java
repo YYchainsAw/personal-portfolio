@@ -71,6 +71,7 @@ import xyz.yychainsaw.portfolio.media.storage.LocalPublicationAuthorization;
 import xyz.yychainsaw.portfolio.media.storage.LocalPublicationFence;
 import xyz.yychainsaw.portfolio.media.storage.LocalStorageService;
 import xyz.yychainsaw.portfolio.media.storage.ReservedStagingCleanupResult;
+import xyz.yychainsaw.portfolio.support.DatabaseTestCleaner;
 import xyz.yychainsaw.portfolio.support.PostgresIntegrationTestBase;
 
 class PortfolioImportServiceTest {
@@ -773,6 +774,7 @@ class PortfolioImportServiceLifecycleTest extends PostgresIntegrationTestBase {
     }
 
     private void clearWorkspace() {
+        DatabaseTestCleaner.clearPublishingHistory();
         owner.sql("delete from portfolio.project").update();
         owner.sql("delete from portfolio.tag").update();
         owner.sql("delete from portfolio.skill").update();

@@ -12,7 +12,15 @@ WORK_DIRECTORY=''
 cleanup() {
   [[ -z "$WORK_DIRECTORY" || ! -d "$WORK_DIRECTORY" ]] || rm -rf -- "$WORK_DIRECTORY"
 }
-trap cleanup EXIT HUP INT TERM
+on_signal() {
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 main() {
   local set_id='' output='' verifier_config=''
@@ -36,6 +44,7 @@ main() {
   adapter_require_value BACKUP_PREFIX
   adapter_require_value BACKUP_DESTINATION_ACCOUNT_ID
   adapter_require_value BACKUP_DESTINATION_BUCKET
+  adapter_require_value BACKUP_DESTINATION_REGION
   adapter_require_value BACKUP_VERIFY_PRINCIPAL_ID
   adapter_parse_remote "$BACKUP_REMOTE" BACKUP_REMOTE
   adapter_safe_relative_path "$BACKUP_PREFIX" || adapter_fail 'BACKUP_PREFIX is invalid'
@@ -45,13 +54,38 @@ main() {
   local candidate="$WORK_DIRECTORY/set"
   local verify_work="$WORK_DIRECTORY/task5-verify"
   mkdir -m 0700 -- "$candidate" "$verify_work"
-  local remote_root="${BACKUP_REMOTE%/}/${BACKUP_PREFIX%/}/sets/$set_id"
+  local completed_root="${BACKUP_REMOTE%/}/${BACKUP_PREFIX%/}/sets/$set_id"
+  local completion_record="$WORK_DIRECTORY/completed-set-VERIFIED"
+  adapter_rclone_copyto "$verifier_config" "$completed_root/VERIFIED" "$completion_record" ||
+    adapter_fail 'backup verifier could not acquire the completed-set record'
+  local object_namespace object_root expected_manifest_sha=''
+  if jq -e --arg setId "$set_id" '
+      keys == ["manifestByteSize","manifestSha256","schemaVersion","setId","uploadPrefix"] and
+      .schemaVersion == 2 and .setId == $setId and
+      .uploadPrefix == ("uploading/" + $setId) and
+      (.manifestSha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+      (.manifestByteSize | type == "number" and floor == . and . > 0)
+    ' "$completion_record" >/dev/null 2>&1; then
+    object_namespace=uploading
+    object_root="${BACKUP_REMOTE%/}/${BACKUP_PREFIX%/}/uploading/$set_id"
+    expected_manifest_sha="$(jq -r '.manifestSha256' "$completion_record")"
+  else
+    # Read-only compatibility for sets created before atomic completion records.
+    [[ "$(wc -l <"$completion_record")" -eq 1 &&
+       "$(tr -d '\r\n' <"$completion_record")" =~ ^[0-9a-f]{64}$ ]] ||
+      adapter_fail 'completed-set record is neither schema 2 nor a legacy marker'
+    object_namespace=sets
+    object_root="$completed_root"
+    expected_manifest_sha="$(tr -d '\r\n' <"$completion_record")"
+  fi
   local manifest="$candidate/set-manifest.json"
-  adapter_rclone_copyto "$verifier_config" "$remote_root/set-manifest.json" "$manifest" ||
+  adapter_rclone_copyto "$verifier_config" "$object_root/set-manifest.json" "$manifest" ||
     adapter_fail 'backup verifier could not acquire the set manifest'
   local manifest_sha
   manifest_sha="$(sha256sum -- "$manifest" | awk '{print $1}')"
   adapter_is_sha256 "$manifest_sha" || adapter_fail 'set manifest checksum is invalid'
+  [[ "$manifest_sha" == "$expected_manifest_sha" ]] ||
+    adapter_fail 'completed-set record does not bind the acquired manifest'
 
   # Task5's verifier currently validates its full nightly topology even though
   # set verification only uses the verifier principal.  Supply private, empty
@@ -68,6 +102,8 @@ main() {
     BACKUP_PREFIX="$BACKUP_PREFIX" \
     BACKUP_DESTINATION_ACCOUNT_ID="$BACKUP_DESTINATION_ACCOUNT_ID" \
     BACKUP_DESTINATION_BUCKET="$BACKUP_DESTINATION_BUCKET" \
+    BACKUP_DESTINATION_REGION="$BACKUP_DESTINATION_REGION" \
+    BACKUP_SET_OBJECT_NAMESPACE="$object_namespace" \
     BACKUP_VERIFY_RCLONE_CONFIG="$verifier_config" \
     BACKUP_UPLOAD_RCLONE_CONFIG="$unused_upload" \
     BACKUP_PRUNE_RCLONE_CONFIG="$unused_prune" \
@@ -91,6 +127,8 @@ main() {
     BACKUP_REMOTE="$BACKUP_REMOTE" BACKUP_PREFIX="$BACKUP_PREFIX" \
     BACKUP_DESTINATION_ACCOUNT_ID="$BACKUP_DESTINATION_ACCOUNT_ID" \
     BACKUP_DESTINATION_BUCKET="$BACKUP_DESTINATION_BUCKET" \
+    BACKUP_DESTINATION_REGION="$BACKUP_DESTINATION_REGION" \
+    BACKUP_SET_OBJECT_NAMESPACE="$object_namespace" \
     BACKUP_VERIFY_RCLONE_CONFIG="$verifier_config" \
     BACKUP_UPLOAD_RCLONE_CONFIG="$unused_upload" \
     BACKUP_PRUNE_RCLONE_CONFIG="$unused_prune" \
@@ -110,7 +148,7 @@ main() {
 
   local filename
   for filename in database.dump.age local-media.tar.age media-manifest.json.age VERIFIED; do
-    adapter_rclone_copyto "$verifier_config" "$remote_root/$filename" "$candidate/$filename" ||
+    adapter_rclone_copyto "$verifier_config" "$object_root/$filename" "$candidate/$filename" ||
       adapter_fail "backup verifier could not acquire $filename"
   done
   [[ "$(tr -d '\r\n' <"$candidate/VERIFIED")" == "$manifest_sha" ]] ||

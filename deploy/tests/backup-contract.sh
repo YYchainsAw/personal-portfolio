@@ -17,6 +17,7 @@ NOTIFY_FAILURE="$REPOSITORY_ROOT/deploy/backup/notify-failure.sh"
 BACKUP_SERVICE="$REPOSITORY_ROOT/deploy/systemd/portfolio-backup.service"
 BACKUP_TIMER="$REPOSITORY_ROOT/deploy/systemd/portfolio-backup.timer"
 PRUNE_SERVICE="$REPOSITORY_ROOT/deploy/systemd/portfolio-backup-prune.service"
+PRUNE_READINESS_SERVICE="$REPOSITORY_ROOT/deploy/systemd/portfolio-backup-prune-readiness.service"
 PRUNE_TIMER="$REPOSITORY_ROOT/deploy/systemd/portfolio-backup-prune.timer"
 WORK_DIRECTORY=''
 COMMAND_LOG=''
@@ -29,6 +30,10 @@ fail() {
 }
 
 cleanup() {
+  if [[ "${KEEP_BACKUP_CONTRACT_FIXTURE:-0}" == 1 ]]; then
+    printf 'backup contract fixture retained at %s\n' "$WORK_DIRECTORY" >&2
+    return
+  fi
   if [[ -n "$WORK_DIRECTORY" && -d "$WORK_DIRECTORY" ]]; then
     rm -rf -- "$WORK_DIRECTORY"
   fi
@@ -320,6 +325,23 @@ case "$*" in
 esac
 STUB
 
+  cat >"$BIN_DIRECTORY/sync" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+/usr/bin/sync "$@"
+if [[ "${FIXTURE_SYNC_KILL_AT:-}" =~ ^[12]$ &&
+      "$*" == "-f $BACKUP_PRUNE_TRANSACTION_ROOT" ]]; then
+  counter_file="$FIXTURE_ROOT/transaction-root-sync-count"
+  count=0
+  [[ ! -f "$counter_file" ]] || count="$(<"$counter_file")"
+  ((count += 1))
+  printf '%s\n' "$count" >"$counter_file"
+  if [[ "$count" == "$FIXTURE_SYNC_KILL_AT" ]]; then
+    kill -KILL "$PPID"
+  fi
+fi
+STUB
+
   cat >"$BIN_DIRECTORY/age" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -513,7 +535,7 @@ case "$action" in
     if [[ -d "$root" ]]; then
       find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%f/\n' | LC_ALL=C sort
     fi
-    printf '%s\n' 'pruner-list:sets' >>"$FIXTURE_COMMAND_LOG"
+    printf 'pruner-list:%s\n' "${1##*/}" >>"$FIXTURE_COMMAND_LOG"
     ;;
   lsjson)
     [[ "$role" == pruner ]]
@@ -535,7 +557,7 @@ case "$action" in
       done < <(find "$root" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)
     fi
     printf ']\n'
-    printf '%s\n' 'pruner-list:blobs' >>"$FIXTURE_COMMAND_LOG"
+    printf 'pruner-list:%s\n' "${1##*/}" >>"$FIXTURE_COMMAND_LOG"
     ;;
   *) exit 91 ;;
 esac
@@ -553,11 +575,14 @@ STUB
 set -euo pipefail
 mode="$1"
 shift
-kind='destination' relative='prefix'
+kind='destination' relative='prefix' ticket_output=''
+prepare_only=false
 while (($#)); do
   case "$1" in
     --kind) kind="$2"; shift 2 ;;
     --relative-path) relative="$2"; shift 2 ;;
+    --ticket-output) ticket_output="$2"; shift 2 ;;
+    --prepare-only) prepare_only=true; shift ;;
     --prefix)
       [[ -n "$2" && "$2" != / && "$2" != . ]]
       shift 2
@@ -568,8 +593,25 @@ done
 [[ "$relative" != / && "$relative" != . && "$relative" != '' ]]
 printf 'guard:%s:%s:%s\n' "$mode" "$kind" "$relative" >>"$FIXTURE_COMMAND_LOG"
 case "$mode" in
-  verify-destination|review-candidate) printf '%s\n' SAFE ;;
-  delete-reviewed) printf '%s\n' DELETED ;;
+  verify-destination) printf '%s\n' SAFE ;;
+  review-candidate)
+    [[ "$ticket_output" == /* ]]
+    printf '{"schemaVersion":1}\n' >"$ticket_output"
+    chmod 0600 "$ticket_output"
+    printf '%s\n' SAFE
+    ;;
+  delete-reviewed)
+    if [[ "$prepare_only" == true ]]; then
+      if [[ "${FIXTURE_GUARD_KILL_ON_PREPARE:-}" == 1 &&
+            ! -e "$FIXTURE_ROOT/prepare-kill-fired" ]]; then
+        : >"$FIXTURE_ROOT/prepare-kill-fired"
+        kill -KILL "$PPID"
+      fi
+      printf '%s\n' PREPARED
+    else
+      printf '%s\n' DELETED
+    fi
+    ;;
   *) exit 2 ;;
 esac
 STUB
@@ -606,6 +648,8 @@ setup_backup_fixtures() {
   LOCAL_MEDIA_ROOT="$FIXTURE_ROOT/local-media"
   STAGING_ROOT="$FIXTURE_ROOT/staging"
   PRUNE_STAGING_ROOT="$FIXTURE_ROOT/prune-staging"
+  PRUNE_TRANSACTION_ROOT="$FIXTURE_ROOT/prune-transactions"
+  PRUNE_READINESS_FILE="$FIXTURE_ROOT/prune-initial-dry-run.json"
   ZONEINFO_ROOT="$FIXTURE_ROOT/zoneinfo"
   MEDIA_EXPORT_FIXTURE="$FIXTURE_ROOT/media-export.json"
   COMMAND_LOG="$FIXTURE_ROOT/commands.log"
@@ -613,6 +657,7 @@ setup_backup_fixtures() {
   mkdir -m 0700 \
     "$FIXTURE_ROOT" "$BIN_DIRECTORY" "$CONFIG_DIRECTORY" "$REMOTE_STORE" \
     "$SOURCE_STORE" "$LOCAL_MEDIA_ROOT" "$STAGING_ROOT" "$PRUNE_STAGING_ROOT" \
+    "$PRUNE_TRANSACTION_ROOT" \
     "$ZONEINFO_ROOT"
   mkdir -p "$ZONEINFO_ROOT/Asia"
   printf 'fixture-zoneinfo\n' >"$ZONEINFO_ROOT/Asia/Hong_Kong"
@@ -636,6 +681,7 @@ setup_backup_fixtures() {
   write_stub_commands
 
   BACKUP_ENVIRONMENT=(
+    "PATH=$BIN_DIRECTORY:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     "FIXTURE_REPOSITORY_ROOT=$REPOSITORY_ROOT"
     "FIXTURE_ROOT=$FIXTURE_ROOT"
     "FIXTURE_COMMAND_LOG=$COMMAND_LOG"
@@ -666,6 +712,7 @@ setup_backup_fixtures() {
     'BACKUP_PREFIX=production'
     'BACKUP_DESTINATION_ACCOUNT_ID=backup-account'
     'BACKUP_DESTINATION_BUCKET=backup-bucket'
+    'BACKUP_DESTINATION_REGION=ap-guangzhou'
     "BACKUP_UPLOAD_RCLONE_CONFIG=$UPLOAD_CONFIG"
     "BACKUP_VERIFY_RCLONE_CONFIG=$VERIFY_CONFIG"
     "BACKUP_PRUNE_RCLONE_CONFIG=$PRUNE_CONFIG"
@@ -683,6 +730,9 @@ setup_backup_fixtures() {
     'PORTFOLIO_LOCAL_VOLUME_ID=volume-contract-id'
     "BACKUP_STAGING_ROOT=$STAGING_ROOT"
     "BACKUP_PRUNE_STAGING_ROOT=$PRUNE_STAGING_ROOT"
+    "BACKUP_PRUNE_TRANSACTION_ROOT=$PRUNE_TRANSACTION_ROOT"
+    "BACKUP_PRUNE_READINESS_FILE=$PRUNE_READINESS_FILE"
+    "BACKUP_OPERATION_LOCK=$FIXTURE_ROOT/operation.lock"
     'BACKUP_TIMEZONE=Asia/Hong_Kong'
     "BACKUP_ZONEINFO_ROOT=$ZONEINFO_ROOT"
     'BACKUP_WEEKLY_DAY=4'
@@ -734,6 +784,136 @@ assert_no_fixture_secret() {
   done
 }
 
+expect_command_failure() {
+  local label="$1" expected="$2"
+  shift 2
+  local log="$FIXTURE_ROOT/$label.log"
+  if "$@" >"$log" 2>&1; then
+    fail "$label unexpectedly succeeded"
+  fi
+  grep -F "$expected" "$log" >/dev/null || {
+    sed -n '1,100p' "$log" >&2
+    fail "$label failed for an unexpected reason"
+  }
+}
+
+exercise_private_directory_metadata_contract() {
+  local label="$1" directory="$2"
+  shift 2
+  local -a command=("$@")
+  local observed
+  [[ "$(stat -Lc '%u:%g:%a' -- "$directory")" == 0:0:700 ]] ||
+    fail "$label fixture did not start root:root mode 0700"
+
+  chmod 0750 "$directory"
+  observed="$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")"
+  expect_command_failure "$label-mode" 'must be root:root mode 0700' "${command[@]}"
+  [[ "$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")" == "$observed" ]] ||
+    fail "$label unsafe mode was repaired or replaced"
+  chmod 0700 "$directory"
+
+  chown 0:1234 "$directory"
+  observed="$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")"
+  expect_command_failure "$label-group" 'must be root:root mode 0700' "${command[@]}"
+  [[ "$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")" == "$observed" ]] ||
+    fail "$label unsafe group was repaired or replaced"
+  chown 0:0 "$directory"
+
+  chown 0:1234 "$directory"
+  chmod 0750 "$directory"
+  observed="$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")"
+  expect_command_failure "$label-group-mode" 'must be root:root mode 0700' "${command[@]}"
+  [[ "$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")" == "$observed" ]] ||
+    fail "$label unsafe group/mode combination was repaired or replaced"
+  chown 0:0 "$directory"
+  chmod 0700 "$directory"
+
+  chown 1234:0 "$directory"
+  observed="$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")"
+  expect_command_failure "$label-owner" 'must be root:root mode 0700' "${command[@]}"
+  [[ "$(stat -Lc '%d:%i:%u:%g:%a' -- "$directory")" == "$observed" ]] ||
+    fail "$label unsafe owner was repaired or replaced"
+  chown 0:0 "$directory"
+}
+
+test_existing_private_directories_are_never_repaired() {
+  local operation_lock="$FIXTURE_ROOT/operation.lock"
+  local readiness_parent="$FIXTURE_ROOT/readiness-parent"
+  local nested_real="$FIXTURE_ROOT/nested-real"
+  local nested_alias="$FIXTURE_ROOT/nested-alias"
+
+  rm -f -- "$operation_lock"
+  exercise_private_directory_metadata_contract operation-lock-parent "$FIXTURE_ROOT" \
+    env "${BACKUP_ENVIRONMENT[@]}" bash "$BACKUP_SET" --verify-upload
+
+  ln -s -- "$FIXTURE_ROOT/missing-operation-lock" "$operation_lock"
+  expect_command_failure operation-lock-dangling-symlink \
+    'shared backup/prune operation lock path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" bash "$BACKUP_SET" --verify-upload
+  [[ -L "$operation_lock" && "$(readlink -- "$operation_lock")" == "$FIXTURE_ROOT/missing-operation-lock" ]] ||
+    fail 'dangling operation lock was followed, repaired, or replaced'
+  rm -- "$operation_lock"
+
+  mkdir -m 0700 -- "$nested_real"
+  ln -s -- "$nested_real" "$nested_alias"
+  expect_command_failure operation-lock-symlink-ancestor \
+    'shared backup/prune operation lock path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_OPERATION_LOCK=$nested_alias/operation.lock" \
+      bash "$BACKUP_SET" --verify-upload
+  expect_command_failure operation-lock-dotdot \
+    'shared backup/prune operation lock path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_OPERATION_LOCK=$nested_real/../operation-dotdot.lock" \
+      bash "$BACKUP_SET" --verify-upload
+  expect_command_failure operation-lock-double-slash \
+    'shared backup/prune operation lock path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_OPERATION_LOCK=$FIXTURE_ROOT//operation.lock" \
+      bash "$BACKUP_SET" --verify-upload
+  [[ ! -e "$nested_real/operation.lock" && ! -e "$FIXTURE_ROOT/operation-dotdot.lock" ]] ||
+    fail 'non-canonical operation lock path created a file'
+
+  exercise_private_directory_metadata_contract backup-staging "$STAGING_ROOT" \
+    env "${BACKUP_ENVIRONMENT[@]}" bash "$BACKUP_SET" --verify-upload
+  exercise_private_directory_metadata_contract prune-staging "$PRUNE_STAGING_ROOT" \
+    env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run
+  exercise_private_directory_metadata_contract prune-transaction "$PRUNE_TRANSACTION_ROOT" \
+    env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run
+
+  mkdir -m 0700 -- "$readiness_parent"
+  exercise_private_directory_metadata_contract prune-readiness-parent "$readiness_parent" \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_PRUNE_READINESS_FILE=$readiness_parent/readiness.json" \
+      bash "$PRUNE_REMOTE" --dry-run
+
+  expect_command_failure backup-staging-symlink-ancestor \
+    'backup staging root path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_STAGING_ROOT=$nested_alias/staging" \
+      bash "$BACKUP_SET" --verify-upload
+  expect_command_failure backup-staging-dotdot \
+    'backup staging root path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_STAGING_ROOT=$nested_real/../staging-dotdot" \
+      bash "$BACKUP_SET" --verify-upload
+  expect_command_failure backup-staging-double-slash \
+    'backup staging root path is unsafe' \
+    env "${BACKUP_ENVIRONMENT[@]}" \
+      "BACKUP_STAGING_ROOT=$FIXTURE_ROOT//staging" \
+      bash "$BACKUP_SET" --verify-upload
+  [[ ! -e "$nested_real/staging" && ! -e "$FIXTURE_ROOT/staging-dotdot" ]] ||
+    fail 'non-canonical backup staging path created a directory'
+
+  rm -- "$nested_alias"
+  rmdir -- "$nested_real" "$readiness_parent"
+  [[ "$(stat -Lc '%u:%g:%a' -- "$FIXTURE_ROOT")" == 0:0:700 &&
+     "$(stat -Lc '%u:%g:%a' -- "$STAGING_ROOT")" == 0:0:700 &&
+     "$(stat -Lc '%u:%g:%a' -- "$PRUNE_STAGING_ROOT")" == 0:0:700 &&
+     "$(stat -Lc '%u:%g:%a' -- "$PRUNE_TRANSACTION_ROOT")" == 0:0:700 ]] ||
+    fail 'private-directory rejection tests did not restore their fixtures'
+}
+
 test_sample_policy() {
   local fixture total expected actual
   for fixture in \
@@ -749,21 +929,36 @@ test_sample_policy() {
 test_successful_backup_set() {
   : >"$COMMAND_LOG"
   local run_log="$FIXTURE_ROOT/backup-success.log"
+  local private_metadata_before private_metadata_after
+  private_metadata_before="$(stat -Lc '%d:%i:%u:%g:%a' -- "$FIXTURE_ROOT")|$(stat -Lc '%d:%i:%u:%g:%a' -- "$STAGING_ROOT")"
   env "${BACKUP_ENVIRONMENT[@]}" \
     bash "$BACKUP_SET" --verify-upload >"$run_log" 2>&1 || {
       sed -n '1,200p' "$run_log" >&2
       fail 'stubbed encrypted backup set failed'
     }
+  private_metadata_after="$(stat -Lc '%d:%i:%u:%g:%a' -- "$FIXTURE_ROOT")|$(stat -Lc '%d:%i:%u:%g:%a' -- "$STAGING_ROOT")"
+  [[ "$private_metadata_after" == "$private_metadata_before" ]] ||
+    fail 'successful backup changed operation-lock or staging-root metadata'
 
   local sets_root="$REMOTE_STORE/production/sets"
   [[ -d "$sets_root" ]] || fail 'successful backup did not create the sets namespace'
   local -a set_directories=()
   mapfile -t set_directories < <(find "$sets_root" -mindepth 1 -maxdepth 1 -type d -print)
   [[ "${#set_directories[@]}" -eq 1 ]] || fail 'successful backup did not publish exactly one set'
-  SUCCESS_SET_DIRECTORY="${set_directories[0]}"
-  SUCCESS_SET_ID="$(basename "$SUCCESS_SET_DIRECTORY")"
+  local completed_set_directory="${set_directories[0]}"
+  SUCCESS_SET_ID="$(basename "$completed_set_directory")"
   [[ "$SUCCESS_SET_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$ ]] ||
     fail 'published set ID is invalid'
+  [[ "$(find "$completed_set_directory" -mindepth 1 -maxdepth 1 -type f -printf '%f\n')" == VERIFIED ]] ||
+    fail 'completed sets namespace contains non-atomic multi-object state'
+  local completion_record="$completed_set_directory/VERIFIED"
+  jq -e --arg setId "$SUCCESS_SET_ID" '
+    .schemaVersion == 2 and .setId == $setId and
+    .uploadPrefix == ("uploading/" + $setId) and
+    (.manifestSha256 | test("^[0-9a-f]{64}$")) and .manifestByteSize > 0
+  ' "$completion_record" >/dev/null || fail 'atomic completed-set record is invalid'
+  SUCCESS_SET_DIRECTORY="$REMOTE_STORE/production/uploading/$SUCCESS_SET_ID"
+  [[ -d "$SUCCESS_SET_DIRECTORY" ]] || fail 'completed set upload closure is missing'
   for filename in \
     database.dump.age local-media.tar.age media-manifest.json.age set-manifest.json VERIFIED
   do
@@ -793,6 +988,8 @@ test_successful_backup_set() {
   manifest_sha="$(sha256sum "$set_manifest" | awk '{print $1}')"
   marker="$(tr -d '\r\n' <"$SUCCESS_SET_DIRECTORY/VERIFIED")"
   [[ "$marker" == "$manifest_sha" ]] || fail 'VERIFIED marker does not match set manifest'
+  [[ "$(jq -r '.manifestSha256' "$completion_record")" == "$manifest_sha" ]] ||
+    fail 'completed-set record does not bind the exact upload manifest'
   for artifact_name in databaseDump localMediaTar mediaManifest; do
     local filename expected_sha expected_size
     filename="$(jq -r --arg name "$artifact_name" '.artifacts[$name].file' "$set_manifest")"
@@ -842,8 +1039,8 @@ test_successful_backup_set() {
   assert_before 'keeper:lock-shared' 'media-reader:snapshot-ok'
   assert_before 'media-reader:snapshot-ok' 'keeper:snapshot-commit'
   assert_before 'pg-dump:custom:snapshot-ok' 'keeper:snapshot-commit'
-  assert_before 'keeper:snapshot-commit' 'upload:production/sets/'
-  assert_before 'upload:production/sets/' 'verifier-read:production/sets/'
+  assert_before 'keeper:snapshot-commit' 'upload:production/uploading/'
+  assert_before 'upload:production/uploading/' 'verifier-read:production/uploading/'
   assert_regex_before '^verifier-read:.*/VERIFIED$' '^keeper:unlock-shared$'
   assert_before 'keeper:unlock-shared' 'maintenance:DATABASE_BACKUP:SUCCEEDED:NONE'
   grep -F 'source-read:cos/original.bin' "$COMMAND_LOG" >/dev/null ||
@@ -869,13 +1066,27 @@ test_upload_failure_is_atomic() {
   local markers_before markers_after
   markers_before="$(find "$REMOTE_STORE/production/sets" -name VERIFIED -type f | wc -l)"
   if env "${BACKUP_ENVIRONMENT[@]}" \
-      FIXTURE_UPLOAD_FAIL_PATTERN=database.dump.age \
+      FIXTURE_UPLOAD_FAIL_PATTERN=local-media.tar.age \
       bash "$BACKUP_SET" --verify-upload >"$run_log" 2>&1; then
     fail 'remote upload failure unexpectedly produced a successful backup'
   fi
   markers_after="$(find "$REMOTE_STORE/production/sets" -name VERIFIED -type f | wc -l)"
   [[ "$markers_after" == "$markers_before" ]] ||
     fail 'failed upload published a VERIFIED marker'
+  local -a orphan_uploads=()
+  mapfile -t orphan_uploads < <(
+    find "$REMOTE_STORE/production/uploading" -mindepth 1 -maxdepth 1 -type d -print |
+      while IFS= read -r candidate; do
+        candidate_id="$(basename "$candidate")"
+        [[ -e "$REMOTE_STORE/production/sets/$candidate_id/VERIFIED" ]] || printf '%s\n' "$candidate"
+      done
+  )
+  [[ "${#orphan_uploads[@]}" -eq 1 ]] ||
+    fail 'second-artifact failure did not leave exactly one isolated upload attempt'
+  local orphan_upload_id
+  orphan_upload_id="$(basename "${orphan_uploads[0]}")"
+  [[ "$(find "${orphan_uploads[0]}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n')" == database.dump.age ]] ||
+    fail 'second-artifact failure escaped the isolated uploading namespace contract'
   grep -F 'maintenance:DATABASE_BACKUP:FAILED:UPLOAD_FAILED' "$COMMAND_LOG" >/dev/null ||
     fail 'upload failure did not record redacted database maintenance failure'
   grep -F 'maintenance:MEDIA_BACKUP:FAILED:UPLOAD_FAILED' "$COMMAND_LOG" >/dev/null ||
@@ -892,6 +1103,33 @@ test_upload_failure_is_atomic() {
   fi
   [[ "$(find "$STAGING_ROOT" -mindepth 1 -print -quit)" == '' ]] ||
     fail 'failed backup left plaintext staging behind'
+
+  local retry_log="$FIXTURE_ROOT/backup-after-partial-upload.log"
+  env "${BACKUP_ENVIRONMENT[@]}" \
+    bash "$BACKUP_SET" --verify-upload >"$retry_log" 2>&1 || {
+      sed -n '1,160p' "$retry_log" >&2
+      fail 'a later backup could not publish after an isolated partial upload'
+    }
+  [[ "$(find "$REMOTE_STORE/production/sets" -name VERIFIED -type f | wc -l)" -eq $((markers_before + 1)) ]] ||
+    fail 'later backup did not publish exactly one new atomic completion record'
+  [[ ! -e "$REMOTE_STORE/production/sets/$orphan_upload_id/VERIFIED" ]] ||
+    fail 'later backup accidentally completed an earlier partial upload attempt'
+
+  : >"$COMMAND_LOG"
+  local prune_log="$FIXTURE_ROOT/prune-after-partial-upload.log"
+  env "${BACKUP_ENVIRONMENT[@]}" \
+    bash "$PRUNE_REMOTE" --dry-run >"$prune_log" 2>&1 || {
+      sed -n '1,200p' "$prune_log" >&2
+      fail 'partial upload blocked a subsequent verified backup prune proposal'
+    }
+  local partial_report
+  partial_report="$(find "$REMOTE_STORE/production/gc-reports" -type f -name '*.json' -print -quit)"
+  jq -e --arg upload "$orphan_upload_id" '
+    .schemaVersion == 3 and (.deleteUploads | index($upload) != null)
+  ' "$partial_report" >/dev/null ||
+    fail 'safe GC proposal did not isolate the stale incomplete upload attempt'
+  grep -F "guard:review-candidate:upload:uploading/$orphan_upload_id" "$COMMAND_LOG" >/dev/null ||
+    fail 'stale partial upload did not receive exact-version retention review'
   assert_no_fixture_secret "$COMMAND_LOG"
   assert_no_fixture_secret "$run_log"
 }
@@ -988,15 +1226,19 @@ test_release_marker_dispatch() {
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "$PORTFOLIO_RELEASE_ID" "$BACKUP_COMPOSE_FILE" "$1"
 STUB
-  cat >"$release_root/ops/deploy/backup/prune-remote.sh" <<'STUB'
+cat >"$release_root/ops/deploy/backup/prune-remote.sh" <<'STUB'
 #!/usr/bin/env bash
-printf '%s|%s|prune\n' "$PORTFOLIO_RELEASE_ID" "$BACKUP_COMPOSE_FILE"
+printf '%s|%s|%s\n' "$PORTFOLIO_RELEASE_ID" "$BACKUP_COMPOSE_FILE" "${1:-prune}"
 STUB
   local output
   output="$(PORTFOLIO_ROOT="$dispatch_root" bash "$BACKUP_DISPATCH" backup)" ||
     fail 'stable backup dispatch could not resolve current-release'
   [[ "$output" == "$release_id|$release_root/ops/deploy/docker-compose.prod.yml|--verify-upload" ]] ||
     fail 'stable backup dispatch did not bind script and Compose to the same release marker'
+  output="$(PORTFOLIO_ROOT="$dispatch_root" bash "$BACKUP_DISPATCH" prune-dry-run)" ||
+    fail 'stable backup dispatch could not invoke the readiness dry-run mode'
+  [[ "$output" == "$release_id|$release_root/ops/deploy/docker-compose.prod.yml|--dry-run" ]] ||
+    fail 'readiness dispatch did not bind --dry-run to the current release pruner'
   jq -S -c -n --arg releaseId cccccccccccc-dddddddddddd '{releaseId:$releaseId}' \
     >"$release_root/release.json"
   if PORTFOLIO_ROOT="$dispatch_root" bash "$BACKUP_DISPATCH" backup \
@@ -1014,16 +1256,28 @@ seed_prune_fixture() {
   PRUNE_SHARED_SHA="$(printf '%s' "$shared_body" | sha256sum | awk '{print $1}')"
   printf '%s' "$shared_body" >"$REMOTE_STORE/production/blobs/$PRUNE_SHARED_SHA"
   local index set_id finished weekly monthly blob_body blob_sha manifest
-  for index in $(seq 1 20); do
-    finished="$(/usr/bin/date -u -d "2026-06-01 +$index days" '+%Y-%m-%dT%H:%M:%SZ')"
+  for index in $(seq 1 28); do
+    if ((index <= 20)); then
+      finished="$(/usr/bin/date -u -d "2026-06-01 +$index days" '+%Y-%m-%dT%H:%M:%SZ')"
+    else
+      # Eight recent daily sets make index 21 fall outside the seven-daily
+      # union while remaining inside the 14-day safety window.
+      finished="$(/usr/bin/date -u -d "2026-12-01 +$index days" '+%Y-%m-%dT%H:%M:%SZ')"
+    fi
     set_id="$(/usr/bin/date -u -d "$finished" '+%Y%m%dT%H%M%SZ')-$(printf '%012x' "$index")"
     weekly=false
     monthly=false
-    ((index % 2 == 0)) && weekly=true
-    ((index % 3 == 0)) && monthly=true
+    if ((index <= 20)); then
+      ((index % 2 == 0)) && weekly=true
+      ((index % 3 == 0)) && monthly=true
+    fi
     blob_body="blob-$index"
     blob_sha="$(printf '%s' "$blob_body" | sha256sum | awk '{print $1}')"
     printf '%s' "$blob_body" >"$REMOTE_STORE/production/blobs/$blob_sha"
+    if ((index == 21)); then
+      PRUNE_GRACE_SET="$set_id"
+      PRUNE_GRACE_BLOB="blobs/$blob_sha"
+    fi
     mkdir "$REMOTE_STORE/production/sets/$set_id"
     manifest="$REMOTE_STORE/production/sets/$set_id/set-manifest.json"
     jq -S -c -n \
@@ -1045,27 +1299,57 @@ seed_prune_fixture() {
   done
 }
 
+clear_prune_transaction_root() {
+  local resolved
+  resolved="$(realpath -e -- "$PRUNE_TRANSACTION_ROOT")" ||
+    fail 'prune transaction test root cannot be resolved'
+  [[ "$resolved" == "$FIXTURE_ROOT/prune-transactions" &&
+     ! -L "$PRUNE_TRANSACTION_ROOT" && -d "$PRUNE_TRANSACTION_ROOT" ]] ||
+    fail 'refusing to clear a prune transaction root outside the fixture'
+  find "$resolved" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
 test_reachability_pruning() {
   seed_prune_fixture
   : >"$COMMAND_LOG"
   local run_log="$FIXTURE_ROOT/prune.log"
+  local private_metadata_before private_metadata_after
+  private_metadata_before="$(stat -Lc '%d:%i:%u:%g:%a' -- "$FIXTURE_ROOT")|$(stat -Lc '%d:%i:%u:%g:%a' -- "$PRUNE_STAGING_ROOT")|$(stat -Lc '%d:%i:%u:%g:%a' -- "$PRUNE_TRANSACTION_ROOT")"
   env "${BACKUP_ENVIRONMENT[@]}" \
     bash "$PRUNE_REMOTE" --dry-run >"$run_log" 2>&1 || {
       sed -n '1,200p' "$run_log" >&2
       fail 'stubbed 7/4/6 pruning dry-run failed'
     }
+  private_metadata_after="$(stat -Lc '%d:%i:%u:%g:%a' -- "$FIXTURE_ROOT")|$(stat -Lc '%d:%i:%u:%g:%a' -- "$PRUNE_STAGING_ROOT")|$(stat -Lc '%d:%i:%u:%g:%a' -- "$PRUNE_TRANSACTION_ROOT")"
+  [[ "$private_metadata_after" == "$private_metadata_before" ]] ||
+    fail 'successful prune dry-run changed operation, staging, or transaction root metadata'
   local -a reports=()
   mapfile -t reports < <(find "$REMOTE_STORE/production/gc-reports" -type f -name '*.json' -print)
   [[ "${#reports[@]}" -eq 1 ]] || fail 'pruner did not persist exactly one immutable GC proposal'
   local report="${reports[0]}"
   jq -e '
-    .schemaVersion == 1 and
+    .schemaVersion == 3 and
     .prefix == "production" and
+    .destination == {accountId:"backup-account",bucket:"backup-bucket",region:"ap-guangzhou",principalId:"backup-pruner"} and
     .policy == {daily:7,weekly:4,monthly:6,safetyDays:14} and
-    (.retainedSets | length == 11) and
-    (.deleteSets | length == 9) and
-    all(.deleteBlobs[]; test("^blobs/[0-9a-f]{64}$"))
+    (.currentSet == .observedSets[-1].setId) and
+    ((.protectedSets | sort) == ((.observedSets | map(.setId)) - .deleteSets | sort)) and
+    (.retainedSets - .protectedSets | length == 0) and
+    ((.reachableBlobs | sort | unique) == .reachableBlobs) and
+    (.retainedSets | length == 16) and
+    (.protectedSets | length == 17) and
+    (.deleteSets | length == 11) and
+    all(.deleteBlobs[]; test("^blobs/[0-9a-f]{64}$")) and
+    (.deleteUploads | type == "array")
   ' "$report" >/dev/null || fail 'retention proposal does not implement 7/4/6 distinct-set union'
+  jq -e --arg setId "$PRUNE_GRACE_SET" --arg blob "$PRUNE_GRACE_BLOB" '
+    (.retainedSets | index($setId) == null) and
+    (.protectedSets | index($setId) != null) and
+    (.deleteSets | index($setId) == null) and
+    (.reachableBlobs | index($blob) != null) and
+    (.deleteBlobs | index($blob) == null)
+  ' "$report" >/dev/null ||
+    fail 'a non-retained set inside the safety window was not protected with its blob closure'
   if jq -e --arg shared "blobs/$PRUNE_SHARED_SHA" '.deleteBlobs | index($shared) != null' "$report" >/dev/null; then
     fail 'reachability pruning selected a blob referenced by every retained set'
   fi
@@ -1102,6 +1386,207 @@ test_reachability_pruning() {
     fail 'empty retained-set pruning failed for an unexpected reason'
 }
 
+test_prune_transaction_power_loss_recovery() {
+  local run_log restart_log first_resume first_review active_directory plan plan_backup
+
+  seed_prune_fixture
+  clear_prune_transaction_root
+  ln -s -- "$FIXTURE_ROOT" "$PRUNE_TRANSACTION_ROOT/unsafe-link"
+  : >"$COMMAND_LOG"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run \
+      >"$FIXTURE_ROOT/prune-unsafe-root-entry.log" 2>&1; then
+    fail 'symlinked persistent transaction root entry unexpectedly passed'
+  fi
+  rm -f -- "$PRUNE_TRANSACTION_ROOT/unsafe-link"
+  grep -F 'transaction root contains an unsafe entry' \
+    "$FIXTURE_ROOT/prune-unsafe-root-entry.log" >/dev/null ||
+    fail 'symlinked persistent transaction entry failed for an unexpected reason'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'symlinked persistent transaction root entry reached provider deletion'
+  fi
+
+  rm -f -- "$FIXTURE_ROOT/prepare-kill-fired" "$FIXTURE_ROOT/transaction-root-sync-count"
+  run_log="$FIXTURE_ROOT/prune-kill-before-activation.log"
+  if env "${BACKUP_ENVIRONMENT[@]}" FIXTURE_GUARD_KILL_ON_PREPARE=1 \
+      bash "$PRUNE_REMOTE" >"$run_log" 2>&1; then
+    fail 'SIGKILL before transaction activation unexpectedly completed pruning'
+  fi
+  [[ "$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.new.*' | wc -l)" -eq 1 ]] ||
+    fail 'pre-activation SIGKILL did not leave exactly one non-destructive .new build'
+  env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run \
+    >"$FIXTURE_ROOT/prune-recover-new.log" 2>&1 || {
+    sed -n '1,160p' "$FIXTURE_ROOT/prune-recover-new.log" >&2
+    fail 'restart could not safely discard a never-activated transaction build'
+  }
+  [[ "$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -print -quit)" == '' ]] ||
+    fail 'restart left a non-destructive .new transaction behind'
+
+  seed_prune_fixture
+  clear_prune_transaction_root
+  rm -f -- "$FIXTURE_ROOT/transaction-root-sync-count"
+  run_log="$FIXTURE_ROOT/prune-kill-after-activation.log"
+  if env "${BACKUP_ENVIRONMENT[@]}" FIXTURE_SYNC_KILL_AT=1 \
+      bash "$PRUNE_REMOTE" >"$run_log" 2>&1; then
+    fail 'SIGKILL immediately after durable activation unexpectedly completed pruning'
+  fi
+  [[ "$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -maxdepth 1 -type d \
+      -regextype posix-extended -regex '.*/[0-9a-f]{64}-[0-9a-f]{64}-[0-9a-f]{64}' | wc -l)" -eq 1 ]] ||
+    fail 'post-activation SIGKILL lost the active exact-version transaction'
+  active_directory="$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -maxdepth 1 -type d \
+    -regextype posix-extended -regex '.*/[0-9a-f]{64}-[0-9a-f]{64}-[0-9a-f]{64}' -print -quit)"
+  plan="$active_directory/transaction-plan.json"
+
+  ln -s -- "$FIXTURE_ROOT" "$active_directory/unexpected-link"
+  : >"$COMMAND_LOG"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" \
+      >"$FIXTURE_ROOT/prune-active-symlink.log" 2>&1; then
+    fail 'symlink inside an active transaction unexpectedly passed'
+  fi
+  rm -f -- "$active_directory/unexpected-link"
+  grep -F 'contains an unexpected entry' "$FIXTURE_ROOT/prune-active-symlink.log" >/dev/null ||
+    fail 'active transaction symlink failed for an unexpected reason'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'active transaction symlink reached provider deletion'
+  fi
+
+  ln -- "$plan" "$FIXTURE_ROOT/transaction-plan.hardlink"
+  : >"$COMMAND_LOG"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" \
+      >"$FIXTURE_ROOT/prune-active-hardlink.log" 2>&1; then
+    fail 'hard-linked active transaction plan unexpectedly passed'
+  fi
+  rm -f -- "$FIXTURE_ROOT/transaction-plan.hardlink"
+  grep -F 'must be a singly linked root-owned file' "$FIXTURE_ROOT/prune-active-hardlink.log" >/dev/null ||
+    fail 'hard-linked active transaction plan failed for an unexpected reason'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'hard-linked active transaction plan reached provider deletion'
+  fi
+
+  plan_backup="$FIXTURE_ROOT/transaction-plan.backup"
+  cp -- "$plan" "$plan_backup"
+  chmod 0600 "$plan_backup"
+  : >"$plan"
+  : >"$COMMAND_LOG"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" \
+      >"$FIXTURE_ROOT/prune-active-truncated.log" 2>&1; then
+    fail 'truncated active transaction plan unexpectedly passed'
+  fi
+  grep -F 'transaction plan is invalid' "$FIXTURE_ROOT/prune-active-truncated.log" >/dev/null ||
+    fail 'truncated active transaction plan failed for an unexpected reason'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'truncated active transaction plan reached provider deletion'
+  fi
+  cp -- "$plan_backup" "$plan"
+  chmod 0600 "$plan"
+
+  : >"$COMMAND_LOG"
+  restart_log="$FIXTURE_ROOT/prune-resume-active.log"
+  env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" >"$restart_log" 2>&1 || {
+    sed -n '1,160p' "$restart_log" >&2
+    fail 'next process could not resume the active exact-version transaction'
+  }
+  first_resume="$(event_line 'guard:delete-reviewed:')"
+  first_review="$(event_line 'guard:review-candidate:')"
+  [[ -n "$first_resume" && -n "$first_review" && "$first_resume" -lt "$first_review" ]] ||
+    fail 'next process issued a fresh proposal before resuming its pending transaction'
+  [[ "$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -print -quit)" == '' ]] ||
+    fail 'completed resumed transaction was not locally committed and cleaned'
+
+  seed_prune_fixture
+  clear_prune_transaction_root
+  rm -f -- "$FIXTURE_ROOT/transaction-root-sync-count"
+  run_log="$FIXTURE_ROOT/prune-kill-after-done-rename.log"
+  if env "${BACKUP_ENVIRONMENT[@]}" FIXTURE_SYNC_KILL_AT=2 \
+      bash "$PRUNE_REMOTE" >"$run_log" 2>&1; then
+    fail 'SIGKILL during committed local cleanup unexpectedly completed pruning'
+  fi
+  [[ "$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.done.*' | wc -l)" -eq 1 ]] ||
+    fail 'cleanup-window SIGKILL did not leave a committed .done transaction'
+  : >"$COMMAND_LOG"
+  env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run \
+    >"$FIXTURE_ROOT/prune-clean-done.log" 2>&1 ||
+    fail 'restart could not clean a committed .done transaction'
+  [[ "$(find "$PRUNE_TRANSACTION_ROOT" -mindepth 1 -print -quit)" == '' ]] ||
+    fail 'committed .done transaction was not safely garbage-collected'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'restart replayed provider deletion for an already committed .done transaction'
+  fi
+}
+
+test_initial_prune_dry_run_gate() {
+  local first_log="$FIXTURE_ROOT/prune-initial-gate.log"
+  local second_log="$FIXTURE_ROOT/prune-after-initial-gate.log"
+  local saved_marker="$FIXTURE_ROOT/prune-readiness.saved"
+  local failure_log
+  seed_prune_fixture
+  rm -f -- "$PRUNE_READINESS_FILE"
+  : >"$COMMAND_LOG"
+  env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" >"$first_log" 2>&1 || {
+    sed -n '1,160p' "$first_log" >&2
+    fail 'first ordinary prune invocation did not complete as a dry-run'
+  }
+  [[ -f "$PRUNE_READINESS_FILE" && ! -L "$PRUNE_READINESS_FILE" &&
+     "$(stat -Lc '%u:%h:%a' -- "$PRUNE_READINESS_FILE")" == "$(id -u):1:600" ]] ||
+    fail 'initial prune dry-run did not commit private single-link readiness evidence'
+  jq -e '
+    keys == ["binding","completedAt","schemaVersion"] and .schemaVersion == 1 and
+    (.completedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+    (.binding | keys == ["destination","guardSha256","policy","requirementsSha256","wrapperSha256"]) and
+    .binding.policy == {daily:7,monthly:6,safetyDays:14,weekly:4}
+  ' "$PRUNE_READINESS_FILE" >/dev/null ||
+    fail 'initial prune readiness evidence has an invalid exact binding shape'
+  grep -F 'initial prune execution completed as a non-destructive dry-run' "$first_log" >/dev/null ||
+    fail 'first ordinary prune did not report its non-destructive bootstrap state'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'first ordinary prune invocation reached a provider deletion'
+  fi
+
+  cp -- "$PRUNE_READINESS_FILE" "$saved_marker"
+  chmod 0600 "$saved_marker"
+  ln -- "$PRUNE_READINESS_FILE" "$FIXTURE_ROOT/prune-readiness.hardlink"
+  : >"$COMMAND_LOG"
+  failure_log="$FIXTURE_ROOT/prune-readiness-hardlink.log"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run >"$failure_log" 2>&1; then
+    fail 'hard-linked readiness marker unexpectedly authorized pruning'
+  fi
+  rm -f -- "$FIXTURE_ROOT/prune-readiness.hardlink"
+  grep -F 'must be a singly linked root-owned file' "$failure_log" >/dev/null ||
+    fail 'hard-linked readiness marker failed for an unexpected reason'
+  if grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null; then
+    fail 'hard-linked readiness marker reached provider deletion'
+  fi
+
+  printf '{\n' >"$PRUNE_READINESS_FILE"
+  failure_log="$FIXTURE_ROOT/prune-readiness-truncated.log"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run >"$failure_log" 2>&1; then
+    fail 'truncated readiness marker unexpectedly authorized pruning'
+  fi
+  grep -F 'readiness evidence is invalid or stale' "$failure_log" >/dev/null ||
+    fail 'truncated readiness marker failed for an unexpected reason'
+  cp -- "$saved_marker" "$PRUNE_READINESS_FILE"
+  chmod 0600 "$PRUNE_READINESS_FILE"
+
+  rm -f -- "$PRUNE_READINESS_FILE"
+  ln -s -- "$saved_marker" "$PRUNE_READINESS_FILE"
+  failure_log="$FIXTURE_ROOT/prune-readiness-symlink.log"
+  if env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" --dry-run >"$failure_log" 2>&1; then
+    fail 'symlinked readiness marker unexpectedly authorized pruning'
+  fi
+  grep -F 'readiness path is unsafe' "$failure_log" >/dev/null ||
+    fail 'symlinked readiness marker failed for an unexpected reason'
+  rm -f -- "$PRUNE_READINESS_FILE"
+  cp -- "$saved_marker" "$PRUNE_READINESS_FILE"
+  chmod 0600 "$PRUNE_READINESS_FILE"
+
+  : >"$COMMAND_LOG"
+  env "${BACKUP_ENVIRONMENT[@]}" bash "$PRUNE_REMOTE" >"$second_log" 2>&1 || {
+    sed -n '1,160p' "$second_log" >&2
+    fail 'a later prune could not pass the durable initial dry-run gate'
+  }
+  grep -F 'guard:delete-reviewed:' "$COMMAND_LOG" >/dev/null ||
+    fail 'a later prune remained permanently dry-run after readiness was committed'
+}
+
 test_prune_guard_is_mandatory() {
   : >"$COMMAND_LOG"
   if env "${BACKUP_ENVIRONMENT[@]}" \
@@ -1114,15 +1599,32 @@ test_prune_guard_is_mandatory() {
     fail 'missing prune guard failed for an unexpected reason'
   [[ ! -s "$COMMAND_LOG" ]] || fail 'missing prune guard reached a remote or deletion command'
   if bash "$PRUNE_GUARD_EXAMPLE" verify-destination >"$FIXTURE_ROOT/guard-example.log" 2>&1; then
-    fail 'repository prune-guard example authorized a destination'
+    fail 'repository COS prune guard authorized an incomplete invocation'
   fi
-  grep -F 'version/Object-Lock/version-ID review is mandatory' "$FIXTURE_ROOT/guard-example.log" >/dev/null ||
-    fail 'fail-closed prune-guard example did not explain its external gate'
+  [[ -s "$FIXTURE_ROOT/guard-example.log" ]] ||
+    fail 'repository COS prune guard did not explain its rejected invocation'
+  if grep -Fx 'SAFE' "$FIXTURE_ROOT/guard-example.log" >/dev/null; then
+    fail 'repository COS prune guard emitted authorization on failure'
+  fi
 }
 
 test_systemd_contract() {
-  grep -F 'OnCalendar=*-*-* 02:30:00 Asia/Hong_Kong' "$BACKUP_TIMER" >/dev/null ||
-    fail 'nightly timer is not fixed at 02:30 Asia/Hong_Kong'
+  local backup_calendar prune_calendar calendar label
+  backup_calendar="$(sed -n 's/^OnCalendar=//p' "$BACKUP_TIMER")"
+  prune_calendar="$(sed -n 's/^OnCalendar=//p' "$PRUNE_TIMER")"
+  [[ "$backup_calendar" == '*-*-* 18:30:00 UTC' ]] ||
+    fail 'nightly timer is not the Ubuntu 22.04-compatible 02:30 Asia/Hong_Kong UTC equivalent'
+  [[ "$prune_calendar" == '*-*-* 22:30:00 UTC' ]] ||
+    fail 'prune timer is not the Ubuntu 22.04-compatible 06:30 Asia/Hong_Kong UTC equivalent'
+  for label in backup prune; do
+    if [[ "$label" == backup ]]; then calendar="$backup_calendar"; else calendar="$prune_calendar"; fi
+    systemd-analyze calendar "$calendar" >"$FIXTURE_ROOT/systemd-calendar-$label.log" 2>&1 || {
+      sed -n '1,80p' "$FIXTURE_ROOT/systemd-calendar-$label.log" >&2
+      fail "$label timer OnCalendar is not parseable by Ubuntu 22.04 systemd"
+    }
+    grep -F 'Normalized form:' "$FIXTURE_ROOT/systemd-calendar-$label.log" >/dev/null ||
+      fail "$label timer calendar parser returned no normalized schedule"
+  done
   grep -F 'RandomizedDelaySec=15m' "$BACKUP_TIMER" >/dev/null ||
     fail 'nightly timer lacks its bounded randomized delay'
   grep -F 'Persistent=true' "$BACKUP_TIMER" >/dev/null ||
@@ -1137,8 +1639,30 @@ test_systemd_contract() {
     fail 'nightly service can access the pruner credential'
   grep -F 'ExecStart=/usr/bin/bash /usr/local/libexec/portfolio/backup-dispatch.sh backup' \
     "$BACKUP_SERVICE" >/dev/null || fail 'nightly service does not use the stable current-release dispatcher'
+  grep -Fx 'UnsetEnvironment=BACKUP_AGE_IDENTITY AGE_SECRET_KEY AGE_SECRET_KEY_FILE COS_SECRET_ID COS_SECRET_KEY SMTP_PASSWORD' \
+    "$BACKUP_SERVICE" >/dev/null || fail 'nightly service does not scrub deployment runtime secrets'
   grep -F 'ExecStart=/usr/bin/bash /usr/local/libexec/portfolio/backup-dispatch.sh prune' \
     "$PRUNE_SERVICE" >/dev/null || fail 'pruner service does not use the stable current-release dispatcher'
+  grep -Fx 'ExecStart=/usr/bin/bash /usr/local/libexec/portfolio/backup-dispatch.sh prune-dry-run' \
+    "$PRUNE_READINESS_SERVICE" >/dev/null ||
+    fail 'prune readiness service does not invoke the explicit non-destructive dispatcher mode'
+  local setting_prefix
+  for setting_prefix in \
+    'User=' 'Group=' 'EnvironmentFile=' 'UnsetEnvironment=' 'TimeoutStartSec=' \
+    'UMask=' 'Nice=' 'NoNewPrivileges=' 'PrivateTmp=' 'PrivateDevices=' \
+    'ProtectSystem=' 'ProtectHome=' 'ProtectClock=' 'ProtectKernelTunables=' \
+    'ProtectKernelModules=' 'ProtectKernelLogs=' 'ProtectControlGroups=' \
+    'ProtectHostname=' 'ProtectProc=' 'ProcSubset=' 'RestrictSUIDSGID=' \
+    'RestrictRealtime=' 'RestrictNamespaces=' 'LockPersonality=' \
+    'MemoryDenyWriteExecute=' 'SystemCallArchitectures=' 'CapabilityBoundingSet=' \
+    'AmbientCapabilities=' 'RestrictAddressFamilies=' 'ReadWritePaths=' \
+    'ReadOnlyPaths=' 'InaccessiblePaths='
+  do
+    cmp -s \
+      <(grep "^$setting_prefix" "$PRUNE_SERVICE") \
+      <(grep "^$setting_prefix" "$PRUNE_READINESS_SERVICE") ||
+      fail "prune readiness sandbox differs from prune service for $setting_prefix"
+  done
   for unit in "$BACKUP_SERVICE" "$PRUNE_SERVICE"; do
     grep -F 'ReadOnlyPaths=/usr/local/libexec/portfolio/backup-dispatch.sh' "$unit" >/dev/null ||
       fail 'backup unit does not pin the stable dispatcher read-only'
@@ -1149,33 +1673,34 @@ test_systemd_contract() {
     fail 'pruner service can access Docker/PostgreSQL'
   grep -F 'InaccessiblePaths=/etc/portfolio/rclone-media-reader.conf' "$PRUNE_SERVICE" >/dev/null ||
     fail 'pruner service can access the production-media reader credential'
-  grep -F 'OnCalendar=*-*-* 06:30:00 Asia/Hong_Kong' "$PRUNE_TIMER" >/dev/null ||
-    fail 'prune timer does not run after the expected backup window'
+  grep -F '# 22:30 UTC is 06:30 Asia/Hong_Kong on the following calendar day.' \
+    "$PRUNE_TIMER" >/dev/null || fail 'prune timer does not document its Hong Kong civil-time mapping'
   if grep -F '/opt/portfolio/current/' "$BACKUP_SERVICE" "$PRUNE_SERVICE" \
       "$REPOSITORY_ROOT/deploy/backup/postgres-client.sh" >/dev/null; then
     fail 'backup units or PostgreSQL client depend on an undeclared current symlink'
   fi
-  grep -F 'BACKUP_PRUNE_GUARD_COMMAND=/usr/local/sbin/portfolio-backup-prune-guard' \
+  grep -F 'BACKUP_COS_PRUNE_CREDENTIAL_FILE=/etc/portfolio/cos-backup-pruner-api.json' \
     "$REPOSITORY_ROOT/deploy/backup/backup.env.example" >/dev/null ||
-    fail 'protected backup configuration does not resolve the external prune guard absolutely'
+    fail 'protected backup configuration does not pin the COS pruner API credential file'
 }
 
 main() {
   for command_name in \
-    awk base64 cmp find grep jq python3 realpath sed seq sha256sum sort stat tail
+    awk base64 chgrp chmod chown cmp cp find grep id jq ln mkdir python3 readlink realpath rmdir sed seq sha256sum sort stat systemd-analyze tail
   do
     command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
   done
   for required_file in \
     "$VALIDATOR" "$BACKUP_SET" "$BACKUP_DISPATCH" "$BACKUP_MEDIA" "$VERIFY_ARTIFACT" \
     "$PRUNE_REMOTE" "$PRUNE_GUARD_EXAMPLE" "$NOTIFY_FAILURE" "$BACKUP_SERVICE" "$BACKUP_TIMER" \
-    "$PRUNE_SERVICE" "$PRUNE_TIMER"
+    "$PRUNE_SERVICE" "$PRUNE_READINESS_SERVICE" "$PRUNE_TIMER"
   do
     [[ -f "$required_file" ]] || fail 'a required encrypted-backup implementation file is missing'
   done
   WORK_DIRECTORY="$(mktemp -d)"
   test_media_tar_validation
   setup_backup_fixtures
+  test_existing_private_directories_are_never_repaired
   test_sample_policy
   test_successful_backup_set
   test_upload_failure_is_atomic
@@ -1184,6 +1709,8 @@ main() {
   test_verified_set_survives_maintenance_failure
   test_release_marker_dispatch
   test_prune_guard_is_mandatory
+  test_initial_prune_dry_run_gate
+  test_prune_transaction_power_loss_recovery
   test_reachability_pruning
   test_systemd_contract
   printf '%s\n' 'PASS: encrypted database/media backup, verification, and 7/4/6 pruning contracts'

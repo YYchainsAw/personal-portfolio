@@ -2,9 +2,9 @@
   --ink: #17202c;
   --paper: #f8f9fb;
   --surface-soft: #f0f4fb;
-  --accent: #315efb;
+  --accent: #2c57eb;
   --accent-soft: #e9efff;
-  --muted: #667085;
+  --muted: #5f687a;
   --line: #dfe4ec;
   --line-strong: #ccd4e0;
   --success: #2dab70;
@@ -127,5 +127,14 @@ p {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+  }
+
+  /* `v-reveal` is a global directive and can decorate asynchronously inserted
+     route content. Keep its reduced-motion fallback global as well so scoped
+     component CSS can never leave a newly mounted section translated/fading. */
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
   }
 }
