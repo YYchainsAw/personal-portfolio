@@ -20,6 +20,10 @@ export default defineConfig({
   },
   build: {
     manifest: true,
+    rollupOptions: {
+      // The backend renders the HTML shell and resolves this stable manifest key.
+      input: fileURLToPath(new URL('./src/main.ts', import.meta.url)),
+    },
   },
   resolve: {
     alias: {
