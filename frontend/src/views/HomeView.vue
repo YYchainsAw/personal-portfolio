@@ -324,11 +324,11 @@ onBeforeUnmount(() => {
           </a>
           <a class="button button--secondary" href="#roadmap">{{ copy.hero.secondaryCta }}</a>
           <a
-            v-if="model.resume.href"
+            v-if="model.resume?.href"
             class="button button--secondary"
-            :href="model.resume.href"
+            :href="model.resume?.href"
             data-analytics-type="RESUME_DOWNLOAD"
-          >{{ model.resume.label }}</a>
+          >{{ model.resume?.label }}</a>
         </div>
         <p class="availability" v-reveal>
           <span aria-hidden="true"></span>{{ copy.hero.availability }}

@@ -415,6 +415,9 @@ public class PublicProjectionMapper {
             List<SiteContentV1.ResumeDocumentV1> source,
             Map<UUID, PublishedMediaV1> media,
             LocaleV1 locale) {
+        if (source.isEmpty()) {
+            return null;
+        }
         List<SiteContentV1.ResumeDocumentV1> current = source.stream()
                 .map(resume -> required(resume, SITE_ERROR, "content.resumes[]"))
                 .filter(SiteContentV1.ResumeDocumentV1::current)

@@ -231,7 +231,10 @@ function completionCopy(selectedLocale: Locale): Record<CompletionKey, string> {
     roadmap: completeWhen(roadmapValues),
     contact: completeWhen(objectStrings(site.contact[selectedLocale])),
     privacy: completeWhen(objectStrings(site.privacy[selectedLocale])),
-    resume: completeWhen([resume?.mediaAssetId, resume?.versionLabel, resume?.documentDate]),
+    resume:
+      site.resumes.length === 0
+        ? 'complete'
+        : completeWhen([resume?.mediaAssetId, resume?.versionLabel, resume?.documentDate]),
   }
 }
 

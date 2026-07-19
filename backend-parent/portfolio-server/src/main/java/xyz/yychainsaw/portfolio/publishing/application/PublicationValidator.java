@@ -331,6 +331,12 @@ public final class PublicationValidator {
     private static void validateResumes(
             Map<String, String> errors,
             List<SiteWorkspaceDto.ResumeDocument> resumes) {
+        // A downloadable resume is useful, but a new portfolio must be publishable
+        // before its owner has prepared one. Once any resume is added, retain the
+        // bilingual current-document invariant.
+        if (resumes.isEmpty()) {
+            return;
+        }
         for (LocaleCode locale : LOCALES) {
             long currentCount = resumes.stream()
                     .filter(SiteWorkspaceDto.ResumeDocument::current)

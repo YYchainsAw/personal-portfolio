@@ -124,7 +124,7 @@ export interface PublicSite {
   contact: PublicContact
   privacy: PublicPrivacy
   socialLinks: PublicSocialLink[]
-  resume: PublicResume
+  resume: PublicResume | null
 }
 
 export interface ProjectCard {
