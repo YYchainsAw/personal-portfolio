@@ -1,92 +1,117 @@
-# 易嘉轩的个人作品集 / Yi Jiaxuan Portfolio
+<p align="center">
+  <img src="docs/assets/readme-hero.svg" alt="Portfolio Platform — Build worlds, ship systems" width="100%" />
+</p>
 
-一个面向游戏开发与 Unreal Engine 学习经历的中英文个人作品集，同时包含可维护的内容后台、发布系统和生产运维工具。
+<p align="center">
+  <a href="https://yychainsaw.xyz"><strong>在线访问 / Live Website ↗</strong></a>
+  &nbsp;·&nbsp;
+  <a href="#01--what-it-is">项目简介</a>
+  &nbsp;·&nbsp;
+  <a href="#03--tech-radar">技术栈</a>
+  &nbsp;·&nbsp;
+  <a href="#05--roadmap">路线图</a>
+</p>
 
-This repository contains Yi Jiaxuan's bilingual game-development portfolio, its content-management console, and the operational tooling used to publish it safely.
+<p align="center">
+  <img src="https://img.shields.io/badge/Vue-3.5-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue 3.5" />
+  <img src="https://img.shields.io/badge/TypeScript-6.0-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 6" />
+  <img src="https://img.shields.io/badge/Spring_Boot-3.5-6DB33F?style=flat-square&logo=springboot&logoColor=white" alt="Spring Boot 3.5" />
+  <img src="https://img.shields.io/badge/Java-17-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java 17" />
+  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 17" />
+</p>
 
-## 能力概览
+## 01 · What it is
 
-- `frontend/`：Vue 3 公共站点，中英文路由、项目详情、SSR 页面外壳、SEO 与无障碍支持。
-- `admin-web/`：Vue 3 管理端，管理站点资料、项目、媒体、发布、留言、统计与系统状态。
-- `backend-parent/`：Java 17、Spring Boot 3.5、PostgreSQL 17 后端；包含 TOTP 登录、服务端会话、内容版本、媒体适配、留言、隐私友好统计和审计。
-- `deploy/`：Ubuntu 22.04、Docker 26、宝塔 Nginx 的发布、预检、备份、恢复和回滚工具。
+一个为游戏开发作品而生的中英文内容型作品集。它不只是一张静态名片，而是一套可以持续加入项目、开发记录、媒体素材与技术文章的完整平台。
 
-生产结构是一个模块化单体：宝塔 Nginx 独占公网 `80/443`，应用只监听宿主机回环地址 `127.0.0.1:18080`，PostgreSQL 仅存在于 Compose 私有网络。仓库不会连接或复用其他项目的数据库。
+An extensible, bilingual portfolio platform built to turn game-development experiments into clear, evolving case studies — with a public website, a content studio and a production-ready API in one codebase.
 
-## 本地开发
+| **Play / 展示** | **Compose / 创作** | **Operate / 管理** | **Evolve / 扩展** |
+|---|---|---|---|
+| 中英文路由、项目详情、响应式媒体 | 模块化内容、Markdown、媒体资源 | 发布流程、留言、统计、系统状态 | 为 UE 项目、开发日志与新作品预留空间 |
+| SEO、结构化数据与可访问性 | 可复用内容区块与项目叙事 | 会话安全、版本记录与审计 | 内容与界面解耦，可持续迭代 |
 
-准确版本由各工程的锁文件和 Maven Enforcer 约束。常用入口如下：
+## 02 · System map
+
+```mermaid
+flowchart LR
+    V["Visitor<br/>访客"] --> W["Public Web<br/>Vue 3"]
+    E["Editor<br/>内容管理"] --> A["Content Studio<br/>Vue 3"]
+    W --> B["Portfolio API<br/>Spring Boot"]
+    A --> B
+    B --> D[("PostgreSQL")]
+    B --> O["Object Storage<br/>媒体资源"]
+
+    classDef client fill:#f2edff,stroke:#7c5cff,color:#221a44,stroke-width:1.5px;
+    classDef service fill:#e9f8ff,stroke:#1f9bd1,color:#102b3b,stroke-width:1.5px;
+    classDef data fill:#effcf5,stroke:#35a66f,color:#123324,stroke-width:1.5px;
+    class V,E,W,A client;
+    class B service;
+    class D,O data;
+```
+
+## 03 · Tech radar
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Public Web | Vue 3.5 · TypeScript 6 · Vite 8 · Vue Router | 双语站点、项目页面、SEO 与动效体验 |
+| Content Studio | Vue 3.5 · Tailwind CSS 4 · Axios · QRCode | 内容、媒体、发布、留言与统计管理 |
+| Backend | Java 17 · Spring Boot 3.5 · Spring Security · Spring Session | 内容 API、身份验证、权限与业务编排 |
+| Persistence | PostgreSQL 17 · MyBatis-Plus · Flyway | 关系数据、查询与可追踪数据库迁移 |
+| Media | Adapter-based object storage | 图片与视频资源的可替换存储适配层 |
+| Quality | Vitest · Playwright · JUnit 5 · Testcontainers · axe-core | 单元、集成、端到端与可访问性验证 |
+| Tooling | Node.js 22 · Maven 3.9 · Docker · CycloneDX | 可复现构建、环境一致性与 SBOM |
+
+## 04 · Repository
 
 ```text
-frontend/        Node 22.18，公共站点
-admin-web/       Node 22.18，管理端
-backend-parent/  Java 17 + Maven 3.9.11，后端
+personal-portfolio/
+├─ frontend/         # 面向访客的中英文作品集
+├─ admin-web/        # 内容管理与发布工作台
+├─ backend-parent/   # 模块化 Java / Spring Boot 后端
+├─ deploy/           # 环境与发布自动化
+└─ docs/             # 设计、实现与维护文档
 ```
 
-前端：
+### Local quality checks
 
 ```bash
+# Public website
 cd frontend
 npm ci
-npm run dev
-```
+npm run build
+npm run test:unit
 
-管理端：
-
-```bash
-cd admin-web
+# Content studio
+cd ../admin-web
 npm ci
-npm run dev
+npm run build
+npm run test:unit
+
+# Backend — use mvnw.cmd on Windows
+cd ../backend-parent
+./mvnw verify
 ```
 
-后端：
+准确的运行时与依赖版本以锁文件和 Maven Enforcer 规则为准。生产凭据、私钥、访客数据、数据库备份以及环境专属配置不应进入 Git；仓库仅保留安全的示例与代码。
 
-```powershell
-# 首次运行：复制后填写所有留空值；.env.local 已被 Git 忽略。
-Copy-Item .env.example .env.local
+## 05 · Roadmap
 
-# 只启动本项目独立的 PostgreSQL 17。
-docker compose --env-file .env.local -f deploy/compose.dev.yml up -d postgres
+- [x] 中英文公共站点与语言切换
+- [x] 可扩展的项目详情与内容模型
+- [x] 内容后台、媒体管理与发布流程
+- [x] 留言、隐私友好统计与质量保障
+- [ ] 补充 UE 学习专题与完整项目复盘
+- [ ] 增加开发日志、技术文章与过程素材
+- [ ] 展示可下载或可试玩的原型版本
+- [ ] 持续优化媒体管线、性能与可访问性
 
-# Spring 不会自动读取 dotenv；把同一文件注入当前 PowerShell 进程。
-Get-Content .env.local |
-  Where-Object { $_ -match '^[A-Za-z_][A-Za-z0-9_]*=' } |
-  ForEach-Object {
-    $name, $value = $_ -split '=', 2
-    [Environment]::SetEnvironmentVariable($name, $value, 'Process')
-  }
+---
 
-Set-Location backend-parent
-.\mvnw.cmd verify
-.\mvnw.cmd -pl portfolio-server spring-boot:run
-```
-
-在 IntelliJ IDEA 中启动时，也要选择 `dev` profile，并把同一 `.env.local` 的键值配置到 Run Configuration；不要只启动数据库而漏掉 Spring 环境。macOS/Linux 使用 `./mvnw`，并在启动前以等价方式导出 `.env.local`。
-
-开发环境变量只应来自未跟踪的本地文件。不要将数据库口令、COS 密钥、SMTP 密钥、TOTP 主密钥或真实访客数据提交到仓库。
-
-## 测试与发布
-
-仓库包含前端单元/E2E 测试、后端测试以及部署契约测试。生产发布不是把工作目录直接复制到服务器：它从一个受保护 Git 提交构建单一、可校验的发布包，再经预检、备份、健康检查和冒烟测试切换版本。
-
-运维入口：
-
-- [生产运行手册](docs/operations/production-runbook.md)
-- [备份与恢复手册](docs/operations/backup-recovery.md)
-- [发布证据模板](docs/operations/release-evidence-template.md)
-- [媒体存储说明](docs/operations/media-storage.md)
-- [留言与统计说明](docs/operations/contact-analytics.md)
-
-当前域名为 `yychainsaw.xyz`。在 ICP 最终批准、备案号被记录、DNS 与证书证据齐全之前，公网切换保持关闭；本地部署与回环冒烟不受影响。
-
-## 安全边界
-
-- 生产数据库没有公网端口，运维脚本不得执行未限定目标的 Docker 或文件删除命令。
-- 备份必须在应用之外独立运行，使用 `age` 加密并写入异地私有对象存储；解密身份不放在服务器上。
-- 恢复演练只能运行在独立 Compose 项目、独立卷和独立 COS 演练前缀中，不能挂载生产目录。
-- 管理员恢复会先创建并校验数据库恢复点，再重置密码、TOTP、恢复码和全部会话。
-- 所有发布/演练证据都必须脱敏；禁止记录密钥、访客邮箱、私网地址、TOTP URI 或恢复码。
+<p align="center">
+  <sub>Designed for continuous learning, thoughtful storytelling and things still waiting to be built.</sub>
+</p>
 
 ## License
 
-源代码的许可与作品内容、图片、视频、商标和个人资料的使用权是两件事。除非仓库另行添加明确许可证，否则保留全部权利；第三方素材仍受其原始许可约束。
+除非仓库后续提供明确许可证，否则保留全部权利。作品图片、视频、字体及其他第三方素材可能适用各自的许可条款。

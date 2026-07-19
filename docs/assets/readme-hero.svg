@@ -1,0 +1,112 @@
+<svg width="1440" height="440" viewBox="0 0 1440 440" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Portfolio Platform</title>
+  <desc id="desc">A bright abstract banner reading Build Worlds, Ship Systems.</desc>
+  <defs>
+    <linearGradient id="background" x1="66" y1="20" x2="1374" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBFAFF"/>
+      <stop offset="0.52" stop-color="#F1F8FF"/>
+      <stop offset="1" stop-color="#F0FFF8"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#7457FF"/>
+      <stop offset="0.52" stop-color="#2C9BFF"/>
+      <stop offset="1" stop-color="#28C889"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="white" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="white" stop-opacity="0.56"/>
+    </linearGradient>
+    <radialGradient id="violetGlow" cx="0" cy="0" r="1" gradientTransform="translate(1030 112) rotate(125) scale(245 300)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8D72FF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#8D72FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="greenGlow" cx="0" cy="0" r="1" gradientTransform="translate(1280 345) rotate(-145) scale(240 300)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#32D296" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#32D296" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#6E7B97" stroke-opacity="0.08"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#506082" flood-opacity="0.16"/>
+    </filter>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#506082" flood-opacity="0.13"/>
+    </filter>
+    <clipPath id="clip">
+      <rect width="1440" height="440" rx="30"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#clip)">
+    <rect width="1440" height="440" rx="30" fill="url(#background)"/>
+    <rect width="1440" height="440" fill="url(#grid)"/>
+    <rect width="1440" height="440" fill="url(#violetGlow)"/>
+    <rect width="1440" height="440" fill="url(#greenGlow)"/>
+
+    <path d="M0 370C186 325 302 435 494 398C679 362 750 261 943 290C1119 317 1258 402 1440 345V440H0V370Z" fill="white" fill-opacity="0.42"/>
+    <circle cx="1350" cy="54" r="94" stroke="#7457FF" stroke-opacity="0.14" stroke-width="2"/>
+    <circle cx="1350" cy="54" r="64" stroke="#2C9BFF" stroke-opacity="0.13"/>
+    <path d="M74 64H234" stroke="url(#accent)" stroke-width="4" stroke-linecap="round"/>
+
+    <g transform="translate(92 92)">
+      <rect width="198" height="38" rx="19" fill="#FFFFFF" fill-opacity="0.78" stroke="#7457FF" stroke-opacity="0.22"/>
+      <circle cx="22" cy="19" r="6" fill="#7457FF"/>
+      <text x="39" y="24" fill="#4D3F88" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" letter-spacing="2">PORTFOLIO PLATFORM</text>
+    </g>
+
+    <text x="92" y="215" fill="#17172B" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="64" font-weight="800" letter-spacing="-2.4">BUILD WORLDS.</text>
+    <text x="92" y="282" fill="url(#accent)" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="64" font-weight="800" letter-spacing="-2.4">SHIP SYSTEMS.</text>
+    <text x="95" y="329" fill="#5E657B" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="600" letter-spacing="2.4">GAME DEVELOPMENT  ·  FULL STACK  ·  BILINGUAL</text>
+
+    <g transform="translate(95 366)">
+      <circle cx="8" cy="8" r="8" fill="#2BC78A" fill-opacity="0.18"/>
+      <circle cx="8" cy="8" r="3" fill="#22A973"/>
+      <text x="27" y="14" fill="#4D556B" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="600">yychainsaw.xyz</text>
+    </g>
+
+    <g filter="url(#shadow)" transform="translate(919 70) rotate(-2 174 145)">
+      <rect width="348" height="290" rx="25" fill="url(#glass)" stroke="white" stroke-width="2"/>
+      <rect x="21" y="20" width="306" height="44" rx="14" fill="#F4F1FF"/>
+      <circle cx="43" cy="42" r="5" fill="#FF718B"/>
+      <circle cx="60" cy="42" r="5" fill="#FFCB66"/>
+      <circle cx="77" cy="42" r="5" fill="#48D79C"/>
+      <rect x="225" y="35" width="82" height="13" rx="6.5" fill="#D9D1FF"/>
+
+      <rect x="22" y="84" width="132" height="180" rx="18" fill="#19192E"/>
+      <path d="M47 119L62 104L77 119" stroke="#8C77FF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M62 105V144" stroke="#8C77FF" stroke-width="5" stroke-linecap="round"/>
+      <rect x="43" y="166" width="85" height="8" rx="4" fill="#3D3F5C"/>
+      <rect x="43" y="184" width="62" height="8" rx="4" fill="#3D3F5C"/>
+      <rect x="43" y="224" width="88" height="20" rx="10" fill="#7457FF"/>
+
+      <rect x="176" y="84" width="151" height="92" rx="18" fill="#EAF9F3"/>
+      <circle cx="205" cy="113" r="13" fill="#32CA90" fill-opacity="0.2"/>
+      <path d="M199 113L204 118L213 108" stroke="#20A971" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="228" y="105" width="76" height="8" rx="4" fill="#B1E9D3"/>
+      <rect x="198" y="143" width="106" height="9" rx="4.5" fill="#CBEFE0"/>
+
+      <rect x="176" y="194" width="151" height="70" rx="18" fill="#EEF7FF"/>
+      <rect x="197" y="215" width="20" height="28" rx="6" fill="#2C9BFF" fill-opacity="0.25"/>
+      <rect x="225" y="207" width="20" height="36" rx="6" fill="#2C9BFF" fill-opacity="0.45"/>
+      <rect x="253" y="220" width="20" height="23" rx="6" fill="#2C9BFF" fill-opacity="0.65"/>
+      <rect x="281" y="200" width="20" height="43" rx="6" fill="#2C9BFF"/>
+    </g>
+
+    <g filter="url(#softShadow)" transform="translate(1217 93) rotate(7 80 52)">
+      <rect width="160" height="104" rx="22" fill="#FFFFFF" fill-opacity="0.86" stroke="#FFFFFF" stroke-width="2"/>
+      <path d="M47 67C42 67 38 63 39 58L43 39C44 33 49 29 55 29H105C111 29 116 33 117 39L121 58C122 63 118 67 113 67C109 67 106 65 104 62L98 54H62L56 62C54 65 51 67 47 67Z" fill="#7457FF" fill-opacity="0.14" stroke="#7457FF" stroke-width="3"/>
+      <path d="M58 39V51M52 45H64" stroke="#7457FF" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="102" cy="42" r="3" fill="#2C9BFF"/>
+      <circle cx="110" cy="50" r="3" fill="#28C889"/>
+      <rect x="50" y="80" width="60" height="7" rx="3.5" fill="#DDD8F9"/>
+    </g>
+
+    <g transform="translate(873 338)">
+      <circle cx="10" cy="10" r="10" fill="#7457FF"/>
+      <path d="M6 10L9 13L15 7" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <path d="M883 358V387C883 400 894 411 907 411H1019" stroke="#7457FF" stroke-opacity="0.35" stroke-width="2" stroke-dasharray="5 7"/>
+    <circle cx="1026" cy="411" r="7" fill="#2C9BFF"/>
+  </g>
+</svg>
