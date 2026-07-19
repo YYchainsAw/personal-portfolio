@@ -2,7 +2,6 @@ package xyz.yychainsaw.portfolio.publicapi;
 
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 public record PublicSiteDto(
@@ -21,7 +20,6 @@ public record PublicSiteDto(
     public PublicSiteDto {
         navigation = List.copyOf(navigation);
         socialLinks = List.copyOf(socialLinks);
-        Objects.requireNonNull(resume, "resume");
     }
 
     public record Identity(

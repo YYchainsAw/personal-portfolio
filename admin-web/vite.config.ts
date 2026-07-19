@@ -14,7 +14,14 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:18080',
+      '/api': {
+        target: 'http://127.0.0.1:18080',
+        configure(proxy) {
+          // The browser is same-origin with Vite; forwarding its Origin turns this
+          // internal development hop into an unnecessary backend CORS request.
+          proxy.on('proxyReq', (request) => request.removeHeader('origin'))
+        },
+      },
     },
   },
   test: {
