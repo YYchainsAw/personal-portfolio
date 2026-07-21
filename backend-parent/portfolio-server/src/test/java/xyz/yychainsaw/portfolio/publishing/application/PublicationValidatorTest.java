@@ -169,7 +169,7 @@ class PublicationValidatorTest {
     }
 
     @Test
-    void rejectsOnlyTheSevenExactTaskFivePlaceholderPathValuePairs() {
+    void rejectsOnlyThePlaceholderContactAddress() {
         RecordingMediaQueryService media = readySiteMedia();
         SiteWorkspaceDto site = siteWithAllFixedPlaceholders();
         SiteSnapshotV1 snapshot = new SiteSnapshotMapperV1(media).toSnapshot(site);
@@ -179,14 +179,7 @@ class PublicationValidatorTest {
 
         assertThat(failure.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(failure.code()).isEqualTo("PLACEHOLDER_CONTENT_PRESENT");
-        assertThat(failure.fieldErrors()).containsOnlyKeys(
-                "identity.email",
-                "portfolioContent.zh-CN.hero.visualLabel",
-                "portfolioContent.en.hero.visualLabel",
-                "portfolioContent.zh-CN.work.imageNotice",
-                "portfolioContent.en.work.imageNotice",
-                "portfolioContent.zh-CN.contact.emailLabel",
-                "portfolioContent.en.contact.emailLabel");
+        assertThat(failure.fieldErrors()).containsOnlyKeys("identity.email");
     }
 
     @Test
