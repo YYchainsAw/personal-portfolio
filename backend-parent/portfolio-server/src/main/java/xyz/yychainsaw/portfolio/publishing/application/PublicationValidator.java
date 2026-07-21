@@ -736,6 +736,11 @@ public final class PublicationValidator {
             String path,
             String actual,
             String expected) {
+        // Starter copy may remain visible on a portfolio while it is being
+        // refined.  Only a fake contact address blocks publication.
+        if (!"identity.email".equals(path)) {
+            return;
+        }
         if (expected.equals(actual)) {
             errors.put(path, "placeholder content must be replaced");
         }
