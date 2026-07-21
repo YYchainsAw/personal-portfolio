@@ -531,6 +531,7 @@ onBeforeUnmount(() => {
             data-analytics-page-key="CONTACT"
           >{{ social.platform }}</a>
           <RouterLink :to="{ name: 'privacy', params: { locale } }">{{ locale === 'zh-CN' ? '隐私' : 'Privacy' }}</RouterLink>
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">赣ICP备2026016465号-1</a>
         </p>
         <a href="#top"
           >{{ copy.a11y.backToTop }} <ArrowUpRight :size="13" weight="bold" aria-hidden="true"
