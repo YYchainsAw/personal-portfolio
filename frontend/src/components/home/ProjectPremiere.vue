@@ -12,6 +12,12 @@ import ResponsiveMedia from '@/components/media/ResponsiveMedia.vue'
 import { useLocale, type Locale } from '@/composables/useLocale'
 import type { HomeViewModel } from '@/mappers/homeMapper'
 import type { ProjectCard } from '@/types/public'
+import ueGameplayPrototype from '@/assets/showcase/ue-gameplay-prototype.webp'
+import ueGameplayPrototypeThumb from '@/assets/showcase/ue-gameplay-prototype-thumb.webp'
+import ueSceneInteractionStudy from '@/assets/showcase/ue-scene-interaction-study.webp'
+import ueSceneInteractionStudyThumb from '@/assets/showcase/ue-scene-interaction-study-thumb.webp'
+import ueTechnicalBreakdown from '@/assets/showcase/ue-technical-breakdown.webp'
+import ueTechnicalBreakdownThumb from '@/assets/showcase/ue-technical-breakdown-thumb.webp'
 
 const props = defineProps<{ model: HomeViewModel }>()
 const { setLocale } = useLocale()
@@ -91,8 +97,8 @@ const futureEntries = computed<Omit<FutureEntry, 'number'>[]>(() => {
         summary: '围绕交互、触发逻辑与玩家反馈建立可迭代的 Blueprint 原型。',
         status: '学习中',
         tags: ['Blueprint', '交互系统', '玩法验证'],
-        image: '/showcase/ue-gameplay-prototype.webp',
-        thumbnail: '/showcase/ue-gameplay-prototype-thumb.webp',
+        image: ueGameplayPrototype,
+        thumbnail: ueGameplayPrototypeThumb,
         alt: 'Unreal Engine 第三人称游戏机制原型开发场景',
       },
       {
@@ -103,8 +109,8 @@ const futureEntries = computed<Omit<FutureEntry, 'number'>[]>(() => {
         summary: '记录场景、光照、材质与性能分析过程，把学习转化为可复用的方法。',
         status: '学习中',
         tags: ['灯光', '材质', '性能诊断'],
-        image: '/showcase/ue-technical-breakdown.webp',
-        thumbnail: '/showcase/ue-technical-breakdown-thumb.webp',
+        image: ueTechnicalBreakdown,
+        thumbnail: ueTechnicalBreakdownThumb,
         alt: 'Unreal Engine 场景灯光材质与性能技术拆解视图',
       },
       {
@@ -115,8 +121,8 @@ const futureEntries = computed<Omit<FutureEntry, 'number'>[]>(() => {
         summary: '把关卡动线、交互机制和基础视觉表现整合成一段可体验内容。',
         status: '规划中',
         tags: ['Level Design', 'UE5', 'Playtest'],
-        image: '/showcase/ue-gameplay-prototype.webp',
-        thumbnail: '/showcase/ue-gameplay-prototype-thumb.webp',
+        image: ueGameplayPrototype,
+        thumbnail: ueGameplayPrototypeThumb,
         alt: 'Unreal Engine 可玩关卡垂直切片开发画面',
       },
     ]
@@ -132,8 +138,8 @@ const futureEntries = computed<Omit<FutureEntry, 'number'>[]>(() => {
         'An iterative Blueprint prototype focused on interaction, trigger logic, and player feedback.',
       status: 'Learning',
       tags: ['Blueprint', 'Interaction', 'Playtest'],
-      image: '/showcase/ue-gameplay-prototype.webp',
-      thumbnail: '/showcase/ue-gameplay-prototype-thumb.webp',
+      image: ueGameplayPrototype,
+      thumbnail: ueGameplayPrototypeThumb,
       alt: 'Third-person gameplay prototype being developed in Unreal Engine',
     },
     {
@@ -144,8 +150,8 @@ const futureEntries = computed<Omit<FutureEntry, 'number'>[]>(() => {
       summary: 'A practical record of scene, lighting, material, and performance investigation.',
       status: 'Learning',
       tags: ['Lighting', 'Materials', 'Profiling'],
-      image: '/showcase/ue-technical-breakdown.webp',
-      thumbnail: '/showcase/ue-technical-breakdown-thumb.webp',
+      image: ueTechnicalBreakdown,
+      thumbnail: ueTechnicalBreakdownThumb,
       alt: 'Unreal Engine lighting material and performance breakdown view',
     },
     {
@@ -157,8 +163,8 @@ const futureEntries = computed<Omit<FutureEntry, 'number'>[]>(() => {
         'A focused experience combining level flow, interaction systems, and foundational visuals.',
       status: 'Planned',
       tags: ['Level Design', 'UE5', 'Playtest'],
-      image: '/showcase/ue-gameplay-prototype.webp',
-      thumbnail: '/showcase/ue-gameplay-prototype-thumb.webp',
+      image: ueGameplayPrototype,
+      thumbnail: ueGameplayPrototypeThumb,
       alt: 'Playable Unreal Engine level vertical slice in development',
     },
   ]
@@ -178,8 +184,8 @@ const reelEntries = computed<ReelEntry[]>(() => {
     summary: project.summary,
     status: project.status,
     tags: project.tags,
-    presentationImage: index === 0 ? '/showcase/ue-scene-interaction-study.webp' : undefined,
-    presentationThumb: index === 0 ? '/showcase/ue-scene-interaction-study-thumb.webp' : undefined,
+    presentationImage: index === 0 ? ueSceneInteractionStudy : undefined,
+    presentationThumb: index === 0 ? ueSceneInteractionStudyThumb : undefined,
     presentationAlt:
       index === 0
         ? locale.value === 'zh-CN'
