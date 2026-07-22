@@ -24,11 +24,13 @@ async function mountHome(contactEmail = 'portfolio@yychainsaw.xyz') {
 it('keeps a published home navigable and semantic when hero media is null', async () => {
   const wrapper = await mountHome()
 
-  expect(wrapper.find('figure.hero__visual').exists()).toBe(false)
-  expect(wrapper.get('section.hero').classes()).toContain('hero--without-media')
+  expect(wrapper.find('section.premiere-work').exists()).toBe(true)
+  expect(wrapper.find('figure.project-stage__visual').exists()).toBe(true)
   expect(wrapper.findAll('main')).toHaveLength(1)
   expect(wrapper.findAll('h1')).toHaveLength(1)
-  expect(wrapper.get('a.contact__email').attributes('href')).toContain('mailto:portfolio@yychainsaw.xyz')
+  expect(wrapper.get('a.contact-email').attributes('href')).toContain(
+    'mailto:portfolio@yychainsaw.xyz',
+  )
   expect(wrapper.get('a[href="/en/projects/ue-study"]')).toBeTruthy()
   wrapper.unmount()
 })
@@ -36,8 +38,10 @@ it('keeps a published home navigable and semantic when hero media is null', asyn
 it('never creates a mailto link from an unsafe published contact value', async () => {
   const wrapper = await mountHome('owner@example.com?subject=spoof')
 
-  expect(wrapper.find('a.contact__email').exists()).toBe(false)
-  expect(wrapper.get('.contact__email--placeholder').text()).toContain('owner@example.com?subject=spoof')
+  expect(wrapper.find('a.contact-email').exists()).toBe(false)
+  expect(wrapper.get('.contact-email--disabled').text()).toContain(
+    'owner@example.com?subject=spoof',
+  )
   expect(wrapper.get('.retention-copy a').attributes('href')).toBe('mailto:hi@yychainsaw.xyz')
   wrapper.unmount()
 })
