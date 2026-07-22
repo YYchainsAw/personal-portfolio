@@ -27,6 +27,8 @@ import xyz.yychainsaw.portfolio.publishing.config.PublicRenderProperties;
 
 class AssetManifestServiceTest {
     private static final String ENTRY = "src/main.ts";
+    private static final String SCENE_ASSET =
+            "src/assets/showcase/ue-scene-interaction-study.webp";
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -50,6 +52,38 @@ class AssetManifestServiceTest {
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThat(service.entryJs()).isEqualTo("/assets/index-test123.js");
         assertThat(manifest.openCount()).isOne();
+    }
+
+    @Test
+    void resolvesHashedStaticAssetsByTheirStableViteSource() throws Exception {
+        Resource manifest = new ByteArrayResource(mapper.writeValueAsBytes(Map.of(
+                ENTRY, validEntry(),
+                SCENE_ASSET, Map.of(
+                        "file", "assets/ue-scene-interaction-study-a1b2c3.webp",
+                        "src", SCENE_ASSET))));
+
+        AssetManifestService service = service(manifest);
+
+        assertThat(service.asset(SCENE_ASSET))
+                .contains("/assets/ue-scene-interaction-study-a1b2c3.webp");
+        assertThat(service.asset("src/assets/showcase/not-bundled.webp"))
+                .isEmpty();
+    }
+
+    @Test
+    void rejectsUnsafeOrMismatchedStaticAssetEntries() throws Exception {
+        for (String path : List.of(
+                "assets/../scene.webp",
+                "assets/scene.webp?download=true",
+                "assets/scene.js")) {
+            Resource manifest = new ByteArrayResource(mapper.writeValueAsBytes(Map.of(
+                    ENTRY, validEntry(),
+                    SCENE_ASSET, Map.of("file", path, "src", SCENE_ASSET))));
+
+            assertThatThrownBy(() -> service(manifest))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageStartingWith("Vite manifest asset file ");
+        }
     }
 
     @Test

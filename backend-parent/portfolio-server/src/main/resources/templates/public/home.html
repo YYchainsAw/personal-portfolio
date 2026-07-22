@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d12">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title th:text="${site.seo.title}">Portfolio</title>
   <meta name="description" th:content="${site.seo.description}" content="Portfolio">
@@ -19,24 +20,32 @@
 </head>
 <body>
   <div id="app">
-  <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
+  <a class="skip-link" href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
 
-  <header>
-    <nav th:attr="aria-label=${site.accessibility.primaryNav}" aria-label="Primary navigation">
+  <header class="public-home-header public-home-header--ssr" data-public-ssr>
+    <div class="public-home-header__inner">
+      <a class="brand" th:href="@{/{locale}(locale=${locale})}">
+        <span class="brand__name" th:text="${site.identity.displayName}">Portfolio</span>
+        <span class="brand__secondary" th:text="${site.identity.secondaryName}">Game development</span>
+      </a>
+      <nav class="public-home-header__locales"
+           th:attr="aria-label=${site.accessibility.primaryNav}"
+           aria-label="Primary navigation">
       <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
          th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
       <a th:href="${enUrl}" hreflang="en" lang="en"
          th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
-    </nav>
+      </nav>
+    </div>
   </header>
 
-    <main id="main-content" tabindex="-1">
-      <section aria-labelledby="hero-title">
-        <p th:text="${site.hero.eyebrow}">Portfolio</p>
+    <main id="main-content" class="public-home-page public-home-page--ssr" data-public-ssr tabindex="-1">
+      <section class="public-home-hero" aria-labelledby="hero-title">
+        <p class="public-home-eyebrow" th:text="${site.hero.eyebrow}">Portfolio</p>
         <h1 id="hero-title" th:text="${site.hero.displayName}">Portfolio</h1>
-        <p th:text="${site.hero.introduction}">Introduction</p>
+        <p class="public-home-introduction" th:text="${site.hero.introduction}">Introduction</p>
 
-        <figure th:if="${site.hero.media != null}">
+        <figure class="public-home-hero__media" th:if="${site.hero.media != null}">
           <img th:src="${site.hero.media.src}"
                th:srcset="${site.hero.media.srcset}"
                th:alt="${site.hero.media.alt}"
@@ -59,14 +68,14 @@
         </figure>
       </section>
 
-      <section aria-labelledby="projects-title">
-        <p th:text="${site.work.label}">Work</p>
+      <section class="public-home-projects" aria-labelledby="projects-title">
+        <p class="public-home-eyebrow" th:text="${site.work.label}">Work</p>
         <h2 id="projects-title" th:text="${site.work.title}">Projects</h2>
-        <p th:text="${site.work.introduction}">Selected projects</p>
-        <ul>
-          <li th:each="project : ${catalog}">
-            <article>
-              <figure th:if="${project.cover != null}">
+        <p class="public-home-introduction" th:text="${site.work.introduction}">Selected projects</p>
+        <ul class="public-home-project-list">
+          <li class="public-home-project-list__item" th:each="project : ${catalog}">
+            <article class="public-home-project-card">
+              <figure class="public-home-project-card__media" th:if="${project.cover != null}">
                 <img th:src="${project.cover.src}"
                      th:srcset="${project.cover.srcset}"
                      th:alt="${project.cover.alt}"
@@ -87,7 +96,7 @@
                         th:text="${project.cover.credit}"></span>
                 </figcaption>
               </figure>
-              <p th:text="${project.eyebrow}">Project</p>
+              <p class="public-home-project-card__eyebrow" th:text="${project.eyebrow}">Project</p>
               <h3>
                 <a th:href="@{/{locale}/projects/{slug}(locale=${locale},slug=${project.slug})}"
                    th:text="${project.title}">Project title</a>

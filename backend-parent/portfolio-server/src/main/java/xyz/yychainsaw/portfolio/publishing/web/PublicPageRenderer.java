@@ -5,11 +5,13 @@ import java.net.URI;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.ModelAndView;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -30,6 +32,8 @@ public interface PublicPageRenderer {
 
     PreparedPage privacy(LocaleCode locale);
 
+    ModelAndView notFound(LocaleCode locale);
+
     record PreparedPage(String etag, ModelAndView view) {
         public PreparedPage {
             Objects.requireNonNull(etag, "page ETag is required");
@@ -42,6 +46,13 @@ public interface PublicPageRenderer {
 @ConditionalOnWebApplication(type = Type.SERVLET)
 @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
 class SnapshotPublicPageRenderer implements PublicPageRenderer {
+    static final String SCENE_INTERACTION_ASSET =
+            "src/assets/showcase/ue-scene-interaction-study.webp";
+    private static final Set<String> SCENE_INTERACTION_SLUGS =
+            Set.of("ue-environment-study", "ue-study");
+    private static final int SCENE_INTERACTION_WIDTH = 1672;
+    private static final int SCENE_INTERACTION_HEIGHT = 941;
+
     private final PublicSnapshotQueryService queries;
     private final PublicRenderProperties properties;
     private final AssetManifestService manifest;
@@ -128,7 +139,11 @@ class SnapshotPublicPageRenderer implements PublicPageRenderer {
 
         String canonical = projectUrl(requiredLocale, project.data().slug());
         PublicMediaDto cover = projectCover(catalog.data(), project.data());
-        String image = cover == null ? null : absoluteMediaUrl(cover.src());
+        ProjectHeroMedia presentationCover = presentationCover(
+                requiredLocale, project.data(), cover);
+        String image = presentationCover == null
+                ? null
+                : absoluteMediaUrl(presentationCover.src());
         StructuredData structuredData = new CreativeWorkStructuredData(
                 "https://schema.org",
                 "CreativeWork",
@@ -152,6 +167,7 @@ class SnapshotPublicPageRenderer implements PublicPageRenderer {
         view.addObject("catalog", catalog.data());
         view.addObject("project", project.data());
         view.addObject("cover", cover);
+        view.addObject("presentationCover", presentationCover);
         return Optional.of(new PreparedPage(etag, view));
     }
 
@@ -182,6 +198,16 @@ class SnapshotPublicPageRenderer implements PublicPageRenderer {
                 structuredData);
         view.addObject("site", site.data());
         return new PreparedPage(etag, view);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public ModelAndView notFound(LocaleCode locale) {
+        LocaleCode requiredLocale = requireLocale(locale);
+        ModelAndView view = new ModelAndView("public/not-found");
+        view.addObject("locale", requiredLocale.value());
+        view.addObject("assets", new PageAssets(manifest.entryJs(), manifest.css()));
+        return view;
     }
 
     private ModelAndView baseView(
@@ -247,6 +273,18 @@ class SnapshotPublicPageRenderer implements PublicPageRenderer {
                 .orElseGet(() -> project.media().stream().findFirst().orElse(null));
     }
 
+    private ProjectHeroMedia presentationCover(
+            LocaleCode locale,
+            PublicProjectDto project,
+            PublicMediaDto publishedCover) {
+        if (!SCENE_INTERACTION_SLUGS.contains(project.slug())) {
+            return ProjectHeroMedia.from(publishedCover);
+        }
+        return manifest.asset(SCENE_INTERACTION_ASSET)
+                .map(path -> ProjectHeroMedia.sceneInteraction(path, locale))
+                .orElseGet(() -> ProjectHeroMedia.from(publishedCover));
+    }
+
     private static LocaleCode requireLocale(LocaleCode locale) {
         return Objects.requireNonNull(locale, "locale is required");
     }
@@ -255,6 +293,58 @@ class SnapshotPublicPageRenderer implements PublicPageRenderer {
         private PageAssets {
             Objects.requireNonNull(entryJs, "entry JS is required");
             css = List.copyOf(css);
+        }
+    }
+
+    record ProjectHeroMedia(
+            String src,
+            String srcset,
+            String alt,
+            String caption,
+            String credit,
+            String sourceUrl,
+            int width,
+            int height) {
+        ProjectHeroMedia {
+            Objects.requireNonNull(src, "project hero source is required");
+            Objects.requireNonNull(srcset, "project hero srcset is required");
+            Objects.requireNonNull(alt, "project hero alternative text is required");
+            caption = caption == null ? "" : caption;
+            credit = credit == null ? "" : credit;
+            sourceUrl = sourceUrl == null ? "" : sourceUrl;
+        }
+
+        static ProjectHeroMedia from(PublicMediaDto media) {
+            if (media == null) {
+                return null;
+            }
+            return new ProjectHeroMedia(
+                    media.src(),
+                    media.srcset(),
+                    media.alt(),
+                    media.caption(),
+                    media.credit(),
+                    media.sourceUrl(),
+                    media.width(),
+                    media.height());
+        }
+
+        private static ProjectHeroMedia sceneInteraction(
+                String path, LocaleCode locale) {
+            boolean chinese = locale == LocaleCode.ZH_CN;
+            return new ProjectHeroMedia(
+                    path,
+                    path + " " + SCENE_INTERACTION_WIDTH + "w",
+                    chinese
+                            ? "Unreal Engine 5 场景交互学习项目画面"
+                            : "Unreal Engine 5 environment interaction study",
+                    chinese
+                            ? "UE5 实时场景与交互学习画面"
+                            : "UE5 real-time environment and interaction study",
+                    "",
+                    "",
+                    SCENE_INTERACTION_WIDTH,
+                    SCENE_INTERACTION_HEIGHT);
         }
     }
 

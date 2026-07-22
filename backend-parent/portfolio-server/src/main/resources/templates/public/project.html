@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d12">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title th:text="${project.seoTitle}">Project</title>
   <meta name="description" th:content="${project.seoDescription}" content="Project">
@@ -19,55 +20,67 @@
 </head>
 <body>
   <div id="app">
-  <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
+  <a class="skip-link" href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
 
-  <header>
-    <nav th:attr="aria-label=${site.accessibility.primaryNav}" aria-label="Primary navigation">
-      <a th:href="@{/{locale}(locale=${locale})}" th:text="${site.work.title}">Projects</a>
-      <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
-         th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
-      <a th:href="${enUrl}" hreflang="en" lang="en"
-         th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
-    </nav>
+  <header class="public-site-header public-site-header--ssr" data-public-ssr>
+    <div class="public-site-header__inner">
+      <a class="brand" th:href="@{/{locale}(locale=${locale})}">
+        <span class="brand__name" th:text="${site.identity.displayName}">Portfolio</span>
+        <span class="brand__secondary" th:text="${site.identity.secondaryName}">Game development</span>
+      </a>
+      <span class="section-label" th:text="${locale == 'zh-CN'} ? '完整案例' : 'Case study'">Case study</span>
+      <nav class="public-site-header__actions"
+           th:attr="aria-label=${site.accessibility.primaryNav}"
+           aria-label="Primary navigation">
+        <a class="back-link"
+           th:href="@{/{locale}(locale=${locale})}"
+           th:text="${locale == 'zh-CN'} ? '← 返回作品' : '← Back to work'">← Back to work</a>
+        <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
+           th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
+        <a th:href="${enUrl}" hreflang="en" lang="en"
+           th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
+      </nav>
+    </div>
   </header>
 
-    <main id="main-content" tabindex="-1">
-      <header>
-        <p th:text="${project.eyebrow}">Project</p>
+    <main id="main-content" class="project-detail-page project-detail-page--ssr" data-public-ssr tabindex="-1">
+      <header class="project-hero project-hero--ssr">
+        <p class="project-kicker" th:text="${project.eyebrow}">Project</p>
         <h1 th:text="${project.title}">Project title</h1>
-        <p th:text="${project.summary}">Project summary</p>
+        <p class="project-summary" th:text="${project.summary}">Project summary</p>
 
-        <figure th:if="${cover != null}">
-          <img th:src="${cover.src}"
-               th:srcset="${cover.srcset}"
-               th:alt="${cover.alt}"
-               th:width="${cover.width}"
-               th:height="${cover.height}"
+        <figure class="project-hero__media" th:if="${presentationCover != null}">
+          <img th:src="${presentationCover.src}"
+               th:srcset="${presentationCover.srcset}"
+               th:alt="${presentationCover.alt}"
+               th:width="${presentationCover.width}"
+               th:height="${presentationCover.height}"
                fetchpriority="high">
-          <figcaption th:if="${!#strings.isEmpty(cover.caption)
-              or !#strings.isEmpty(cover.credit)}">
-            <span th:if="${!#strings.isEmpty(cover.caption)}"
-                  th:text="${cover.caption}"></span>
-            <a th:if="${!#strings.isEmpty(cover.credit)
-                    and !#strings.isEmpty(cover.sourceUrl)}"
-               th:href="${cover.sourceUrl}"
-               th:text="${cover.credit}"
+          <figcaption th:if="${!#strings.isEmpty(presentationCover.caption)
+              or !#strings.isEmpty(presentationCover.credit)}">
+            <span th:if="${!#strings.isEmpty(presentationCover.caption)}"
+                  th:text="${presentationCover.caption}"></span>
+            <a th:if="${!#strings.isEmpty(presentationCover.credit)
+                    and !#strings.isEmpty(presentationCover.sourceUrl)}"
+               th:href="${presentationCover.sourceUrl}"
+               th:text="${presentationCover.credit}"
                target="_blank" rel="noopener noreferrer"></a>
-            <span th:if="${!#strings.isEmpty(cover.credit)
-                    and #strings.isEmpty(cover.sourceUrl)}"
-                  th:text="${cover.credit}"></span>
+            <span th:if="${!#strings.isEmpty(presentationCover.credit)
+                    and #strings.isEmpty(presentationCover.sourceUrl)}"
+                  th:text="${presentationCover.credit}"></span>
           </figcaption>
         </figure>
 
-        <ul th:if="${!project.tags.isEmpty()}" aria-label="Tags">
+        <ul class="project-taxonomy" th:if="${!project.tags.isEmpty()}" aria-label="Tags">
           <li th:each="tag : ${project.tags}" th:text="${tag}">Tag</li>
         </ul>
-        <ul th:if="${!project.skills.isEmpty()}" aria-label="Skills">
+        <ul class="project-taxonomy" th:if="${!project.skills.isEmpty()}" aria-label="Skills">
           <li th:each="skill : ${project.skills}" th:text="${skill}">Skill</li>
         </ul>
       </header>
 
-      <div th:each="block : ${project.blocks}"
+      <div class="project-content-block"
+           th:each="block : ${project.blocks}"
            th:switch="${block.type}"
            th:attr="data-block-type=${block.type}">
         <section th:case="'MARKDOWN'" th:utext="${block.payload.html}"></section>

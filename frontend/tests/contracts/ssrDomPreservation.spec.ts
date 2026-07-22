@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { nextTick } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
+
+const baseCss = readFileSync(join(process.cwd(), 'src/assets/base.css'), 'utf8')
 
 const cases = [
   { path: '/zh-CN', kind: 'home', locale: 'zh-CN', slug: undefined, heroMedia: true },
@@ -25,6 +29,12 @@ const cases = [
 ] as const
 
 describe('production SSR bootstrap hand-off', () => {
+  it('ships a dark first-paint fallback scoped to transient not-found roots', () => {
+    expect(baseCss).toContain('[data-public-ssr].not-found')
+    expect(baseCss).toContain('[data-public-ssr] .not-found__content h1')
+    expect(baseCss).toContain('[data-public-ssr] .not-found__status')
+  })
+
   it.each(cases)(
     'keeps published $kind content visible at $path when JavaScript starts',
     async ({ path, kind, locale, slug, heroMedia }) => {
@@ -169,4 +179,34 @@ describe('production SSR bootstrap hand-off', () => {
     },
     15_000,
   )
+
+  it('replaces a direct localized 404 shell without requesting published content', async () => {
+    const marker = 'server-direct-404-marker'
+    window.history.replaceState({}, '', '/en/unknown/deep/path')
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    document.body.innerHTML = `
+      <div id="app">
+        <header class="public-site-header public-site-header--ssr" data-public-ssr>${marker}</header>
+        <main id="main-content" class="not-found not-found--ssr" data-public-ssr>
+          <h1>${marker}</h1>
+        </main>
+      </div>
+    `
+
+    vi.resetModules()
+    const { app, router } = await import('@/main')
+    await router.isReady()
+    await flushPromises()
+    await nextTick()
+
+    expect(router.currentRoute.value.name).toBe('not-found')
+    expect(document.querySelector('#app')?.textContent).not.toContain(marker)
+    expect(document.querySelectorAll('[data-public-ssr]')).toHaveLength(0)
+    expect(document.querySelectorAll('#app > header')).toHaveLength(1)
+    expect(document.querySelectorAll('#app > main')).toHaveLength(1)
+    expect(document.querySelectorAll('#app h1')).toHaveLength(1)
+    expect(fetcher).not.toHaveBeenCalled()
+    app.unmount()
+  }, 15_000)
 })

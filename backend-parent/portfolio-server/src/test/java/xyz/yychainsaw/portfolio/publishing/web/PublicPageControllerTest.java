@@ -1,13 +1,14 @@
 package xyz.yychainsaw.portfolio.publishing.web;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.List;
@@ -15,6 +16,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.servlet.ModelAndView;
@@ -128,7 +130,8 @@ class PublicPageControllerTest {
     }
 
     @Test
-    void unknownArchivedOrSelfRedirectingSlugReturnsStable404() throws Exception {
+    void unknownArchivedOrSelfRedirectingSlugReturnsLocalizedHtml404() throws Exception {
+        when(pages.notFound(LocaleCode.EN)).thenReturn(notFoundPage());
         for (Optional<String> target : List.of(
                 Optional.<String>empty(), Optional.of("missing"))) {
             when(pages.project(LocaleCode.EN, "missing")).thenReturn(Optional.empty());
@@ -136,8 +139,46 @@ class PublicPageControllerTest {
 
             mvc.perform(get("/en/projects/missing"))
                     .andExpect(status().isNotFound())
-                    .andExpect(jsonPath("$.code").value("PUBLIC_CONTENT_NOT_FOUND"));
+                    .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                    .andExpect(header().string("X-Robots-Tag", "noindex, nofollow"))
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                    .andExpect(content().string("rendered-not-found"));
         }
+        verify(pages, times(2)).notFound(LocaleCode.EN);
+    }
+
+    @Test
+    void localizedUnknownRoutesRenderTheCorrectLocaleWithoutPublishedContent() throws Exception {
+        when(pages.notFound(LocaleCode.ZH_CN)).thenReturn(notFoundPage());
+        when(pages.notFound(LocaleCode.EN)).thenReturn(notFoundPage());
+
+        mvc.perform(get("/zh-CN/unknown/deep/path"))
+                .andExpect(status().isNotFound())
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string("X-Robots-Tag", "noindex, nofollow"))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                .andExpect(content().string("rendered-not-found"));
+        mvc.perform(get("/en/unknown"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("rendered-not-found"));
+
+        verify(pages).notFound(LocaleCode.ZH_CN);
+        verify(pages).notFound(LocaleCode.EN);
+        verifyNoInteractions(publishing);
+    }
+
+    @Test
+    void localizedFallbackDoesNotCaptureApisAdminOrRootStaticAssets() throws Exception {
+        for (String path : List.of(
+                "/api/public/missing",
+                "/admin/missing",
+                "/assets/missing.js",
+                "/favicon.svg")) {
+            mvc.perform(get(path)).andExpect(status().isNotFound());
+        }
+
+        verify(pages, never()).notFound(org.mockito.ArgumentMatchers.any());
+        verifyNoInteractions(publishing);
     }
 
     @Test
@@ -157,5 +198,11 @@ class PublicPageControllerTest {
                 response.getWriter().write("rendered-page");
         return new PublicPageRenderer.PreparedPage(
                 etag, new ModelAndView(view));
+    }
+
+    private static ModelAndView notFoundPage() {
+        View view = (model, request, response) ->
+                response.getWriter().write("rendered-not-found");
+        return new ModelAndView(view);
     }
 }

@@ -15,7 +15,11 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import xyz.yychainsaw.portfolio.common.error.DomainException;
 import xyz.yychainsaw.portfolio.content.api.LocaleCode;
 import xyz.yychainsaw.portfolio.publicapi.PublicProjectCardDto;
@@ -118,6 +122,8 @@ class SnapshotPublicPageRendererTest {
                 .containsEntry(
                         "canonical",
                         "https://yychainsaw.xyz/en/projects/gameplay-prototype");
+        assertThat(page.view().getModel().get("presentationCover"))
+                .isEqualTo(SnapshotPublicPageRenderer.ProjectHeroMedia.from(card.cover()));
         assertThat(page.view().getModel().get("ogImage").toString())
                 .isEqualTo("https://yychainsaw.xyz" + card.cover().src());
         assertThat(page.view().getModel().get("structuredData").toString())
@@ -125,6 +131,41 @@ class SnapshotPublicPageRendererTest {
                 .contains("\"name\":\"Published title\"")
                 .contains("\"description\":\"Published summary\"")
                 .doesNotContain("Published SEO title");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ue-environment-study", "ue-study"})
+    void sceneInteractionProjectUsesTheManifestAssetForSsrAndOpenGraph(
+            String slug) {
+        var site = PublicPageFixtures.site("Published headline", true);
+        var card = PublicPageFixtures.card();
+        var project = PublicPageFixtures.project(slug);
+        String asset = "/assets/ue-scene-interaction-study-a1b2c3.webp";
+        when(queries.project(slug, LocaleCode.ZH_CN))
+                .thenReturn(new PublishedEnvelope<>(9L, PROJECT_CHECKSUM, project));
+        when(queries.site(LocaleCode.ZH_CN))
+                .thenReturn(new PublishedEnvelope<>(7L, SITE_CHECKSUM, site));
+        when(queries.catalog(LocaleCode.ZH_CN))
+                .thenReturn(new PublishedEnvelope<>(
+                        8L, CATALOG_CHECKSUM, List.of(card)));
+        when(manifest.asset(SnapshotPublicPageRenderer.SCENE_INTERACTION_ASSET))
+                .thenReturn(Optional.of(asset));
+
+        var page = renderer.project(LocaleCode.ZH_CN, slug).orElseThrow();
+
+        assertThat(page.view().getModel()).containsEntry("cover", card.cover());
+        assertThat(page.view().getModel().get("presentationCover"))
+                .isEqualTo(new SnapshotPublicPageRenderer.ProjectHeroMedia(
+                        asset,
+                        asset + " 1672w",
+                        "Unreal Engine 5 场景交互学习项目画面",
+                        "UE5 实时场景与交互学习画面",
+                        "",
+                        "",
+                        1672,
+                        941));
+        assertThat(page.view().getModel().get("ogImage"))
+                .isEqualTo("https://yychainsaw.xyz" + asset);
     }
 
     @Test
@@ -170,4 +211,39 @@ class SnapshotPublicPageRendererTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any());
     }
+
+    @Test
+    void notFoundSuspendsTransactionsAndTouchesNoPublishedOrSeoState() throws Exception {
+        var method = SnapshotPublicPageRenderer.class
+                .getDeclaredMethod("notFound", LocaleCode.class);
+        var transaction = new AnnotationTransactionAttributeSource()
+                .getTransactionAttribute(method, SnapshotPublicPageRenderer.class);
+
+        assertThat(transaction).isNotNull();
+        assertThat(transaction.getPropagationBehavior())
+                .isEqualTo(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
+
+        var view = renderer.notFound(LocaleCode.EN);
+
+        assertThat(view.getViewName()).isEqualTo("public/not-found");
+        assertThat(view.getModel())
+                .containsEntry("locale", "en")
+                .containsOnlyKeys("locale", "assets");
+        assertThat(view.getModel())
+                .doesNotContainKeys(
+                        "canonical",
+                        "zhUrl",
+                        "enUrl",
+                        "ogImage",
+                        "initialJson",
+                        "structuredData",
+                        "site",
+                        "catalog",
+                        "project");
+        verify(manifest).entryJs();
+        verify(manifest).css();
+        verifyNoMoreInteractions(manifest);
+        verifyNoMoreInteractions(queries, properties);
+    }
+
 }

@@ -26,6 +26,8 @@ import xyz.yychainsaw.portfolio.publishing.persistence.PublishingRepository;
 @ConditionalOnWebApplication(type = Type.SERVLET)
 public final class PublicPageController {
     private static final String PUBLIC_REVALIDATE = "public, no-cache";
+    private static final String NOT_FOUND_CACHE_CONTROL = "no-store";
+    private static final String ROBOTS_HEADER = "X-Robots-Tag";
 
     private final PublicPageRenderer pages;
     private final PublishingRepository publishing;
@@ -67,7 +69,10 @@ public final class PublicPageController {
 
         String target = publishing.redirectTarget(slug)
                 .filter(value -> !value.equals(slug))
-                .orElseThrow(PublicPageController::notFound);
+                .orElse(null);
+        if (target == null) {
+            return respondNotFound(pages.notFound(locale), response);
+        }
         String location = UriComponentsBuilder.fromPath("/")
                 .pathSegment(locale.value(), "projects", target)
                 .build()
@@ -88,6 +93,13 @@ public final class PublicPageController {
         return respond(pages.privacy(locale(request)), requestHeaders, response);
     }
 
+    @GetMapping({"/zh-CN/{*path}", "/en/{*path}"})
+    public ModelAndView localizedNotFound(
+            HttpServletRequest request,
+            HttpServletResponse response) {
+        return respondNotFound(pages.notFound(locale(request)), response);
+    }
+
     private static ModelAndView respond(
             PublicPageRenderer.PreparedPage page,
             HttpHeaders requestHeaders,
@@ -105,6 +117,18 @@ public final class PublicPageController {
         }
         response.setStatus(HttpServletResponse.SC_OK);
         return page.view();
+    }
+
+    private static ModelAndView respondNotFound(
+            ModelAndView view,
+            HttpServletResponse response) {
+        Objects.requireNonNull(view, "not-found view is required");
+        Objects.requireNonNull(response, "response is required");
+        response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+        response.setHeader(HttpHeaders.CACHE_CONTROL, NOT_FOUND_CACHE_CONTROL);
+        response.setHeader(ROBOTS_HEADER, "noindex, nofollow");
+        response.setContentType("text/html;charset=UTF-8");
+        return view;
     }
 
     private static LocaleCode locale(HttpServletRequest request) {

@@ -173,6 +173,25 @@ final class PublicPageFixtures {
                                 "Published link"))));
     }
 
+    static PublicProjectDto project(String slug) {
+        PublicProjectDto project = project();
+        return new PublicProjectDto(
+                project.projectId(),
+                slug,
+                project.number(),
+                project.featured(),
+                project.status(),
+                project.eyebrow(),
+                project.title(),
+                project.summary(),
+                project.seoTitle(),
+                project.seoDescription(),
+                project.tags(),
+                project.skills(),
+                project.media(),
+                project.blocks());
+    }
+
     static PublicProjectDto projectWithSourceOnlyMedia() {
         PublicProjectDto base = project();
         String mediaBase = "/api/public/media/" + PROJECT_ASSET_ID;

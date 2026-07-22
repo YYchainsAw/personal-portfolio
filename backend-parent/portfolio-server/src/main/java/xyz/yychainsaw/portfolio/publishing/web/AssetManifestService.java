@@ -8,8 +8,11 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.core.io.Resource;
@@ -21,6 +24,8 @@ public interface AssetManifestService {
     String entryJs();
 
     List<String> css();
+
+    Optional<String> asset(String source);
 }
 
 @Service
@@ -30,6 +35,7 @@ final class ViteAssetManifestService implements AssetManifestService {
 
     private final String entryJs;
     private final List<String> css;
+    private final Map<String, String> assets;
 
     ViteAssetManifestService(
             PublicRenderProperties properties,
@@ -40,12 +46,14 @@ final class ViteAssetManifestService implements AssetManifestService {
         Objects.requireNonNull(objectMapper, "object mapper is required");
 
         Resource manifest = resources.getResource(properties.viteManifest());
-        JsonNode entry = readEntry(manifest, objectMapper);
+        JsonNode document = readDocument(manifest, objectMapper);
+        JsonNode entry = requiredEntry(document);
         requireExactSource(entry);
         requireEntryFlag(entry);
         this.entryJs = publicAssetPath(
                 requiredText(entry, "file"), ".js", "entry file");
         this.css = readCss(entry);
+        this.assets = readAssets(document);
     }
 
     @Override
@@ -58,7 +66,13 @@ final class ViteAssetManifestService implements AssetManifestService {
         return css;
     }
 
-    private static JsonNode readEntry(Resource manifest, ObjectMapper objectMapper) {
+    @Override
+    public Optional<String> asset(String source) {
+        return Optional.ofNullable(assets.get(Objects.requireNonNull(
+                source, "asset source is required")));
+    }
+
+    private static JsonNode readDocument(Resource manifest, ObjectMapper objectMapper) {
         if (manifest == null || !manifest.exists() || !manifest.isReadable()) {
             throw invalid("resource is missing or unreadable");
         }
@@ -67,14 +81,18 @@ final class ViteAssetManifestService implements AssetManifestService {
             if (root == null || !root.isObject()) {
                 throw invalid("root must be an object");
             }
-            JsonNode entry = root.get(ENTRY);
-            if (entry == null || !entry.isObject()) {
-                throw invalid("entry src/main.ts is missing");
-            }
-            return entry;
+            return root;
         } catch (IOException malformed) {
             throw new IllegalStateException("Vite manifest cannot be read", malformed);
         }
+    }
+
+    private static JsonNode requiredEntry(JsonNode document) {
+        JsonNode entry = document.get(ENTRY);
+        if (entry == null || !entry.isObject()) {
+            throw invalid("entry src/main.ts is missing");
+        }
+        return entry;
     }
 
     private static void requireExactSource(JsonNode entry) {
@@ -103,6 +121,39 @@ final class ViteAssetManifestService implements AssetManifestService {
             paths.add(publicAssetPath(path.textValue(), ".css", "CSS path"));
         }
         return List.copyOf(paths);
+    }
+
+    private static Map<String, String> readAssets(JsonNode document) {
+        Map<String, String> paths = new LinkedHashMap<>();
+        document.properties().forEach(manifestEntry -> {
+            String source = manifestEntry.getKey();
+            JsonNode value = manifestEntry.getValue();
+            if (!source.startsWith("src/assets/")
+                    || value == null
+                    || !value.isObject()
+                    || !source.equals(optionalText(value, "src"))) {
+                return;
+            }
+
+            String extension = sourceExtension(source);
+            paths.put(source, publicAssetPath(
+                    requiredText(value, "file"), extension, "asset file"));
+        });
+        return Map.copyOf(paths);
+    }
+
+    private static String optionalText(JsonNode entry, String field) {
+        JsonNode value = entry.get(field);
+        return value != null && value.isTextual() ? value.textValue() : null;
+    }
+
+    private static String sourceExtension(String source) {
+        int slash = source.lastIndexOf('/');
+        int dot = source.lastIndexOf('.');
+        if (dot <= slash || dot == source.length() - 1) {
+            throw invalid("asset source has no file type");
+        }
+        return source.substring(dot);
     }
 
     private static String requiredText(JsonNode entry, String field) {

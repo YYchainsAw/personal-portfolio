@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d12">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title th:text="${site.privacy.title + ' · ' + site.identity.displayName}">Privacy · Portfolio</title>
   <meta name="description" th:content="${site.seo.description}" content="Privacy">
@@ -20,21 +21,42 @@
 </head>
 <body>
   <div id="app">
-  <a href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
+  <a class="skip-link" href="#main-content" th:text="${site.accessibility.skip}">Skip to content</a>
 
-  <header>
-    <nav th:attr="aria-label=${site.accessibility.primaryNav}" aria-label="Primary navigation">
-      <a th:href="@{/{locale}(locale=${locale})}" th:text="${site.identity.displayName}">Home</a>
-      <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
-         th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
-      <a th:href="${enUrl}" hreflang="en" lang="en"
-         th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
-    </nav>
+  <header class="public-site-header public-site-header--ssr" data-public-ssr>
+    <div class="public-site-header__inner">
+      <a class="brand" th:href="@{/{locale}(locale=${locale})}">
+        <span class="brand__name" th:text="${site.identity.displayName}">Portfolio</span>
+        <span class="brand__secondary" th:text="${site.identity.secondaryName}">Game development</span>
+      </a>
+      <span class="section-label" th:text="${locale == 'zh-CN'} ? '隐私与数据' : 'Privacy &amp; data'">Privacy &amp; data</span>
+      <nav class="public-site-header__actions"
+           th:attr="aria-label=${site.accessibility.primaryNav}"
+           aria-label="Primary navigation">
+        <a class="back-link"
+           th:href="@{/{locale}(locale=${locale})}"
+           th:text="${locale == 'zh-CN'} ? '← 首页' : '← Home'">← Home</a>
+        <a th:href="${zhUrl}" hreflang="zh-CN" lang="zh-CN"
+           th:attr="aria-current=${locale == 'zh-CN'} ? 'page' : null">中文</a>
+        <a th:href="${enUrl}" hreflang="en" lang="en"
+           th:attr="aria-current=${locale == 'en'} ? 'page' : null">English</a>
+      </nav>
+    </div>
   </header>
 
-    <main id="main-content" tabindex="-1">
-      <h1 th:text="${site.privacy.title}">Privacy</h1>
-      <div th:utext="${site.privacy.html}"></div>
+    <main id="main-content" class="privacy-page privacy-page--ssr" data-public-ssr tabindex="-1">
+      <header class="privacy-hero privacy-hero--ssr">
+        <p class="privacy-eyebrow">PRIVACY / DATA</p>
+        <h1 th:text="${site.privacy.title}">Privacy</h1>
+        <p class="privacy-summary"
+           th:text="${locale == 'zh-CN'} ? '了解本站如何处理留言、访问统计和浏览器标识。' : 'How this portfolio handles messages, visit analytics, and browser identifiers.'">
+          How this portfolio handles messages, visit analytics, and browser identifiers.
+        </p>
+      </header>
+      <article class="privacy-document privacy-document--ssr">
+        <p class="section-index" th:text="${locale == 'zh-CN'} ? '01 / 隐私说明' : '01 / PRIVACY NOTICE'">01 / PRIVACY NOTICE</p>
+        <div class="privacy-prose" th:utext="${site.privacy.html}"></div>
+      </article>
     </main>
   </div>
 

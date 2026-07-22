@@ -1,85 +1,65 @@
-# Homepage Project-First Redesign — Design QA
+# Design QA — unified public portfolio
+
+## Scope
+
+- Public routes: home, project detail, privacy, 404, loading/error states, analytics consent, and server-rendered first paint.
+- Excluded by request: `/admin/**` and the administrator application.
+- Source of truth: the approved dark, project-first home experience in `frontend/artifacts/design-qa-home-desktop.png` and `frontend/artifacts/design-qa-home-mobile.png`.
 
 ## Evidence
 
-- Source visual truth: `C:\Users\YYchainsaw\IdeaProjects\personal-portfolio\.worktrees\portfolio-platform\docs\design\homepage-project-first-reference.png`
-- Browser implementation: `C:\Users\YYchainsaw\IdeaProjects\personal-portfolio\.worktrees\portfolio-platform\docs\design\homepage-project-first-desktop-final.png`
-- Mobile implementation: `C:\Users\YYchainsaw\IdeaProjects\personal-portfolio\.worktrees\portfolio-platform\docs\design\homepage-project-first-mobile-final.png`
-- Full-view comparison: `C:\Users\YYchainsaw\IdeaProjects\personal-portfolio\.worktrees\portfolio-platform\docs\design\homepage-project-first-comparison-final.png`
-- Focused project-reel comparison: `C:\Users\YYchainsaw\IdeaProjects\personal-portfolio\.worktrees\portfolio-platform\docs\design\homepage-project-reel-comparison-final.png`
-- Route: `http://127.0.0.1:5176/zh-CN`
-- State: Chinese locale, first project selected, desktop and mobile dark theme. The analytics preference control was hidden only in the comparison screenshots so it would not obscure the design; it remains functional in the product.
+| Surface | State | CSS viewport | Screenshot |
+| --- | --- | ---: | --- |
+| Home source | published content, desktop | 1440 × 1000 | `frontend/artifacts/design-qa-home-desktop.png` |
+| Home source | published content, mobile | 390 × 844 | `frontend/artifacts/design-qa-home-mobile.png` |
+| Project detail | published `ue-environment-study`, desktop viewport | 1440 × 1000 | `frontend/artifacts/design-qa-project-viewport-final.png` |
+| Project detail | published `ue-environment-study`, mobile viewport | 390 × 844 | `frontend/artifacts/design-qa-project-mobile-viewport-final.png` |
+| Project detail | English locale, desktop viewport | 1440 × 1000 | `frontend/artifacts/design-qa-project-en-final.png` |
+| Project detail | complete page | 1440 × 2607 | `frontend/artifacts/design-qa-project-full-final.png` |
+| Privacy | current published content, desktop complete page | 1440 × 1733 | `frontend/artifacts/design-qa-privacy-desktop.png` |
+| Privacy | current published content, mobile complete page | 390 × 1706 | `frontend/artifacts/design-qa-privacy-mobile.png` |
+| 404 | unknown public route, desktop complete page | 1440 × 1421 | `frontend/artifacts/design-qa-404-desktop.png` |
+| Mobile menu | open, narrow viewport | 320 × 720 | `frontend/artifacts/design-qa-mobile-menu-320.png` |
 
-## Normalization
+Screenshots were captured in Chromium at device scale factor 1. The desktop and mobile source/implementation pairs are assembled in `frontend/artifacts/design-qa-comparison-desktop.png` (2888 × 1044) and `frontend/artifacts/design-qa-comparison-mobile.png` (788 × 888).
 
-- Source pixels: 1487 × 1058.
-- Desktop implementation pixels: 1440 × 1024.
-- CSS viewport: 1440 × 1024; device scale factor 1.
-- Mobile implementation pixels and CSS viewport: 390 × 844; device scale factor 1.
-- For the comparison artifact, the source was bicubic-normalized to 1440 × 1024. The implementation remained at its native 1440 × 1024 capture.
-- The focused comparison uses the same normalized 1440 × 1024 sources and the same 740–1024 px project-reel region.
+## Fidelity review
 
-## Findings
+- Typography: consistent Manrope hierarchy, compact uppercase micro-labels, strong project titles, and no remaining oversized light-theme serif treatment.
+- Color and surfaces: common near-black canvas, cool white type, cyan state/accent color, restrained blue-grey rules, and border-led panels.
+- Layout: the project page preserves the source system's split UE hero, project taxonomy, numbered editorial sections, image-first evidence, and compact navigation while expanding into a full case-study hierarchy.
+- Media: the selected UE environment case uses the matching high-resolution, bundled Unreal Engine scene instead of the former generic plant visual.
+- Responsive behavior: desktop, 390 px mobile, and 320 px narrow-mobile captures have no horizontal overflow. The mobile menu is opaque after its transition, traps focus, locks scroll, closes with Escape, and restores focus.
+- Public-only scope: shared shell and fallback styling are rooted in the public application. The administrator application is unchanged.
 
-- No actionable P0, P1, or P2 differences remain.
-- Typography: the final build preserves the modern sans-serif hierarchy, compact navigation, large project title, readable supporting copy, and restrained microcopy of the target. Manrope weights and line-height remain legible at desktop and mobile sizes.
-- Spacing and layout rhythm: the two-column project stage, 36/64 copy-to-image balance, header height, reel placement, and three-entry rhythm match the intended composition. Mobile collapses to image-first without horizontal overflow.
-- Colors and tokens: charcoal surfaces, warm off-white text, muted metadata, and restrained cyan state accents match the target. Automated WCAG checks pass after increasing muted-label contrast.
-- Image quality and fidelity: all visible showcase art is real raster imagery. The final lead image intentionally differs from the early architectural render by showing an explicit UE development state—character, interactive doorway, trigger volume, transform gizmo, and navigation debugging—as requested. Full-size WebP assets remain 1672 × 941, with dedicated 720 × 405 thumbnails.
-- Copy and content: the first entry uses published project data; the two future entries are explicitly labeled as learning tracks rather than falsely presented as completed projects. Project metadata is described as tags and status instead of inventing stack/type fields.
-- Interaction semantics: the reel is a single-click tab interface with arrow-key navigation, selected-state semantics, and a separate main-stage link for opening the real case study. The mobile menu traps focus, closes on Escape, restores focus, and closes when returning to desktop width.
+## First-pass findings and fixes
 
-## Comparison History
+1. Empty skills and narrative areas produced large blank regions. Empty taxonomy rows now collapse and the narrative renders a deliberate ruled “in progress” record.
+2. The first version inferred the UE treatment from catalog order. It now selects the UE case by stable slug and makes the case badge explicit.
+3. The 320 px header could crowd brand and actions. The narrow breakpoint now prioritizes navigation actions and avoids overflow.
+4. Mobile-menu background content remained discoverable to assistive technology. The underlying header is now inert and hidden from the accessibility tree while the dialog is open.
+5. Unknown localized URLs could receive an API-shaped response. The public controller now returns a themed HTML document with HTTP 404, `no-store`, and `noindex`, while API/admin routes stay outside the catch-all.
+6. Server-rendered markup could briefly show the previous light presentation before hydration. Public templates now carry scoped, transient dark fallback styles that disappear when Vue replaces their children.
+7. Final review found that direct 404 first paint was not yet covered by the fallback styles and that the UE case's SSR cover could differ from the client cover. The 404 now has its own transient dark shell, and the renderer resolves the same hashed 1672 × 941 UE WebP used by Vue for both first paint and `og:image`.
 
-### Pass 1 — blocked
+## Functional and content notes
 
-- P2: the published tree-island cover was visually generic and did not communicate Unreal Engine development.
-- P2: the project-reel note and tag text failed the 4.5:1 contrast requirement.
-- P2: a non-active real project required two clicks because the reel item looked like a link but first acted as a selector.
-- P2: the three-column implementation had no graceful expansion path and hid thumbnails at the tablet breakpoint.
-- Evidence: `docs/design/homepage-project-first-comparison.png` and `docs/design/homepage-project-first-desktop.png`.
+- All nine project content-block types remain supported, including analytics event handling and URL-safety rules.
+- Locale switching preserves project and privacy destinations.
+- The English project route was checked independently: localized title/metadata rendered, horizontal overflow was 0 px, and browser console/page errors were 0.
+- The currently published privacy title/body contain the literal value `test`; the layout is valid, but that copy should be replaced in the CMS before treating the privacy notice as final editorial content.
+- Because the source and implementation are different route states, comparison is system-level rather than pixel-for-pixel cloning.
 
-Fixes made:
+## Verification
 
-- Generated and installed three purposeful UE development visuals, including a dedicated scene-and-interaction lead image.
-- Increased muted text contrast and minimum microcopy sizing.
-- Rebuilt the reel as an accessible tab selector; kept detail navigation in the main-stage CTA.
-- Added horizontally expandable project navigation and retained thumbnails through the tablet breakpoint.
-- Converted full-size assets and thumbnails to high-quality WebP, reducing their delivered sizes to approximately 104–363 KB and 21–65 KB respectively.
+- Frontend production build: passed (1610 modules).
+- Frontend unit and SSR contract tests: 107/107 passed.
+- Public Playwright regression: 52/52 passed (26 desktop, 26 iPhone 13).
+- Oxlint and ESLint: passed with no diagnostics.
+- Java 17 backend reactor: 1951 tests, 0 failures, 0 errors, 14 skipped.
+- Public catch-all scope: localized public paths only; admin, API, actuator, and root assets remain outside it.
+- Final patch whitespace check: passed.
 
-### Pass 2 — passed
+## Final result
 
-- The final full-view comparison retains the target hierarchy and composition while using more technically credible UE imagery.
-- The focused reel comparison confirms number, title, tags, status, thumbnail, active outline, and three-entry rhythm remain intact.
-- Desktop and mobile captures show no clipping, broken crop, misplaced controls, or horizontal overflow.
-- Evidence: `docs/design/homepage-project-first-comparison-final.png` and `docs/design/homepage-project-reel-comparison-final.png`.
-
-## Browser and Interaction Verification
-
-- Project tabs found: 3.
-- Mouse selection changed the main visual from `ue-scene-interaction-study.webp` to `ue-gameplay-prototype.webp`.
-- Arrow-right keyboard selection moved to the third project.
-- Mobile menu opened, Escape closed it, and focus returned to the menu button.
-- No horizontal overflow at 390 px.
-- Browser console errors: 0.
-- Page errors: 0.
-- Failed requests: 0.
-- Targeted responsive/accessibility Playwright suite: 4/4 passed.
-- Full Playwright regression: 48/48 passed (24 desktop, 24 mobile).
-- Unit suite: 99/99 passed.
-
-## Follow-up Polish
-
-- P3: when a future backend content model is available, move homepage-curated showcase art and learning-track copy into the admin CMS so they can be changed without a frontend release.
-
-## Implementation Checklist
-
-- [x] Project-first responsive layout.
-- [x] Earlier editorial project-navigation structure restored and modernized.
-- [x] Purposeful UE development imagery installed.
-- [x] Single-click and keyboard project switching.
-- [x] Future project expansion supported.
-- [x] Desktop/mobile visual comparison complete.
-- [x] Accessibility, console, network, unit, lint, and production-build checks complete.
-
-final result: passed
+passed

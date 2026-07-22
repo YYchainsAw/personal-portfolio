@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
@@ -154,6 +155,39 @@ class PublicHtmlContractTest {
         assertThat(bootstrap.path("kind").asText()).isEqualTo("project");
         assertThat(bootstrap.path("project").path("slug").asText())
                 .isEqualTo("gameplay-prototype");
+    }
+
+    @Test
+    void sceneInteractionProjectFirstPaintUsesTheSameBundledCoverAsVue() throws Exception {
+        String asset = "/assets/ue-scene-interaction-study-a1b2c3.webp";
+        when(queries.project("ue-environment-study", LocaleCode.ZH_CN))
+                .thenReturn(new PublishedEnvelope<>(
+                        9L,
+                        PROJECT_CHECKSUM,
+                        PublicPageFixtures.project("ue-environment-study")));
+        when(manifest.asset(SnapshotPublicPageRenderer.SCENE_INTERACTION_ASSET))
+                .thenReturn(Optional.of(asset));
+
+        String html = mvc.perform(get("/zh-CN/projects/ue-environment-study"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(
+                        "property=\"og:image\" content=\"https://yychainsaw.xyz"
+                                + asset + "\"")))
+                .andExpect(content().string(containsString(
+                        "src=\"" + asset + "\"")))
+                .andExpect(content().string(containsString(
+                        "srcset=\"" + asset + " 1672w\"")))
+                .andExpect(content().string(containsString(
+                        "alt=\"Unreal Engine 5 场景交互学习项目画面\"")))
+                .andExpect(content().string(containsString("width=\"1672\"")))
+                .andExpect(content().string(containsString("height=\"941\"")))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(bootstrap(html).path("project").path("slug").asText())
+                .isEqualTo("ue-environment-study");
+        assertThat(html).contains("\"@type\":\"CreativeWork\"");
     }
 
     @Test

@@ -1,0 +1,70 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org" th:lang="${locale}" lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d12">
+  <meta name="robots" content="noindex, nofollow" data-route-noindex>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title th:text="${locale == 'zh-CN'} ? '页面未找到 · Portfolio' : 'Page not found · Portfolio'">
+    Page not found · Portfolio
+  </title>
+  <meta name="description"
+        th:content="${locale == 'zh-CN'} ? '请求的页面不存在或已移动。' : 'The requested page does not exist or has moved.'"
+        content="The requested page does not exist or has moved.">
+  <link th:each="css : ${assets.css}" rel="stylesheet" th:href="${css}">
+</head>
+<body>
+  <div id="app">
+    <a class="skip-link" href="#main-content"
+       th:text="${locale == 'zh-CN'} ? '跳到主要内容' : 'Skip to main content'">
+      Skip to main content
+    </a>
+
+    <header class="public-site-header public-site-header--ssr" data-public-ssr>
+      <div class="public-site-header__inner">
+        <a class="brand" href="/zh-CN" th:href="${'/' + locale}">
+          <span class="brand__name">PORTFOLIO</span>
+          <span class="brand__secondary"
+                th:text="${locale == 'zh-CN'} ? '游戏开发 / 作品档案' : 'Game development / selected work'">
+            Game development / selected work
+          </span>
+        </a>
+        <span class="section-label"
+              th:text="${locale == 'zh-CN'} ? '未知区域' : 'Unknown sector'">
+          Unknown sector
+        </span>
+      </div>
+    </header>
+
+    <main id="main-content" class="not-found not-found--ssr" data-public-ssr tabindex="-1">
+      <div class="not-found__index" aria-hidden="true">
+        <span>04</span><span>/</span><span>04</span>
+      </div>
+      <section class="not-found__content" aria-labelledby="not-found-title">
+        <p class="not-found__eyebrow">404 / LOST COORDINATES</p>
+        <h1 id="not-found-title"
+            th:text="${locale == 'zh-CN'} ? '页面未找到' : 'Page not found'">
+          Page not found
+        </h1>
+        <p class="not-found__message"
+           th:text="${locale == 'zh-CN'} ? '这个地址不存在，或者内容已经移动。' : 'This address does not exist, or the content has moved.'">
+          This address does not exist, or the content has moved.
+        </p>
+        <a class="not-found__action" href="/zh-CN" th:href="${'/' + locale}"
+           th:text="${locale == 'zh-CN'} ? '返回首页' : 'Back to portfolio'">
+          Back to portfolio
+        </a>
+      </section>
+      <div class="not-found__status" aria-hidden="true">
+        <span th:text="${locale == 'zh-CN'} ? '路径未收录' : 'Route not indexed'">
+          Route not indexed
+        </span>
+        <span th:text="${'PORTFOLIO / ' + locale}">PORTFOLIO / zh-CN</span>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" th:src="${assets.entryJs}"></script>
+</body>
+</html>

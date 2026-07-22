@@ -55,6 +55,10 @@ class PublicTemplateSafetyTest {
         for (String name : List.of("home", "project", "privacy")) {
             String template = template(name);
             assertThat(template).contains("<div id=\"app\">");
+            assertThat(count(Pattern.compile("\\bdata-public-ssr\\b").matcher(template)))
+                    .as("transient server-rendered roots in %s", name)
+                    .isEqualTo(2);
+            assertThat(template).doesNotContain("<div id=\"app\" data-public-ssr");
             assertThat(template).contains(
                     "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">");
             assertThat(template).doesNotContain("<main id=\"app\">");
@@ -70,6 +74,29 @@ class PublicTemplateSafetyTest {
                     "<script type=\"module\" th:src=\"${assets.entryJs}\"></script>");
             assertThat(template).doesNotContain("<script type=\"module\">");
         }
+    }
+
+    @Test
+    void notFoundTemplateIsAStyleableTransientShellWithoutIndexablePageState()
+            throws Exception {
+        String template = template("not-found");
+
+        assertThat(utext(template)).isEmpty();
+        assertThat(count(Pattern.compile("\\bdata-public-ssr\\b").matcher(template)))
+                .as("transient server-rendered roots in not-found")
+                .isEqualTo(2);
+        assertThat(template)
+                .contains("<div id=\"app\">")
+                .contains("<main id=\"main-content\" class=\"not-found not-found--ssr\" data-public-ssr")
+                .contains("<meta name=\"theme-color\" content=\"#080d12\">")
+                .contains("<meta name=\"robots\" content=\"noindex, nofollow\" data-route-noindex>")
+                .contains("<script type=\"module\" th:src=\"${assets.entryJs}\"></script>")
+                .doesNotContain("rel=\"canonical\"")
+                .doesNotContain("hreflang=")
+                .doesNotContain("property=\"og:")
+                .doesNotContain("application/ld+json")
+                .doesNotContain("data-portfolio-seo")
+                .doesNotContain("__PORTFOLIO_DATA__");
     }
 
     @Test
